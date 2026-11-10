@@ -36,8 +36,8 @@ while username_valid == False:
 
         conn.close()
 
-        print("Welcome back", result)
-        username_valid == True
+        print("Welcome back:", result[0])
+        break
     else:
         print("\nIncorrect username")
         username = input("\nEnter your username: ")
