@@ -93,11 +93,42 @@ def survey():
     print("\nThank you for completing the survey!")
     main()
 
+def view_favourite_programmes():
+    clear()
+    print("***FAVOURITE PROGRAMMES***\n")
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
+        ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
+        ) WHERE listeners.ListenerID = ?""",
+        (username,)
+    )
+
+    results = cursor.fetchall()
+
+    if results:
+        print("Your favourite programmes:")
+        for result in results:
+            print(f"- {result[0]}")
+    else:
+        print("You have no favourite programmes.")
+
+    conn.close()
+    input("\nPress Enter to return to the main menu...")
+    main()
+
 def search_programmes():
     clear()
     print("***SEARCH FOR PROGRAMMES***\n")
+    print("Enter nothing to return to the main menu.\n")
     search_query = input("Enter a keyword to search for programmes: ")
 
+    if search_query == "":
+        main()
+        return
+    
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -129,6 +160,7 @@ def search_programmes():
                 print(result[0])
         else:
             print("\nNo podcasts found matching your search query.")
+        search_programmes()
 
 def username_exists(username):
     conn = sqlite3.connect("database.db")
