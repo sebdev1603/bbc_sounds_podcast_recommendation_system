@@ -1,5 +1,6 @@
 import sqlite3
 import os
+
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -36,7 +37,7 @@ def username_exists(username):
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT 1 FROM Users WHERE username = ?",
+        "SELECT 1 FROM listeners WHERE ListenerID = ?",
         (username,)
     )
 
@@ -52,11 +53,18 @@ username_valid = False
 
 while username_valid == False:
     if username_exists(username):
-        conn = sqlite3.connect("database.db")
+        print("Welcome back")
+        break
+    else:
+        print("\nIncorrect username")
+        username = input("\nEnter your username: ")
+
+def is_survey_complete(username):
+    conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT name FROM Users where username = ?",
+            "SELECT 1 FROM listeners WHERE CompleteSurvey = ?",
             (username,)
         )
 
@@ -64,8 +72,9 @@ while username_valid == False:
 
         conn.close()
 
-        print("Welcome back:", result[0])
-        break
-    else:
-        print("\nIncorrect username")
-        username = input("\nEnter your username: ")
+    return result is not None
+
+if is_survey_complete(username):
+    survey()
+else:
+    main()
