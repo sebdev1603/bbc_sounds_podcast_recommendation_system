@@ -58,3 +58,23 @@ while username_valid == False:
     else:
         print("\nIncorrect username")
         username = input("\nEnter your username: ")
+
+def is_survey_complete(username):
+    conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT 1 FROM listeners WHERE CompleteSurvey = ?",
+            (username,)
+        )
+
+        result = cursor.fetchone()
+
+        conn.close()
+
+    return result is not None
+
+if is_survey_complete(username):
+    survey()
+else:
+    main()
