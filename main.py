@@ -50,7 +50,22 @@ def survey():
     print("Please answer the following questions:\n")
 
     # Example survey questions
-    question1 = input("What is your favorite genre of programmes? (News/Comedy/Drama/Music): ").capitalize()
+    print('''These are the available genres of programmes:
+    News
+    Travel
+    History
+    Comedy
+    True Crime
+    Technology
+    Science
+    Business
+    Gaming
+    Entertainment
+    Sport
+    Health
+    ''')
+
+    question1 = input("What is your favorite genre of programmes?: ").capitalize()
     while any(character.isdigit() for character in question1):
         print("Please do not include numbers.")
         question1 = input("What is your favorite genre of programmes? (News/Comedy/Drama/Music): ").capitalize()
@@ -77,6 +92,43 @@ def survey():
 
     print("\nThank you for completing the survey!")
     main()
+
+def search_programmes():
+    clear()
+    print("***SEARCH FOR PROGRAMMES***\n")
+    search_query = input("Enter a keyword to search for programmes: ")
+
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT Title FROM podcasts WHERE Title LIKE ?",
+        ('%' + search_query + '%',)
+    )
+
+    results = cursor.fetchall()
+
+    if results:
+        print("\nSearch Results:")
+        for result in results:
+            print(result[0])
+        conn.close()
+    else:
+        cursor.execute(
+        "SELECT Title FROM podcasts WHERE Category LIKE ?",
+        ('%' + search_query + '%',)
+        )
+
+        results = cursor.fetchall()
+
+        conn.close()
+
+        if results:
+            print("\nSearch Results:")
+            for result in results:
+                print(result[0])
+        else:
+            print("\nNo podcasts found matching your search query.")
 
 def username_exists(username):
     conn = sqlite3.connect("database.db")
