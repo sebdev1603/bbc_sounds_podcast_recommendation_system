@@ -1,7 +1,35 @@
 import sqlite3
+import os
+def clear():
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 with sqlite3.connect("database.db") as connection:
     cursor = connection.cursor()
+
+def main():
+    clear()
+    print("***BBC SOUNDS***\n")
+    print('''
+    1. Search for programmes
+    2. View your favourite programmes
+    3. View your listening history
+    4. View your recommendations
+    5. Exit
+    ''')
+
+    choice = input("Enter your choice: ")
+    if choice == "1":
+        search_programmes()
+    elif choice == "2":
+        view_favourite_programmes()
+    elif choice == "3":
+        view_listening_history()
+    elif choice == "4":
+        view_recommendations()
+    elif choice == "5":
+        exit()
+    else:
+        print("Invalid choice. Please try again.")
 
 def username_exists(username):
     conn = sqlite3.connect("database.db")
