@@ -420,23 +420,23 @@ class Recommendations:
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT PreferredCategory, LengthPreference FROM listeners WHERE ListenerID = ?",
+            "SELECT FavoriteGenres, LengthPreference FROM listeners WHERE ListenerID = ?",
             (username,)
         )
 
         result = cursor.fetchone()
 
         if result:
-            preferred_category, length_preference = result
+            favorite_genres, length_preference = result
             cursor.execute(
-                "SELECT Title FROM podcasts WHERE Category = ? AND Length = ?",
-                (preferred_category, length_preference)
+                "SELECT Title FROM podcasts WHERE Category IN ({}) AND Length = ?".format(','.join('?' * len(favorite_genres.split(',')))),
+                (length_preference)
             )
 
             recommendations = cursor.fetchall()
 
             if recommendations:
-                print(f"Based on your survey responses, we recommend the following podcasts in the '{preferred_category}' category with '{length_preference}' length:")
+                print(f"Based on your survey responses, we recommend the following podcasts in the '{favorite_genres}' genres with '{length_preference}' length:")
                 for recommendation in recommendations:
                     print(f"- {recommendation[0]}")
             else:
@@ -574,12 +574,13 @@ class Rating:
         time.sleep(1)
 
 class Survey:
-    def survey():
+    def survey(username):
         clear()
         print("***BBC SOUNDS SURVEY***\n")
         print("Please answer the following questions:\n")
 
         print('''These are the available genres of podcasts:
+        
         News
         Travel
         History
@@ -594,25 +595,43 @@ class Survey:
         Health
         ''')
 
-        question1 = input("What is your favorite genre of podcasts?: ").capitalize()
-        while any(character.isdigit() for character in question1):
-            print("Please do not include numbers.")
-            question1 = input("What is your favorite genre of podcasts? (News/Comedy/Drama/Music): ").capitalize()
+        print("\nEnter as many genres as you like, enter nothing when you are finished")
+        favorite_genres = []
+        while True:
+            question1 = input("\nWhat are your favorite genre of podcasts? (or press Enter when finished): ").strip().capitalize()
+            if question1 == "":
+                if favorite_genres:
+                    break
+                print("You must enter at least one genre.")
+                continue
+            if any(character.isdigit() for character in question1):
+                print("Please do not include numbers.")
+                continue
+            favorite_genres.append(question1)
 
-        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
+        question1 = ", ".join(favorite_genres)
+
+        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
         while any(character.isdigit() for character in question2):
             print("Please do not include numbers.")
-            question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
+            question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
+
+        while question2 not in ("Long", "Medium", "Short"):
+            print("Please enter a valid option: Short, Medium, or Long.")
+            question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
+            while any(character.isdigit() for character in question2):
+                print("Please do not include numbers.")
+                question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
+
         while question2 != "Long" and question2 != "Medium" and question2 != "Short":
             print("Please enter a valid option: Short, Medium, or Long.")
             question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
 
-        # Store survey responses in the database
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
 
         cursor.execute(
-            "UPDATE listeners SET CompleteSurvey = 1, PreferredCategory = ?, LengthPreference = ? WHERE ListenerID = ?",
+            "UPDATE listeners SET CompleteSurvey = 1, FavoriteGenres = ?, LengthPreference = ? WHERE ListenerID = ?",
             (question1, question2, username)
         )
 
