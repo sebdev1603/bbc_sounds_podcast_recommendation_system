@@ -5,6 +5,31 @@ import time
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
+def main():
+    clear()
+    print("***BBC SOUNDS***\n")
+    print('''
+    1. Search for programmes
+    2. View your favourite programmes
+    3. View your listening history
+    4. View your recommendations
+    5. Exit
+    ''')
+
+    choice = input("Enter your choice: ")
+    if choice == "1":
+        Search.search_programmes()
+    elif choice == "2":
+        Favourites.view_favourite_programmes()
+    elif choice == "3":
+        view_listening_history()
+    elif choice == "4":
+        view_recommendations()
+    elif choice == "5":
+        exit()
+    else:
+        print("Invalid choice. Please try again.")
+
 class Search:
     def search_programmes():
         clear()
@@ -55,41 +80,6 @@ class Search:
             view_podcast_details(choice)
 
 class Favourites:
-    def delete_favourite_programme(podcast_title):
-        conn = sqlite3.connect("database.db")
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT PodcastID FROM podcasts WHERE Title = ?",
-            (podcast_title,)
-        )
-
-        result = cursor.fetchone()
-
-        if result:
-            podcast_id = result[0]
-            cursor.execute(
-                "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?",
-                (username,)
-            )
-
-            result = cursor.fetchone()
-            current_favourites = result[0] if result else ""
-
-            updated_favourites = ','.join(
-                [pid for pid in current_favourites.split(',') if pid != str(podcast_id)]
-            )
-
-            cursor.execute(
-                "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
-                (updated_favourites, username)
-            )
-            conn.commit()
-            print("\nPodcast removed from favourites.")
-        else:
-            print("\nPodcast not found.")
-
-        conn.close()
     
     def view_favourite_programmes():
         clear()
@@ -130,8 +120,15 @@ class Favourites:
                 else:
                     view_podcast_details(podcast_title)
             elif choice == "2":
+                print("\nTo go back, press Enter without typing anything.")
+                print("\nWARNING: Deleting a favourite programme is permanent and cannot be undone.")
                 podcast_title = input("Enter the title of the programme you want to delete from favourites (The name must match exactly): ")
-                if podcast_title not in [result[0] for result in results]:
+                if podcast_title == "":
+                    clear()
+                    print("\nReturning to favourites menu...")
+                    time.sleep(1)
+                    Favourites.view_favourite_programmes()
+                elif podcast_title not in [result[0] for result in results]:
                     print("\nThe programme is not in your favourites.")
                     time.sleep(1)
                     clear()
@@ -143,6 +140,42 @@ class Favourites:
                 print("Invalid choice")
                 time.sleep(1)
                 clear()
+
+        conn.close()
+
+    def delete_favourite_programme(podcast_title):
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT PodcastID FROM podcasts WHERE Title = ?",
+            (podcast_title,)
+        )
+
+        result = cursor.fetchone()
+
+        if result:
+            podcast_id = result[0]
+            cursor.execute(
+                "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?",
+                (username,)
+            )
+
+            result = cursor.fetchone()
+            current_favourites = result[0] if result else ""
+
+            updated_favourites = ','.join(
+                [pid for pid in current_favourites.split(',') if pid != str(podcast_id)]
+            )
+
+            cursor.execute(
+                "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
+                (updated_favourites, username)
+            )
+            conn.commit()
+            print("\nPodcast removed from favourites.")
+        else:
+            print("\nPodcast not found.")
 
         conn.close()
 
@@ -238,7 +271,7 @@ class Survey:
 
         return result is not None
 
-def main():
+
     clear()
     print("***BBC SOUNDS***\n")
     print('''
@@ -253,7 +286,7 @@ def main():
     if choice == "1":
         Search.search_programmes()
     elif choice == "2":
-        view_favourite_programmes()
+        Favourites.view_favourite_programmes()
     elif choice == "3":
         view_listening_history()
     elif choice == "4":
@@ -289,7 +322,7 @@ def view_podcast_details(podcast_title):
             choice = input("\nEnter your choice: ")
 
             if choice == "1":
-                add_to_favourites(podcast[0])
+                Favourites.add_to_favourites(podcast[0])
                 view_podcast_details(podcast_title)
             elif choice == "2":
                 add_rating(podcast[0])
@@ -330,7 +363,7 @@ while username_valid == False:
         print("\nIncorrect username")
         username = input("\nEnter your username: ")
 
-if is_survey_complete(username):
+if Survey.is_survey_complete(username):
     main()
 else:
     print("\nNOTE: If you do not complete survey, we can't recommend programmes to you.")
@@ -338,5 +371,7 @@ else:
     if choice.lower() == "yes":
         survey()
     else:
+        clear()
         print("Continuing without completing the survey. You may not receive personalized recommendations.")
+        time.sleep(1)
         main()
