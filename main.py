@@ -2,6 +2,58 @@ import sqlite3
 import os
 import time
 
+def clear():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+class Search:
+    def search_programmes():
+        clear()
+        print("***SEARCH FOR PROGRAMMES***\n")
+        print("Enter nothing to return to the main menu.")
+        search_query = input("Enter a keyword to search for programmes: \n")
+
+        if search_query == "":
+            main()
+            return
+        
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT Title FROM podcasts WHERE Title LIKE ?",
+            ('%' + search_query + '%',)
+        )
+
+        results = cursor.fetchall()
+
+        if results:
+            print("\nSearch Results:")
+            for result in results:
+                print(result[0])
+        else:
+            cursor.execute(
+                "SELECT Title FROM podcasts WHERE Category LIKE ?",
+                ('%' + search_query + '%',)
+            )
+
+            results = cursor.fetchall()
+
+            conn.close()
+
+            if results:
+                print("\nSearch Results:")
+                for result in results:
+                    print(result[0])
+            else:
+                print("\nNo podcasts found matching your search query.")
+        
+        print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
+        choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ")
+        if choice == "":
+            main()
+        else:
+            view_podcast_details(choice)
+
 class Favourites:
     def delete_favourite_programme(podcast_title):
         conn = sqlite3.connect("database.db")
@@ -38,102 +90,153 @@ class Favourites:
             print("\nPodcast not found.")
 
         conn.close()
+    
+    def view_favourite_programmes():
+        clear()
+        print("***FAVOURITE PROGRAMMES***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
 
-def view_favourite_programmes():
-    clear()
-    print("***FAVOURITE PROGRAMMES***\n")
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
+        cursor.execute(
+            """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
+            ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
+            ) WHERE listeners.ListenerID = ?""",
+            (username,)
+        )
 
-    cursor.execute(
-        """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
-        ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
-        ) WHERE listeners.ListenerID = ?""",
-        (username,)
-    )
+        results = cursor.fetchall()
 
-    results = cursor.fetchall()
+        while True:
+            if results:
+                print("Your favourite programmes:")
+                for result in results:
+                    print(f"- {result[0]}")
+            else:
+                print("You have no favourite programmes.")
 
-    while True:
-        if results:
-            print("Your favourite programmes:")
-            for result in results:
-                print(f"- {result[0]}")
-        else:
-            print("You have no favourite programmes.")
+            print('''\nWhat would you like to do next?
 
-        print(''''\nWhat would you like to do next?
+            1. View details of a favourite programme
+            2. Delete a favourite programme
+            3. Return to main menu''')
 
-        1. View details of a favourite programme
-        2. Delete a favourite programme
-        3. Return to main menu''')
-
-        choice = input("\nEnter your choice: ").strip()
-        if choice == "1":
-            podcast_title = input("Enter the title of the programme you want to view details for (The name must match exactly): ")
-            if podcast_title not in [result[0] for result in results]:
-                print("\nThe programme is not in your favourites.")
+            choice = input("\nEnter your choice: ").strip()
+            if choice == "1":
+                podcast_title = input("Enter the title of the programme you want to view details for (The name must match exactly): ")
+                if podcast_title not in [result[0] for result in results]:
+                    print("\nThe programme is not in your favourites.")
+                    time.sleep(1)
+                    clear()
+                else:
+                    view_podcast_details(podcast_title)
+            elif choice == "2":
+                podcast_title = input("Enter the title of the programme you want to delete from favourites (The name must match exactly): ")
+                if podcast_title not in [result[0] for result in results]:
+                    print("\nThe programme is not in your favourites.")
+                    time.sleep(1)
+                    clear()
+                else:
+                    Favourites.delete_favourite_programme(podcast_title)
+            elif choice == "3":
+                main()
+            else:
+                print("Invalid choice")
                 time.sleep(1)
                 clear()
-            else:
-                view_podcast_details(podcast_title)
-        elif choice == "2":
-            podcast_title = input("Enter the title of the programme you want to delete from favourites (The name must match exactly): ")
-            delete_favourite_programme(podcast_title)
-        elif choice == "3":
-            main()
-        else:
-            print("Invalid choice")
-            time.sleep(1)
-            clear()
 
+        conn.close()
 
-    conn.close()
+    def add_to_favourites(podcast_id):
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
 
-def add_to_favourites(podcast_id):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?",
-        (username,)
-    )
-
-    result = cursor.fetchone()
-    current_favourites = result[0] if result else ""
-
-    if str(podcast_id) not in current_favourites.split(','):
-        updated_favourites = current_favourites + ("," if current_favourites else "") + str(podcast_id)
         cursor.execute(
-            "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
-            (updated_favourites, username)
+            "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?",
+            (username,)
         )
+
+        result = cursor.fetchone()
+        current_favourites = result[0] if result else ""
+
+        if str(podcast_id) not in current_favourites.split(','):
+            updated_favourites = current_favourites + ("," if current_favourites else "") + str(podcast_id)
+            cursor.execute(
+                "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
+                (updated_favourites, username)
+            )
+            conn.commit()
+            print("\nPodcast added to favourites.")
+            time.sleep(1)
+        else:
+            print("\nPodcast is already in favourites.")
+            time.sleep(1)
+
+        conn.close()
+
+class Survey:
+    def survey():
+        clear()
+        print("***BBC SOUNDS SURVEY***\n")
+        print("Please answer the following questions:\n")
+
+        print('''These are the available genres of programmes:
+        News
+        Travel
+        History
+        Comedy
+        True Crime
+        Technology
+        Science
+        Business
+        Gaming
+        Entertainment
+        Sport
+        Health
+        ''')
+
+        question1 = input("What is your favorite genre of programmes?: ").capitalize()
+        while any(character.isdigit() for character in question1):
+            print("Please do not include numbers.")
+            question1 = input("What is your favorite genre of programmes? (News/Comedy/Drama/Music): ").capitalize()
+
+        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
+        while any(character.isdigit() for character in question2):
+            print("Please do not include numbers.")
+            question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
+        while question2 != "Long" and question2 != "Medium" and question2 != "Short":
+            print("Please enter a valid option: Short, Medium, or Long.")
+            question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
+
+        # Store survey responses in the database
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE listeners SET CompleteSurvey = 1, PreferredCategory = ?, LengthPreference = ? WHERE ListenerID = ?",
+            (question1, question2, username)
+        )
+
         conn.commit()
-        print("\nPodcast added to favourites.")
-        time.sleep(1)
-    else:
-        print("\nPodcast is already in favourites.")
-        time.sleep(1)
+        conn.close()
 
-    conn.close()
+        print("\nThank you for completing the survey!")
+        main()
 
-def clear():
-    os.system('cls' if os.name == 'nt' else 'clear')
 
-def is_survey_complete(username):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
+    def is_survey_complete(username):
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
 
-    cursor.execute(
-    "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
-    (username,)
-    )   
+        cursor.execute(
+            "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
+            (username,)
+        )
 
-    result = cursor.fetchone()
+        result = cursor.fetchone()
 
-    conn.close()
+        conn.close()
 
-    return result is not None
+        return result is not None
 
 def main():
     clear()
@@ -148,7 +251,7 @@ def main():
 
     choice = input("Enter your choice: ")
     if choice == "1":
-        search_programmes()
+        Search.search_programmes()
     elif choice == "2":
         view_favourite_programmes()
     elif choice == "3":
@@ -159,55 +262,6 @@ def main():
         exit()
     else:
         print("Invalid choice. Please try again.")
-
-def survey():
-    clear()
-    print("***BBC SOUNDS SURVEY***\n")
-    print("Please answer the following questions:\n")
-
-    # Example survey questions
-    print('''These are the available genres of programmes:
-    News
-    Travel
-    History
-    Comedy
-    True Crime
-    Technology
-    Science
-    Business
-    Gaming
-    Entertainment
-    Sport
-    Health
-    ''')
-
-    question1 = input("What is your favorite genre of programmes?: ").capitalize()
-    while any(character.isdigit() for character in question1):
-        print("Please do not include numbers.")
-        question1 = input("What is your favorite genre of programmes? (News/Comedy/Drama/Music): ").capitalize()
-
-    question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
-    while any(character.isdigit() for character in question2):
-        print("Please do not include numbers.")
-        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
-    while question2 != "Long" and question2 != "Medium" and question2 != "Short":
-        print("Please enter a valid option: Short, Medium, or Long.")
-        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
-
-    # Store survey responses in the database
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "UPDATE listeners SET CompleteSurvey = 1, PreferredCategory = ?, LengthPreference = ? WHERE ListenerID = ?",
-        (question1, question2, username)
-    )
-
-    conn.commit()
-    conn.close()
-
-    print("\nThank you for completing the survey!")
-    main()
 
 def view_podcast_details(podcast_title):
     conn = sqlite3.connect("database.db")
@@ -248,54 +302,6 @@ def view_podcast_details(podcast_title):
                 main()
         else:
             print("\nPodcast not found.")
-        
-def search_programmes():
-    clear()
-    print("***SEARCH FOR PROGRAMMES***\n")
-    print("Enter nothing to return to the main menu.")
-    search_query = input("Enter a keyword to search for programmes: \n")
-
-    if search_query == "":
-        main()
-        return
-    
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT Title FROM podcasts WHERE Title LIKE ?",
-        ('%' + search_query + '%',)
-    )
-
-    results = cursor.fetchall()
-
-    if results:
-        print("\nSearch Results:")
-        for result in results:
-            print(result[0])
-    else:
-        cursor.execute(
-        "SELECT Title FROM podcasts WHERE Category LIKE ?",
-        ('%' + search_query + '%',)
-        )
-
-        results = cursor.fetchall()
-
-        conn.close()
-
-        if results:
-            print("\nSearch Results:")
-            for result in results:
-                print(result[0])
-        else:
-            print("\nNo podcasts found matching your search query.")
-    
-    print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
-    choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ")
-    if choice == "":
-        main()
-    else:
-        view_podcast_details(choice)
 
 def username_exists(username):
     conn = sqlite3.connect("database.db")
