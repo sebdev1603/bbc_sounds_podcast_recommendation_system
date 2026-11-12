@@ -36,13 +36,14 @@ def main():
     clear()
     print("***BBC SOUNDS***\n")
     print('''
-    1. Search for programmes
-    2. View your favourite programmes
-    3. View your listening history
-    4. Generate a listening report
-    5. View your recommendations
-    6. View your ratings
-    7. Exit
+    1. Search for podcasts
+    2. View your favourite podcasts
+    3. View your favourite genres and matching podcasts
+    4. View your listening history
+    5. Generate a listening report
+    6. View your recommendations
+    7. View your ratings
+    8. Exit
     ''')
 
     choice = input("Enter your choice: ")
@@ -51,14 +52,16 @@ def main():
     elif choice == "2":
         Favourites.view_favourite_programmes()
     elif choice == "3":
-        ListeningHistory.view_listening_history()
+        Favourites.view_favourite_genres()
     elif choice == "4":
-        GenerateListeningReport.generate_report()
+        ListeningHistory.view_listening_history()
     elif choice == "5":
-        Recommendations.view_recommendations()
+        GenerateListeningReport.generate_report()
     elif choice == "6":
-        Rating.view_ratings()
+        Recommendations.view_recommendations()
     elif choice == "7":
+        Rating.view_ratings()
+    elif choice == "8":
         exit()
     else:
         print("Invalid choice. Please try again.")
@@ -66,9 +69,9 @@ def main():
 class Search:
     def search_programmes():
         clear()
-        print("***SEARCH FOR PROGRAMMES***\n")
+        print("***SEARCH FOR PODCASTS***\n")
         print("Enter nothing to return to the main menu.")
-        search_query = input("Enter a keyword to search for programmes: \n").strip()
+        search_query = input("Enter a keyword to search for podcasts: \n").strip()
 
         if search_query == "":
             main()
@@ -93,10 +96,7 @@ class Search:
                 "SELECT Title FROM podcasts WHERE Category LIKE ?",
                 ('%' + search_query + '%',)
             )
-
             results = cursor.fetchall()
-
-            conn.close()
 
             if results:
                 print("\nSearch Results:")
@@ -104,19 +104,64 @@ class Search:
                     print(result[0])
             else:
                 print("\nNo podcasts found matching your search query.")
-        
+
+        conn.close()
+
         print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
         choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ").strip()
         if choice == "":
             main()
+            return
         else:
             view_podcast_details(choice)
 
 class Favourites:
-    
+
+    def view_favourite_genres():
+        clear()
+        print("***FAVOURITE GENRES & MATCHING PODCASTS***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+            (username,)
+        )
+        res = cursor.fetchone()
+
+        if res and res[0]:
+            print(f"Your favourite genres: {res[0].replace(',', ', ')}\n")
+
+            cursor.execute(
+                """
+                SELECT podcasts.Title, podcasts.Category
+                FROM podcasts
+                JOIN listeners ON (
+                    ',' || listeners.FavoriteGenres || ',' LIKE '%,' || podcasts.Category || ',%'
+                )
+                WHERE listeners.ListenerID = ?
+                """,
+                (username,)
+            )
+
+            results = cursor.fetchall()
+
+            if results:
+                print("Podcasts matching your favourite genres:")
+                for title, category in results:
+                    print(f"- {title} ({category})")
+            else:
+                print("No podcasts found matching your favourite genres.")
+        else:
+            print("You have no favourite genres set.")
+
+        conn.close()
+        input("\nPress Enter to return to the main menu...")
+        main()
+
     def view_favourite_programmes():
         clear()
-        print("***FAVOURITE PROGRAMMES***\n")
+        print("***FAVOURITE PODCASTS***\n")
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
 
@@ -131,38 +176,38 @@ class Favourites:
 
         while True:
             if results:
-                print("Your favourite programmes:")
+                print("Your favourite podcasts:")
                 for result in results:
                     print(f"- {result[0]}")
             else:
-                print("You have no favourite programmes.")
+                print("You have no favourite podcasts.")
 
             print('''\nWhat would you like to do next?
 
-            1. View details of a favourite programme
-            2. Delete a favourite programme
+            1. View details of a favourite podcast
+            2. Delete a favourite podcast
             3. Return to main menu''')
 
             choice = input("\nEnter your choice: ").strip()
             if choice == "1":
-                podcast_title = input("Enter the title of the programme you want to view details for (The name must match exactly): ").strip()
+                podcast_title = input("Enter the title of the podcast you want to view details for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
-                    print("\nThe programme is not in your favourites.")
+                    print("\nThe podcast is not in your favourites.")
                     time.sleep(1)
                     clear()
                 else:
                     view_podcast_details(podcast_title)
             elif choice == "2":
                 print("\nTo go back, press Enter without typing anything.")
-                print("\nWARNING: Deleting a favourite programme is permanent and cannot be undone.")
-                podcast_title = input("Enter the title of the programme you want to delete from favourites (The name must match exactly): ").strip()
+                print("\nWARNING: Deleting a favourite podcast is permanent and cannot be undone.")
+                podcast_title = input("Enter the title of the podcast you want to delete from favourites (The name must match exactly): ").strip()
                 if podcast_title == "":
                     clear()
                     print("\nReturning to favourites menu...")
                     time.sleep(1)
                     Favourites.view_favourite_programmes()
                 elif podcast_title not in [result[0] for result in results]:
-                    print("\nThe programme is not in your favourites.")
+                    print("\nThe podcast is not in your favourites.")
                     time.sleep(1)
                     clear()
                 else:
@@ -260,23 +305,23 @@ class ListeningHistory:
                 print(f"- {result[0]}")
                 print(f"    Times listened: {result[1]}")
             print('''\nWhat would you like to do next?
-            1. View details of a programme in your listening history
-            2. Remove a programme from your listening history
+            1. View details of a podcast in your listening history
+            2. Remove a podcast from your listening history
             3. Delete your entire listening history
             4. Return to main menu''')
             choice = input("\nEnter your choice: ").strip()
             if choice == "1":
-                podcast_title = input("Enter the title of the programme you want to view details for (The name must match exactly): ").strip()
+                podcast_title = input("Enter the title of the podcast you want to view details for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
-                    print("\nThe programme is not in your listening history.")
+                    print("\nThe podcast is not in your listening history.")
                     time.sleep(1)
                     clear()
                 else:
                     view_podcast_details(podcast_title)
             elif choice == "2":
-                podcast_title = input("Enter the title of the programme you want to remove from your listening history (The name must match exactly): ").strip()
+                podcast_title = input("Enter the title of the podcast you want to remove from your listening history (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
-                    print("\nThe programme is not in your listening history.")
+                    print("\nThe podcast is not in your listening history.")
                     time.sleep(1)
                     clear()
                 else:
@@ -349,12 +394,12 @@ class GenerateListeningReport:
         results = cursor.fetchall()
 
         if results:
-            print(f"\nYou listened to {len(results)} different programmes.")
-            print(f"\nThe most listened programme is '{results[0][0]}' with {results[0][1]} listens.")
-            print(f"\nThe least listened programme is '{results[-1][0]}' with {results[-1][1]} listens.")
+            print(f"\nYou listened to {len(results)} different podcasts.")
+            print(f"\nThe most listened podcast is '{results[0][0]}' with {results[0][1]} listens.")
+            print(f"\nThe least listened podcast is '{results[-1][0]}' with {results[-1][1]} listens.")
             print(f"\nYour highest rating given is {max([result[2] for result in results if result[2] is not None])} and your lowest rating given is {min([result[2] for result in results if result[2] is not None])}.")
-            print(f"\nYour average rating for all programmes is {sum([result[2] for result in results if result[2] is not None]) / len([result[2] for result in results if result[2] is not None]):.2f}.")
-            print("\nYour programmes sorted by times listened (from most to least):")
+            print(f"\nYour average rating for all podcasts is {sum([result[2] for result in results if result[2] is not None]) / len([result[2] for result in results if result[2] is not None]):.2f}.")
+            print("\nYour podcasts sorted by times listened (from most to least):")
 
             for result in results:
                 print(f"\n- {result[0]}")
@@ -391,7 +436,7 @@ class Recommendations:
             recommendations = cursor.fetchall()
 
             if recommendations:
-                print(f"Based on your survey responses, we recommend the following programmes in the '{preferred_category}' category with '{length_preference}' length:")
+                print(f"Based on your survey responses, we recommend the following podcasts in the '{preferred_category}' category with '{length_preference}' length:")
                 for recommendation in recommendations:
                     print(f"- {recommendation[0]}")
             else:
@@ -425,7 +470,7 @@ class Rating:
 
         while True:
             if results:
-                print("You have rated these programmes  :")
+                print("You have rated these podcasts  :")
                 for result in results:
                     print(f"- {result[0]}")
                 print('''\nWhat action would you like to take?
@@ -434,9 +479,9 @@ class Rating:
         3. Return to main menu''')
                 choice = input("\nEnter your choice: ").strip()
                 if choice == "1":
-                    podcast_title = input("Enter the title of the programme you want to update the rating for (The name must match exactly): ").strip()
+                    podcast_title = input("Enter the title of the podcast you want to update the rating for (The name must match exactly): ").strip()
                     if podcast_title not in [result[0] for result in results]:
-                        print("\nThe programme is not in your rated programmes.")
+                        print("\nThe podcast is not in your rated podcasts.")
                         time.sleep(1)
                         clear()
                     else:
@@ -450,9 +495,9 @@ class Rating:
                         conn.close()
                         Rating.add_rating(podcast_id, True)
                 elif choice == "2":
-                    podcast_title = input("Enter the title of the programme you want to remove the rating for (The name must match exactly): ").strip()
+                    podcast_title = input("Enter the title of the podcast you want to remove the rating for (The name must match exactly): ").strip()
                     if podcast_title not in [result[0] for result in results]:
-                        print("\nThe programme is not in your rated programmes.")
+                        print("\nThe podcast is not in your rated podcasts.")
                         time.sleep(1)
                         clear()
                     else:
@@ -468,7 +513,7 @@ class Rating:
                 elif choice == "3":
                     main()
             else:
-                print("You have no rated programmes.")
+                print("You have no rated podcasts.")
 
     def add_rating(podcast_id, check_for_update):
         clear()
@@ -534,7 +579,7 @@ class Survey:
         print("***BBC SOUNDS SURVEY***\n")
         print("Please answer the following questions:\n")
 
-        print('''These are the available genres of programmes:
+        print('''These are the available genres of podcasts:
         News
         Travel
         History
@@ -549,10 +594,10 @@ class Survey:
         Health
         ''')
 
-        question1 = input("What is your favorite genre of programmes?: ").capitalize()
+        question1 = input("What is your favorite genre of podcasts?: ").capitalize()
         while any(character.isdigit() for character in question1):
             print("Please do not include numbers.")
-            question1 = input("What is your favorite genre of programmes? (News/Comedy/Drama/Music): ").capitalize()
+            question1 = input("What is your favorite genre of podcasts? (News/Comedy/Drama/Music): ").capitalize()
 
         question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
         while any(character.isdigit() for character in question2):
@@ -651,7 +696,7 @@ def view_podcast_details(podcast_title):
 if Survey.is_survey_complete(username):
     main()
 else:
-    print("\nNOTE: If you do not complete survey, we can't recommend programmes to you.")
+    print("\nNOTE: If you do not complete survey, we can't recommend podcasts to you.")
     choice = input("You have not completed the survey. Would you like to complete it now? (yes/no): ").strip()
     if choice.lower() == "yes":
         Survey.survey(username)
