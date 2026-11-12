@@ -62,7 +62,7 @@ def view_podcast_details(podcast_title):
                 Favourites.add_to_favourites(podcast[0])
                 view_podcast_details(podcast_title)
             elif choice == "2":
-                Rating.add_rating(podcast[0])
+                Rating.add_rating(podcast[0], False)
                 view_podcast_details(podcast_title)
             elif choice == "3":
                 print("Listening to the podcast...")
@@ -123,16 +123,64 @@ class Rating:
 
         while True:
             if results:
-                print("Your favourite programmes:")
+                print("You have rated these programmes  :")
                 for result in results:
                     print(f"- {result[0]}")
+                print('''\nWhat action would you like to take?
+        1. Update a rating
+        2. Remove a rating
+        3. Return to main menu''')
+                choice = input("\nEnter your choice: ")
+                if choice == "1":
+                    podcast_title = input("Enter the title of the programme you want to update the rating for (The name must match exactly): ")
+                    if podcast_title not in [result[0] for result in results]:
+                        print("\nThe programme is not in your rated programmes.")
+                        time.sleep(1)
+                        clear()
+                    else:
+                        conn = sqlite3.connect("database.db")
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT PodcastID FROM podcasts WHERE Title = ?",
+                            (podcast_title,)
+                        )
+                        podcast_id = cursor.fetchone()[0]
+                        conn.close()
+                        Rating.add_rating(podcast_id, True)
+                elif choice == "2":
+                    podcast_title = input("Enter the title of the programme you want to remove the rating for (The name must match exactly): ")
+                    if podcast_title not in [result[0] for result in results]:
+                        print("\nThe programme is not in your rated programmes.")
+                        time.sleep(1)
+                        clear()
+                    else:
+                        conn = sqlite3.connect("database.db")
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT PodcastID FROM podcasts WHERE Title = ?",
+                            (podcast_title,)
+                        )
+                        podcast_id = cursor.fetchone()[0]
+                        conn.close()
+                        Rating.remove_rating(podcast_id)
+                elif choice == "3":
+                    main()
             else:
-                print("You have no favourite programmes.")
+                print("You have no rated programmes.")
 
-
-    def add_rating(podcast_id):
+    def add_rating(podcast_id, check_for_update):
         clear()
-        print("***ADD RATING***\n")
+        if check_for_update == True:
+            print("***UPDATE RATING***\n")
+            conn = sqlite3.connect("database.db")
+            cursor = conn.cursor()
+
+            result = cursor.execute(
+                "SELECT RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?", 
+                (username, podcast_id)).fetchone()
+            print("Your previous rating was:", result[0])
+        else:
+            print("***ADD RATING***\n")
         rating = input("Enter your rating for this podcast (1-5): ")
 
         while not rating.isdigit() or int(rating) < 1 or int(rating) > 5:
@@ -418,31 +466,6 @@ class Survey:
         conn.close()
 
         return result is not None
-
-
-    clear()
-    print("***BBC SOUNDS***\n")
-    print('''
-    1. Search for programmes
-    2. View your favourite programmes
-    3. View your listening history
-    4. View your recommendations
-    5. Exit
-    ''')
-
-    choice = input("Enter your choice: ")
-    if choice == "1":
-        Search.search_programmes()
-    elif choice == "2":
-        Favourites.view_favourite_programmes()
-    elif choice == "3":
-        view_listening_history()
-    elif choice == "4":
-        view_recommendations()
-    elif choice == "5":
-        exit()
-    else:
-        print("Invalid choice. Please try again.")
 
 if Survey.is_survey_complete(username):
     main()
