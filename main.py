@@ -2,21 +2,6 @@ import sqlite3
 import os
 import time
 
-def system_start():
-    username = input("Enter your username: ").strip()
-
-    username_valid = False
-
-    while username_valid == False:
-        if username_exists(username):
-            print("Welcome back")
-            username_valid = True
-        else:
-            print("\nIncorrect username")
-            username = input("\nEnter your username: ").strip()
-
-    return username
-
 def username_exists(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -32,8 +17,61 @@ def username_exists(username):
 
     return result is not None
 
+username = input("Enter your username: ").strip()
+
+username_valid = False
+
+while username_valid == False:
+    if username_exists(username):
+        print("Welcome back")
+        username_valid = True
+    else:
+        print("\nIncorrect username")
+        username = input("\nEnter your username: ").strip()
+
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
+
+def view_podcast_details(podcast_title):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM podcasts WHERE Title = ?",
+        (podcast_title,)
+    )
+
+    podcast = cursor.fetchone()
+    conn.close()
+
+    while True:
+        if podcast:
+            print(f"\nTitle: {podcast[1]}")
+            print(f"Category: {podcast[2]}")
+            print(f"Length: {podcast[3]} minutes")
+            print(f"Ratings: {podcast[5]}")
+            print('''What action would you like to take?
+            
+            1. Add to favourites
+            2. Add a rating
+            3. Listen to the podcast
+            4. Return to main menu''')
+            choice = input("\nEnter your choice: ")
+
+            if choice == "1":
+                Favourites.add_to_favourites(podcast[0])
+                view_podcast_details(podcast_title)
+            elif choice == "2":
+                Rating.add_rating(podcast[0])
+                view_podcast_details(podcast_title)
+            elif choice == "3":
+                print("Listening to the podcast...")
+                print("... (simulated) ...")
+                view_podcast_details(podcast_title)
+            elif choice == "4":
+                main()
+        else:
+            print("\nPodcast not found.")
 
 def main():
     clear()
@@ -405,49 +443,6 @@ class Survey:
         exit()
     else:
         print("Invalid choice. Please try again.")
-
-def view_podcast_details(podcast_title):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT * FROM podcasts WHERE Title = ?",
-        (podcast_title,)
-    )
-
-    podcast = cursor.fetchone()
-    conn.close()
-
-    while True:
-        if podcast:
-            print(f"\nTitle: {podcast[1]}")
-            print(f"Category: {podcast[2]}")
-            print(f"Length: {podcast[3]} minutes")
-            print(f"Ratings: {podcast[5]}")
-            print('''What action would you like to take?
-            
-            1. Add to favourites
-            2. Add a rating
-            3. Listen to the podcast
-            4. Return to main menu''')
-            choice = input("\nEnter your choice: ")
-
-            if choice == "1":
-                Favourites.add_to_favourites(podcast[0])
-                view_podcast_details(podcast_title)
-            elif choice == "2":
-                Rating.add_rating(podcast[0])
-                view_podcast_details(podcast_title)
-            elif choice == "3":
-                print("Listening to the podcast...")
-                print("... (simulated) ...")
-                view_podcast_details(podcast_title)
-            elif choice == "4":
-                main()
-        else:
-            print("\nPodcast not found.")
-
-username = system_start()
 
 if Survey.is_survey_complete(username):
     main()
