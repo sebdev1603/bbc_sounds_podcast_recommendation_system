@@ -30,6 +30,40 @@ def main():
     else:
         print("Invalid choice. Please try again.")
 
+class Rating:
+    def add_rating(podcast_id):
+        clear()
+        print("***ADD RATING***\n")
+        rating = input("Enter your rating for this podcast (1-5): ")
+
+        while not rating.isdigit() or int(rating) < 1 or int(rating) > 5:
+            print("Invalid rating. Please enter a number between 1 and 5.")
+            rating = input("Enter your rating for this podcast (1-5): ")
+
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        result = cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?)", 
+            (username, podcast_id)).fetchone()[0]
+
+        if not result:
+            cursor.execute(
+                "INSERT INTO listening_history (ListenerID, PodcastID, TimesListened, RatingGiven) VALUES (?, ?, ?, ?)",
+                (username, podcast_id, 1, int(rating))
+        )
+        else:
+            cursor.execute(
+                "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
+                (int(rating), username, podcast_id)
+            )
+
+        conn.commit()
+        conn.close()
+
+        print("\nThank you for your rating!")
+        time.sleep(1)
+
 class Search:
     def search_programmes():
         clear()
@@ -315,6 +349,7 @@ def view_podcast_details(podcast_title):
             print(f"Length: {podcast[3]} minutes")
             print(f"Ratings: {podcast[5]}")
             print('''What action would you like to take?
+            
             1. Add to favourites
             2. Add a rating
             3. Listen to the podcast
@@ -325,7 +360,7 @@ def view_podcast_details(podcast_title):
                 Favourites.add_to_favourites(podcast[0])
                 view_podcast_details(podcast_title)
             elif choice == "2":
-                add_rating(podcast[0])
+                Rating.add_rating(podcast[0])
                 view_podcast_details(podcast_title)
             elif choice == "3":
                 print("Listening to the podcast...")
@@ -369,7 +404,7 @@ else:
     print("\nNOTE: If you do not complete survey, we can't recommend programmes to you.")
     choice = input("You have not completed the survey. Would you like to complete it now? (yes/no): ")
     if choice.lower() == "yes":
-        survey()
+        Survey.survey(username)
     else:
         clear()
         print("Continuing without completing the survey. You may not receive personalized recommendations.")
