@@ -2,6 +2,36 @@ import sqlite3
 import os
 import time
 
+def system_start():
+    username = input("Enter your username: ").strip()
+
+    username_valid = False
+
+    while username_valid == False:
+        if username_exists(username):
+            print("Welcome back")
+            username_valid = True
+        else:
+            print("\nIncorrect username")
+            username = input("\nEnter your username: ").strip()
+
+    return username
+
+def username_exists(username):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT 1 FROM listeners WHERE ListenerID = ?",
+        (username,)
+    )
+
+    result = cursor.fetchone()
+
+    conn.close()
+
+    return result is not None
+
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -13,7 +43,8 @@ def main():
     2. View your favourite programmes
     3. View your listening history
     4. View your recommendations
-    5. Exit
+    5. View your ratings
+    6. Exit
     ''')
 
     choice = input("Enter your choice: ")
@@ -26,11 +57,41 @@ def main():
     elif choice == "4":
         view_recommendations()
     elif choice == "5":
+        Rating.view_ratings()
+    elif choice == "6":
         exit()
     else:
         print("Invalid choice. Please try again.")
 
 class Rating:
+    def view_ratings():
+        clear()
+        print("***YOUR RATINGS***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+        """
+        SELECT podcasts.Title 
+        FROM podcasts 
+        JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID 
+        WHERE listening_history.ListenerID = ? 
+        AND listening_history.RatingGiven IS NOT NULL
+        """,
+        (username,)
+        )
+
+        results = cursor.fetchall()
+
+        while True:
+            if results:
+                print("Your favourite programmes:")
+                for result in results:
+                    print(f"- {result[0]}")
+            else:
+                print("You have no favourite programmes.")
+
+
     def add_rating(podcast_id):
         clear()
         print("***ADD RATING***\n")
@@ -62,6 +123,21 @@ class Rating:
         conn.close()
 
         print("\nThank you for your rating!")
+        time.sleep(1)
+    
+    def remove_rating(podcast_id):
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
+            (username, podcast_id)
+        )
+
+        conn.commit()
+        conn.close()
+
+        print("\nYour rating has been removed.")
         time.sleep(1)
 
 class Search:
@@ -371,32 +447,7 @@ def view_podcast_details(podcast_title):
         else:
             print("\nPodcast not found.")
 
-def username_exists(username):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT 1 FROM listeners WHERE ListenerID = ?",
-        (username,)
-    )
-
-    result = cursor.fetchone()
-
-    conn.close()
-
-    return result is not None
-
-username = input("Enter your username: ")
-
-username_valid = False
-
-while username_valid == False:
-    if username_exists(username):
-        print("Welcome back")
-        break
-    else:
-        print("\nIncorrect username")
-        username = input("\nEnter your username: ")
+username = system_start()
 
 if Survey.is_survey_complete(username):
     main()
