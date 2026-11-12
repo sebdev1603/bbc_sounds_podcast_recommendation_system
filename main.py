@@ -116,12 +116,53 @@ def view_favourite_programmes():
     else:
         print("You have no favourite programmes.")
 
-    print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
-    choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ")
-    if choice == "":
-        main()
+    print(''''\nWhat would you like to do next?
+
+    1. View details of a favourite programme
+    2. Delete a favourite programme
+    3. Return to main menu''')
+
+    while True:
+        choice = input("\nEnter your choice: ")
+        if choice == "1":
+            podcast_title = input("Enter the title of the programme you want to view details for (The name must match exactly): ")
+            break
+            view_podcast_details(podcast_title)
+        elif choice == "2":
+            podcast_title = input("Enter the title of the programme you want to delete from favourites (The name must match exactly): ")
+            break
+            delete_favourite_programme(podcast_title)
+        elif choice == "3":
+            break
+            main()
+        else:
+            print("Invalid choice. Returning to main menu.")
+
+
+    conn.close()
+
+def add_to_favourites(podcast_id):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?",
+        (username,)
+    )
+
+    result = cursor.fetchone()
+    current_favourites = result[0] if result else ""
+
+    if str(podcast_id) not in current_favourites.split(','):
+        updated_favourites = current_favourites + ("," if current_favourites else "") + str(podcast_id)
+        cursor.execute(
+            "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
+            (updated_favourites, username)
+        )
+        conn.commit()
+        print("\nPodcast added to favourites.")
     else:
-        view_podcast_details(choice)
+        print("\nPodcast is already in favourites.")
 
     conn.close()
 
@@ -137,29 +178,30 @@ def view_podcast_details(podcast_title):
     podcast = cursor.fetchone()
     conn.close()
 
-    if podcast:
-        print(f"\nTitle: {podcast[1]}")
-        print(f"Category: {podcast[2]}")
-        print(f"Length: {podcast[3]} minutes")
-        print(f"Ratings: {podcast[5]}")
-    else:
-        print("\nPodcast not found.")
-    print('''What action would you like to take?
-    1. Add to favourites
-    2. Add a rating
-    3. Listen to the podcast
-    4. Return to main menu''')
-    choice = input("\nEnter your choice: ")
-    
-    if choice == "1":
-        add_to_favourites(podcast[0])
-    elif choice == "2":
-        add_rating(podcast[0])
-    elif choice == "3":
-        print("Listening to the podcast...")
-        print("... (simulated) ...")
-    elif choice == "4":
-        main()
+    while True:
+        if podcast:
+            print(f"\nTitle: {podcast[1]}")
+            print(f"Category: {podcast[2]}")
+            print(f"Length: {podcast[3]} minutes")
+            print(f"Ratings: {podcast[5]}")
+        else:
+            print("\nPodcast not found.")
+        print('''What action would you like to take?
+        1. Add to favourites
+        2. Add a rating
+        3. Listen to the podcast
+        4. Return to main menu''')
+        choice = input("\nEnter your choice: ")
+
+        if choice == "1":
+            add_to_favourites(podcast[0])
+        elif choice == "2":
+            add_rating(podcast[0])
+        elif choice == "3":
+            print("Listening to the podcast...")
+            print("... (simulated) ...")
+        elif choice == "4":
+            main()
 
 def search_programmes():
     clear()
