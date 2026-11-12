@@ -32,47 +32,6 @@ while username_valid == False:
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def view_podcast_details(podcast_title):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT * FROM podcasts WHERE Title = ?",
-        (podcast_title,)
-    )
-
-    podcast = cursor.fetchone()
-    conn.close()
-
-    while True:
-        if podcast:
-            print(f"\nTitle: {podcast[1]}")
-            print(f"Category: {podcast[2]}")
-            print(f"Length: {podcast[3]} minutes")
-            print(f"Ratings: {podcast[5]}")
-            print('''What action would you like to take?
-            
-            1. Add to favourites
-            2. Add a rating
-            3. Listen to the podcast
-            4. Return to main menu''')
-            choice = input("\nEnter your choice: ").strip()
-
-            if choice == "1":
-                Favourites.add_to_favourites(podcast[0])
-                view_podcast_details(podcast_title)
-            elif choice == "2":
-                Rating.add_rating(podcast[0], False)
-                view_podcast_details(podcast_title)
-            elif choice == "3":
-                print("Listening to the podcast...")
-                print("... (simulated) ...")
-                view_podcast_details(podcast_title)
-            elif choice == "4":
-                main()
-        else:
-            print("\nPodcast not found.")
-
 def main():
     clear()
     print("***BBC SOUNDS***\n")
@@ -632,6 +591,62 @@ class Survey:
         conn.close()
 
         return result is not None
+
+def view_podcast_details(podcast_title):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM podcasts WHERE Title = ?",
+        (podcast_title,)
+    )
+
+    podcast = cursor.fetchone()
+    conn.close()
+
+    while True:
+        if podcast:
+            print(f"\nTitle: {podcast[1]}")
+            print(f"Category: {podcast[2]}")
+            print(f"Length: {podcast[3]} minutes")
+            print(f"Ratings: {podcast[5]}")
+            print('''\nWhat action would you like to take?
+            
+            1. Add to favourites
+            2. Add a rating
+            3. Listen to the podcast
+            4. Return to main menu''')
+            choice = input("\nEnter your choice: ").strip()
+
+            if choice == "1":
+                Favourites.add_to_favourites(podcast[0])
+                view_podcast_details(podcast_title)
+            elif choice == "2":
+                Rating.add_rating(podcast[0], False)
+                view_podcast_details(podcast_title)
+            elif choice == "3":
+                print("Listening to the podcast...")
+                print("... (simulated) ...")
+                conn = sqlite3.connect("database.db")
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",   
+                    (username, podcast[0])
+                )
+                times_listened = cursor.fetchone()
+                if times_listened:
+                    print(f"You have listened to this podcast {times_listened[0]} times.")
+                else:
+                    print("You have not listened to this podcast yet.")
+                conn.close()
+                view_podcast_details(podcast_title)
+            elif choice == "4":
+                main()
+        else:
+            print("\nPodcast not found.")
+            time.sleep(1)
+            Search.search_programmes()
 
 if Survey.is_survey_complete(username):
     main()
