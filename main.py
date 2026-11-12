@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import time
 
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -115,15 +116,56 @@ def view_favourite_programmes():
     else:
         print("You have no favourite programmes.")
 
+    print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
+    choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ")
+    if choice == "":
+        main()
+    else:
+        view_podcast_details(choice)
+
     conn.close()
-    input("\nPress Enter to return to the main menu...")
-    main()
+
+def view_podcast_details(podcast_title):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM podcasts WHERE Title = ?",
+        (podcast_title,)
+    )
+
+    podcast = cursor.fetchone()
+    conn.close()
+
+    if podcast:
+        print(f"\nTitle: {podcast[1]}")
+        print(f"Category: {podcast[2]}")
+        print(f"Length: {podcast[3]} minutes")
+        print(f"Ratings: {podcast[5]}")
+    else:
+        print("\nPodcast not found.")
+    print('''What action would you like to take?
+    1. Add to favourites
+    2. Add a rating
+    3. Listen to the podcast
+    4. Return to main menu''')
+    choice = input("\nEnter your choice: ")
+    
+    if choice == "1":
+        add_to_favourites(podcast[0])
+    elif choice == "2":
+        add_rating(podcast[0])
+    elif choice == "3":
+        print("Listening to the podcast...")
+        print("... (simulated) ...")
+    elif choice == "4":
+        main()
 
 def search_programmes():
     clear()
     print("***SEARCH FOR PROGRAMMES***\n")
-    print("Enter nothing to return to the main menu.\n")
-    search_query = input("Enter a keyword to search for programmes: ")
+    print("Enter nothing to return to the main menu.")
+    search_query = input("Enter a keyword to search for programmes: \n")
 
     if search_query == "":
         main()
@@ -143,7 +185,6 @@ def search_programmes():
         print("\nSearch Results:")
         for result in results:
             print(result[0])
-        conn.close()
     else:
         cursor.execute(
         "SELECT Title FROM podcasts WHERE Category LIKE ?",
@@ -160,7 +201,13 @@ def search_programmes():
                 print(result[0])
         else:
             print("\nNo podcasts found matching your search query.")
-        search_programmes()
+    
+    print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
+    choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ")
+    if choice == "":
+        main()
+    else:
+        view_podcast_details(choice)
 
 def username_exists(username):
     conn = sqlite3.connect("database.db")
