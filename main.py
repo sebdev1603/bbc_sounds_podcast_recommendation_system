@@ -80,9 +80,10 @@ def main():
     1. Search for programmes
     2. View your favourite programmes
     3. View your listening history
-    4. View your recommendations
-    5. View your ratings
-    6. Exit
+    4. Generate a listening report
+    5. View your recommendations
+    6. View your ratings
+    7. Exit
     ''')
 
     choice = input("Enter your choice: ")
@@ -93,10 +94,12 @@ def main():
     elif choice == "3":
         ListeningHistory.view_listening_history()
     elif choice == "4":
-        Recommendations.view_recommendations()
+        GenerateListeningReport.generate_report()
     elif choice == "5":
-        Rating.view_ratings()
+        Recommendations.view_recommendations()
     elif choice == "6":
+        Rating.view_ratings()
+    elif choice == "7":
         exit()
     else:
         print("Invalid choice. Please try again.")
@@ -371,6 +374,76 @@ class ListeningHistory:
         print("\nYour entire listening history has been deleted.")
         time.sleep(1)
 
+class GenerateListeningReport:
+
+    def generate_report():
+        clear()
+        print("***LISTENING REPORT***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT podcasts.Title, listening_history.TimesListened, listening_history.RatingGiven FROM podcasts JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID WHERE listening_history.ListenerID = ? ORDER BY listening_history.TimesListened DESC",
+            (username,)
+        )
+
+        results = cursor.fetchall()
+
+        if results:
+            print(f"\nYou listened to {len(results)} different programmes.")
+            print(f"\nThe most listened programme is '{results[0][0]}' with {results[0][1]} listens.")
+            print(f"\nThe least listened programme is '{results[-1][0]}' with {results[-1][1]} listens.")
+            print(f"\nYour highest rating given is {max([result[2] for result in results if result[2] is not None])} and your lowest rating given is {min([result[2] for result in results if result[2] is not None])}.")
+            print(f"\nYour average rating for all programmes is {sum([result[2] for result in results if result[2] is not None]) / len([result[2] for result in results if result[2] is not None]):.2f}.")
+            print("\nYour programmes sorted by times listened (from most to least):")
+
+            for result in results:
+                print(f"\n- {result[0]}")
+                print(f"    Times listened: {result[1]}")
+                print(f"    Your rating: {result[2]}")
+        else:
+            print("You have no listening history.")
+
+        conn.close()
+        input("\nPress Enter to return to the main menu...")
+        main()
+
+class Recommendations:
+    def view_recommendations():
+        clear()
+        print("***YOUR RECOMMENDATIONS***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT PreferredCategory, LengthPreference FROM listeners WHERE ListenerID = ?",
+            (username,)
+        )
+
+        result = cursor.fetchone()
+
+        if result:
+            preferred_category, length_preference = result
+            cursor.execute(
+                "SELECT Title FROM podcasts WHERE Category = ? AND Length = ?",
+                (preferred_category, length_preference)
+            )
+
+            recommendations = cursor.fetchall()
+
+            if recommendations:
+                print(f"Based on your survey responses, we recommend the following programmes in the '{preferred_category}' category with '{length_preference}' length:")
+                for recommendation in recommendations:
+                    print(f"- {recommendation[0]}")
+            else:
+                print("No recommendations available based on your survey responses.")
+        else:
+            print("No survey responses found for your account.")
+
+        conn.close()
+        input("\nPress Enter to return to the main menu...")
+        main()
+
 class Rating:
     def view_ratings():
         clear()
@@ -495,7 +568,6 @@ class Rating:
 
         print("\nYour rating has been removed.")
         time.sleep(1)
-
 
 class Survey:
     def survey():
