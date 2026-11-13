@@ -64,7 +64,6 @@ def view_ratings():
         else:
             print("You have no rated podcasts.")
 
-
 def add_rating(podcast_id, check_for_update):
     clear()
     if check_for_update == True:
@@ -109,7 +108,6 @@ def add_rating(podcast_id, check_for_update):
 
     print("\nThank you for your rating!")
     time.sleep(1)
-
 
 def remove_rating(podcast_id):
     conn = sqlite3.connect("database.db")

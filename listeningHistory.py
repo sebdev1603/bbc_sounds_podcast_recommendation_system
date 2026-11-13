@@ -59,7 +59,6 @@ def view_listening_history():
 
     conn.close()
 
-
 def remove_from_listening_history(podcast_title):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -83,7 +82,6 @@ def remove_from_listening_history(podcast_title):
         print("\nPodcast not found.")
 
     conn.close()
-
 
 def delete_listening_history():
     conn = sqlite3.connect("database.db")

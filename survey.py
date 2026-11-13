@@ -96,34 +96,34 @@ def survey(username):
     print("\nThank you for completing the survey!")
     main()
 
-    def delete_survey(username):
-        conn = sqlite3.connect("database.db")
-        cursor = conn.cursor()
+def delete_survey(username):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
 
-        cursor.execute(
-            "UPDATE listeners SET CompleteSurvey = 0, FavoriteGenres = ?, LengthPreference = ? WHERE ListenerID = ?",
-            ("", None, username)
-        )
+    cursor.execute(
+        "UPDATE listeners SET CompleteSurvey = 0, FavoriteGenres = ?, LengthPreference = ? WHERE ListenerID = ?",
+        ("", None, username)
+    )
 
-        conn.commit()
-        conn.close()
+    conn.commit()
+    conn.close()
 
-        clear()
-        print("\nYour survey responses have been deleted.")
-        time.sleep(1)
-        main()
+    clear()
+    print("\nYour survey responses have been deleted.")
+    time.sleep(1)
+    main()
 
-    def is_survey_complete(username):
-        conn = sqlite3.connect("database.db")
-        cursor = conn.cursor()
+def is_survey_complete(username):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
-            (username,)
-        )
+    cursor.execute(
+        "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
+        (username,)
+    )
 
-        result = cursor.fetchone()
+    result = cursor.fetchone()
 
-        conn.close()
+    conn.close()
 
-        return result is not None
+    return result is not None
