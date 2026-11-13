@@ -1,7 +1,17 @@
 import sqlite3
 
 
-def generate_report(username, clear, main):
+def clear():
+    import main as app
+    app.clear()
+
+
+def main():
+    import main as app
+    app.main()
+
+
+def generate_report(username):
     clear()
     print("***LISTENING REPORT***\n")
     conn = sqlite3.connect("database.db")
