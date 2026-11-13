@@ -609,7 +609,7 @@ class Survey:
                 continue
             favorite_genres.append(question1)
 
-        question1 = ", ".join(favorite_genres)
+        question1 = ",".join(favorite_genres)
 
         question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
         while any(character.isdigit() for character in question2):
