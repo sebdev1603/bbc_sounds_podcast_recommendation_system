@@ -40,43 +40,77 @@ def clear():
 def main():
     clear()
     print("***BBC SOUNDS***\n")
-    print('''
-    1. Search for podcasts
-    2. View your favourite podcasts
-    3. View your favourite genres and matching podcasts
-    4. View your listening history
-    5. Generate a listening report
-    6. View your recommendations
-    7. View your ratings
-    8. Reset survey
-    9. Exit
-    ''')
-
-    choice = input("Enter your choice: ")
-    if choice == "1":
-        Search.search_programmes(clear, main, view_podcast_details)
-    elif choice == "2":
-        Favourites.view_favourite_programmes(
-            username, clear, main, view_podcast_details
-        )
-    elif choice == "3":
-        Favourites.view_favourite_genres(username, clear, main)
-    elif choice == "4":
-        ListeningHistory.view_listening_history(
-            username, clear, main, view_podcast_details
-        )
-    elif choice == "5":
-        GenerateListeningReport.generate_report(username, clear, main)
-    elif choice == "6":
-        Recommendations.view_recommendations(username, clear, main)
-    elif choice == "7":
-        Rating.view_ratings(username, clear, main)
-    elif choice == "8":
-        Survey.delete_survey(username, clear, main)
-    elif choice == "9":
-        exit()
+    if Survey.is_survey_complete(username):    
+        print('''
+        1. Search for podcasts
+        2. View your favourite podcasts
+        3. View your favourite genres and matching podcasts
+        4. View your listening history
+        5. Generate a listening report
+        6. View your recommendations
+        7. View your ratings
+        8. Reset survey
+        9. Exit
+        ''')
+        choice = input("Enter your choice: ")
+        if choice == "1":
+            Search.search_programmes(view_podcast_details)
+        elif choice == "2":
+            Favourites.view_favourite_programmes(username, view_podcast_details)
+        elif choice == "3":
+            Favourites.view_favourite_genres(username)
+        elif choice == "4":
+            ListeningHistory.view_listening_history(username, view_podcast_details)
+        elif choice == "5":
+            GenerateListeningReport.generate_report(username)
+        elif choice == "6":
+            Recommendations.view_recommendations(username, view_podcast_details)
+        elif choice == "7":
+            Rating.view_ratings(username)
+        elif choice == "8":
+            Survey.delete_survey(username)
+        elif choice == "9":
+            exit()
+        else:
+            print("Invalid choice. Please try again.")
+            time.sleep(1)
+            main()
     else:
-        print("Invalid choice. Please try again.")
+        print('''
+        1. Search for podcasts
+        2. View your favourite podcasts
+        3. View your favourite genres and matching podcasts
+        4. View your listening history
+        5. Generate a listening report
+        6. View your recommendations
+        7. View your ratings
+        8. Complete survey
+        9. Exit
+        ''')
+
+        choice = input("Enter your choice: ")
+        if choice == "1":
+            Search.search_programmes(view_podcast_details)
+        elif choice == "2":
+            Favourites.view_favourite_programmes(username, view_podcast_details)
+        elif choice == "3":
+            Favourites.view_favourite_genres(username)
+        elif choice == "4":
+            ListeningHistory.view_listening_history(username, view_podcast_details)
+        elif choice == "5":
+            GenerateListeningReport.generate_report(username)
+        elif choice == "6":
+            Recommendations.view_recommendations(username, view_podcast_details)
+        elif choice == "7":
+            Rating.view_ratings(username)
+        elif choice == "8":
+            Survey.survey(username)
+        elif choice == "9":
+            exit()
+        else:
+            print("Invalid choice. Please try again.")
+            time.sleep(1)
+            main()
 
 def view_podcast_details(podcast_title):
     conn = sqlite3.connect("database.db")
@@ -106,7 +140,7 @@ def view_podcast_details(podcast_title):
                 Favourites.add_to_favourites(podcast[0], username)
                 view_podcast_details(podcast_title)
             elif choice == "2":
-                Rating.add_rating(podcast[0], False, username, clear)
+                Rating.add_rating(podcast[0], False, username)
                 view_podcast_details(podcast_title)
             elif choice == "3":
                 print("Listening to the podcast...")
@@ -129,7 +163,7 @@ def view_podcast_details(podcast_title):
         else:
             print("\nPodcast not found.")
             time.sleep(1)
-            Search.search_programmes(clear, main, view_podcast_details)
+            Search.search_programmes(view_podcast_details)
 
 if Survey.is_survey_complete(username):
     main()
@@ -139,7 +173,7 @@ else:
         "You have not completed the survey. Would you like to complete it now? (yes/no): "
     ).strip()
     if choice.lower() == "yes":
-        Survey.survey(username, clear, main)
+        Survey.survey(username)
     else:
         clear()
         print("Continuing without completing the survey. You may not receive personalized recommendations.")
