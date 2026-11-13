@@ -2,7 +2,17 @@ import sqlite3
 import time
 
 
-def view_listening_history(username, clear, main, view_podcast_details):
+def clear():
+    import main as app
+    app.clear()
+
+
+def main():
+    import main as app
+    app.main()
+
+
+def view_listening_history(username, view_podcast_details):
     clear()
     print("***LISTENING HISTORY***\n")
     conn = sqlite3.connect("database.db")
