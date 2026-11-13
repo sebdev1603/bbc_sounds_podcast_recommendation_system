@@ -10,7 +10,6 @@ import recommendations as Recommendations
 import search as Search
 import survey as Survey
 
-
 def username_exists(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -24,7 +23,6 @@ def username_exists(username):
     conn.close()
     return result is not None
 
-
 username = input("Enter your username: ").strip()
 username_valid = False
 
@@ -36,10 +34,8 @@ while username_valid == False:
         print("\nIncorrect username")
         username = input("\nEnter your username: ").strip()
 
-
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
-
 
 def main():
     clear()
@@ -81,7 +77,6 @@ def main():
         exit()
     else:
         print("Invalid choice. Please try again.")
-
 
 def view_podcast_details(podcast_title):
     conn = sqlite3.connect("database.db")
