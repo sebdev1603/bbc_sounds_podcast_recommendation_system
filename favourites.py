@@ -2,7 +2,17 @@ import sqlite3
 import time
 
 
-def view_favourite_genres(username, clear, main):
+def clear():
+    import main as app
+    app.clear()
+
+
+def main():
+    import main as app
+    app.main()
+
+
+def view_favourite_genres(username):
     clear()
     print("***FAVOURITE GENRES & MATCHING PODCASTS***\n")
     conn = sqlite3.connect("database.db")
@@ -44,7 +54,7 @@ def view_favourite_genres(username, clear, main):
     input("\nPress Enter to return to the main menu...")
     main()
 
-def view_favourite_programmes(username, clear, main, view_podcast_details):
+def view_favourite_programmes(username, view_podcast_details):
     clear()
     print("***FAVOURITE PODCASTS***\n")
     conn = sqlite3.connect("database.db")
@@ -90,7 +100,7 @@ def view_favourite_programmes(username, clear, main, view_podcast_details):
                 clear()
                 print("\nReturning to favourites menu...")
                 time.sleep(1)
-                view_favourite_programmes(username, clear, main, view_podcast_details)
+                view_favourite_programmes(username, view_podcast_details)
             elif podcast_title not in [result[0] for result in results]:
                 print("\nThe podcast is not in your favourites.")
                 time.sleep(1)
