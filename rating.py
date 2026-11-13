@@ -2,7 +2,17 @@ import sqlite3
 import time
 
 
-def view_ratings(username, clear, main):
+def clear():
+    import main as app
+    app.clear()
+
+
+def main():
+    import main as app
+    app.main()
+
+
+def view_ratings(username):
     clear()
     print("***YOUR RATINGS***\n")
     conn = sqlite3.connect("database.db")
@@ -46,7 +56,7 @@ def view_ratings(username, clear, main):
                     )
                     podcast_id = cursor.fetchone()[0]
                     conn.close()
-                    add_rating(podcast_id, True, username, clear)
+                    add_rating(podcast_id, True, username)
             elif choice == "2":
                 podcast_title = input("Enter the title of the podcast you want to remove the rating for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
@@ -68,7 +78,8 @@ def view_ratings(username, clear, main):
         else:
             print("You have no rated podcasts.")
 
-def add_rating(podcast_id, check_for_update, username, clear):
+
+def add_rating(podcast_id, check_for_update, username):
     clear()
     if check_for_update == True:
         print("***UPDATE RATING***\n")
@@ -112,6 +123,7 @@ def add_rating(podcast_id, check_for_update, username, clear):
 
     print("\nThank you for your rating!")
     time.sleep(1)
+
 
 def remove_rating(podcast_id, username):
     conn = sqlite3.connect("database.db")
