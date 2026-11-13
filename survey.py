@@ -2,7 +2,17 @@ import sqlite3
 import time
 
 
-def survey(username, clear, main):
+def clear():
+    import main as app
+    app.clear()
+
+
+def main():
+    import main as app
+    app.main()
+
+
+def survey(username):
     clear()
     print("***BBC SOUNDS SURVEY***\n")
     print("Please answer the following questions:\n")
@@ -17,6 +27,11 @@ def survey(username, clear, main):
     i = 0
 
     while True:
+            clear()
+            try:
+                i > 0
+            except ValueError:
+                print(f"\nSelected genres: {', '.join(favorite_genres)}\n")
             print('''These are the available genres of podcasts:
         
             News
@@ -62,10 +77,9 @@ def survey(username, clear, main):
 
             favorite_genres.append(matched_genre)
             
-            print(f"\nSelected genres: {', '.join(favorite_genres)}\n")
             i = i + 1
             if i == 5:
-                print("You have entered the maximum amount of favourite genres (5).")
+                print("\nYou have entered the maximum amount of favourite genres (5).")
                 break
         
     question1 = ",".join(favorite_genres)
@@ -100,7 +114,7 @@ def survey(username, clear, main):
     print("\nThank you for completing the survey!")
     main()
 
-def delete_survey(username, clear, main):
+def delete_survey(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
