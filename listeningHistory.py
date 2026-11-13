@@ -1,4 +1,8 @@
-def view_listening_history():
+import sqlite3
+import time
+
+
+def view_listening_history(username, clear, main, view_podcast_details):
     clear()
     print("***LISTENING HISTORY***\n")
     conn = sqlite3.connect("database.db")
@@ -45,9 +49,9 @@ def view_listening_history():
                 time.sleep(1)
                 clear()
             else:
-                ListeningHistory.remove_from_listening_history(podcast_title)
+                remove_from_listening_history(podcast_title, username)
         elif choice == "3":
-            ListeningHistory.delete_listening_history()
+            delete_listening_history(username)
         elif choice == "4":
             main()
     else:
@@ -59,7 +63,7 @@ def view_listening_history():
 
     conn.close()
 
-def remove_from_listening_history(podcast_title):
+def remove_from_listening_history(podcast_title, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -83,7 +87,7 @@ def remove_from_listening_history(podcast_title):
 
     conn.close()
 
-def delete_listening_history():
+def delete_listening_history(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 

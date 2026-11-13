@@ -1,4 +1,7 @@
-def generate_report():
+import sqlite3
+
+
+def generate_report(username, clear, main):
     clear()
     print("***LISTENING REPORT***\n")
     conn = sqlite3.connect("database.db")

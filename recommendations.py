@@ -1,4 +1,7 @@
-def view_recommendations():
+import sqlite3
+
+
+def view_recommendations(username, clear, main):
     clear()
     print("***YOUR RECOMMENDATIONS***\n")
     conn = sqlite3.connect("database.db")

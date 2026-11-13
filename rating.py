@@ -1,4 +1,8 @@
-def view_ratings():
+import sqlite3
+import time
+
+
+def view_ratings(username, clear, main):
     clear()
     print("***YOUR RATINGS***\n")
     conn = sqlite3.connect("database.db")
@@ -42,7 +46,7 @@ def view_ratings():
                     )
                     podcast_id = cursor.fetchone()[0]
                     conn.close()
-                    Rating.add_rating(podcast_id, True)
+                    add_rating(podcast_id, True, username, clear)
             elif choice == "2":
                 podcast_title = input("Enter the title of the podcast you want to remove the rating for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
@@ -58,13 +62,13 @@ def view_ratings():
                     )
                     podcast_id = cursor.fetchone()[0]
                     conn.close()
-                    Rating.remove_rating(podcast_id)
+                    remove_rating(podcast_id, username)
             elif choice == "3":
                 main()
         else:
             print("You have no rated podcasts.")
 
-def add_rating(podcast_id, check_for_update):
+def add_rating(podcast_id, check_for_update, username, clear):
     clear()
     if check_for_update == True:
         print("***UPDATE RATING***\n")
@@ -109,7 +113,7 @@ def add_rating(podcast_id, check_for_update):
     print("\nThank you for your rating!")
     time.sleep(1)
 
-def remove_rating(podcast_id):
+def remove_rating(podcast_id, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 

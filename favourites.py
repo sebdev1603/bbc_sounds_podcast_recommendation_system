@@ -1,4 +1,8 @@
-def view_favourite_genres():
+import sqlite3
+import time
+
+
+def view_favourite_genres(username, clear, main):
     clear()
     print("***FAVOURITE GENRES & MATCHING PODCASTS***\n")
     conn = sqlite3.connect("database.db")
@@ -40,7 +44,7 @@ def view_favourite_genres():
     input("\nPress Enter to return to the main menu...")
     main()
 
-def view_favourite_programmes():
+def view_favourite_programmes(username, clear, main, view_podcast_details):
     clear()
     print("***FAVOURITE PODCASTS***\n")
     conn = sqlite3.connect("database.db")
@@ -86,13 +90,13 @@ def view_favourite_programmes():
                 clear()
                 print("\nReturning to favourites menu...")
                 time.sleep(1)
-                Favourites.view_favourite_programmes()
+                view_favourite_programmes(username, clear, main, view_podcast_details)
             elif podcast_title not in [result[0] for result in results]:
                 print("\nThe podcast is not in your favourites.")
                 time.sleep(1)
                 clear()
             else:
-                Favourites.delete_favourite_programme(podcast_title)
+                delete_favourite_programme(podcast_title, username)
         elif choice == "3":
             main()
         else:
@@ -102,7 +106,7 @@ def view_favourite_programmes():
 
     conn.close()
 
-def delete_favourite_programme(podcast_title):
+def delete_favourite_programme(podcast_title, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -138,7 +142,7 @@ def delete_favourite_programme(podcast_title):
 
     conn.close()
 
-def add_to_favourites(podcast_id):
+def add_to_favourites(podcast_id, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 

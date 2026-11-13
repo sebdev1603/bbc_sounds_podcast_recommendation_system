@@ -1,4 +1,8 @@
-def survey(username):
+import sqlite3
+import time
+
+
+def survey(username, clear, main):
     clear()
     print("***BBC SOUNDS SURVEY***\n")
     print("Please answer the following questions:\n")
@@ -96,7 +100,7 @@ def survey(username):
     print("\nThank you for completing the survey!")
     main()
 
-def delete_survey(username):
+def delete_survey(username, clear, main):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 

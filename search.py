@@ -1,4 +1,7 @@
-def search_programmes():
+import sqlite3
+
+
+def search_programmes(clear, main, view_podcast_details):
     clear()
     print("***SEARCH FOR PODCASTS***\n")
     print("Enter nothing to return to the main menu.")
