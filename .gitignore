@@ -1,3 +1,11 @@
 database.db-shm
 database.db-wal
 __pycache__/main.cpython-315.pyc
+__pycache__/favourites.cpython-313.pyc
+__pycache__/generateListeningReport.cpython-313.pyc
+__pycache__/listeningHistory.cpython-313.pyc
+__pycache__/rating.cpython-313.pyc
+__pycache__/recommendations.cpython-313.pyc
+__pycache__/search.cpython-313.pyc
+__pycache__/survey.cpython-313.pyc
+__pycache__/main.cpython-313.pyc
