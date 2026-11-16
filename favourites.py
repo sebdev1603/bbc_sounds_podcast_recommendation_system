@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_favourite_genres(username):
@@ -52,7 +52,7 @@ def view_favourite_genres(username):
 
     conn.close()
     input("\nPress Enter to return to the main menu...")
-    main()
+    main(username)
 
 def view_favourite_programmes(username, view_podcast_details):
     clear()
@@ -108,7 +108,7 @@ def view_favourite_programmes(username, view_podcast_details):
             else:
                 delete_favourite_programme(podcast_title, username)
         elif choice == "3":
-            main()
+            main(username)
         else:
             print("Invalid choice")
             time.sleep(1)

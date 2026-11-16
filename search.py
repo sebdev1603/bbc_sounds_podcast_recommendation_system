@@ -5,18 +5,18 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
-def search_programmes(view_podcast_details):
+def search_programmes(username, view_podcast_details):
     clear()
     print("***SEARCH FOR PODCASTS***\n")
     print("Enter nothing to return to the main menu.")
     search_query = input("Enter a keyword to search for podcasts: \n").strip()
 
     if search_query == "":
-        main()
+        main(username)
         return
     
     conn = sqlite3.connect("database.db")
@@ -52,7 +52,7 @@ def search_programmes(view_podcast_details):
     print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
     choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ").strip()
     if choice == "":
-        main()
+        main(username)
         return
     else:
         view_podcast_details(choice)

@@ -6,9 +6,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def generate_report(username):
@@ -41,4 +41,4 @@ def generate_report(username):
 
     conn.close()
     input("\nPress Enter to return to the main menu...")
-    main()
+    main(username)

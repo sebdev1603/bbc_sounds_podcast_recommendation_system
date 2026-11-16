@@ -10,8 +10,6 @@ import recommendations as Recommendations
 import search as Search
 import survey as Survey
 
-username = None
-
 def username_exists(username):
     user_id = int(username) if str(username).isdigit() else username
     
@@ -30,7 +28,7 @@ def username_exists(username):
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def main():
+def main(username):
     while True:
         clear()
         
@@ -61,24 +59,24 @@ def main():
         9. Exit
         ''')
 
-        choice = input("Enter your choice: ")
+        choice = input("Enter your choice: ").strip()
         if choice == "1":
-            Search.search_programmes(view_podcast_details)
+            Search.search_programmes(username, lambda title: view_podcast_details(title, username))
         elif choice == "2":
-            Favourites.view_favourite_programmes(username, view_podcast_details)
+            Favourites.view_favourite_programmes(username, lambda title: view_podcast_details(title, username))
         elif choice == "3":
             Favourites.view_favourite_genres(username)
         elif choice == "4":
-            ListeningHistory.view_listening_history(username, view_podcast_details)
+            ListeningHistory.view_listening_history(username, lambda title: view_podcast_details(title, username))
         elif choice == "5":
             GenerateListeningReport.generate_report(username)
         elif choice == "6":
-            Recommendations.view_recommendations(username, view_podcast_details)
+            Recommendations.view_recommendations(username, lambda title: view_podcast_details(title, username))
         elif choice == "7":
             Rating.view_ratings(username)
         elif choice == "8":
             if Survey.is_survey_complete(username):
-               Survey.delete_survey(username)
+                Survey.delete_survey(username)
             else:
                 Survey.survey(username)
         elif choice == "9":
@@ -87,7 +85,7 @@ def main():
             print("Invalid choice. Please try again.")
             time.sleep(1)
 
-def view_podcast_details(podcast_title):
+def view_podcast_details(podcast_title, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     cursor.execute(
@@ -113,10 +111,10 @@ def view_podcast_details(podcast_title):
 
             if choice == "1":
                 Favourites.add_to_favourites(podcast[0], username)
-                view_podcast_details(podcast_title)
+                view_podcast_details(podcast_title, username)
             elif choice == "2":
                 Rating.add_rating(podcast[0], False, username)
-                view_podcast_details(podcast_title)
+                view_podcast_details(podcast_title, username)
             elif choice == "3":
                 print("Listening to the podcast...")
                 print("... (simulated) ...")
@@ -132,13 +130,14 @@ def view_podcast_details(podcast_title):
                 else:
                     print("You have not listened to this podcast yet.")
                 conn.close()
-                view_podcast_details(podcast_title)
+                view_podcast_details(podcast_title, username)
             elif choice == "4":
-                main()
+                return  # Cleanly drops back to the main menu loop!
         else:
             print("\nPodcast not found.")
             time.sleep(1)
-            Search.search_programmes(view_podcast_details)
+            Search.search_programmes(username, lambda title: view_podcast_details(title, username))
+            return
 
 if __name__ == "__main__":
     username = input("Enter your username: ").strip()
@@ -162,4 +161,4 @@ if __name__ == "__main__":
             print("Continuing without completing the survey. You may not receive personalized recommendations.")
             time.sleep(1)
     
-    main()
+    main(username)

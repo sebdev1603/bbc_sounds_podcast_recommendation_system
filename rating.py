@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_ratings(username):
@@ -74,7 +74,7 @@ def view_ratings(username):
                     conn.close()
                     remove_rating(podcast_id, username)
             elif choice == "3":
-                main()
+                main(username)
         else:
             print("You have no rated podcasts.")
 

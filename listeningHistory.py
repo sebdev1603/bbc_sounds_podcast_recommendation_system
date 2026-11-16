@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_listening_history(username, view_podcast_details):
@@ -63,13 +63,13 @@ def view_listening_history(username, view_podcast_details):
         elif choice == "3":
             delete_listening_history(username)
         elif choice == "4":
-            main()
+            main(username)
     else:
         print("You have no listening history.")
         time.sleep(1)
         print("\nReturning to main menu...")
         time.sleep(1)
-        main()
+        main(username)
 
     conn.close()
 

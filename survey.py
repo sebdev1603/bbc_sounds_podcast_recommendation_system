@@ -6,10 +6,6 @@ def clear():
     app.clear()
 
 def survey(username):
-    import main as app
-    if username is None:
-        username = app.username
-
     # Ensure user_id is an integer to match database ListenerID type
     user_id = int(username) if str(username).isdigit() else username
 
@@ -114,10 +110,6 @@ def survey(username):
     time.sleep(1)
 
 def delete_survey(username):
-    import main as app
-    if username is None:
-        username = app.username
-
     user_id = int(username) if str(username).isdigit() else username
 
     conn = sqlite3.connect("database.db")
@@ -136,10 +128,6 @@ def delete_survey(username):
     time.sleep(1)
 
 def is_survey_complete(username):
-    import main as app
-    if username is None:
-        username = app.username
-
     user_id = int(username) if str(username).isdigit() else username
 
     conn = sqlite3.connect("database.db")
