@@ -10,29 +10,30 @@ def main(username):
     app.main(username)
 
 def view_ratings(username):
-    clear()
-    print("***YOUR RATINGS***\n")
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT podcasts.Title, listening_history.RatingGiven
-        FROM podcasts
-        JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID
-        WHERE listening_history.ListenerID = ?
-        AND listening_history.RatingGiven IS NOT NULL
-        """,
-        (username,)
-    )
-
-    results = cursor.fetchall()
-
     while True:
+        clear()
+        print("***YOUR RATINGS***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT podcasts.Title, listening_history.RatingGiven
+            FROM podcasts
+            JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID
+            WHERE listening_history.ListenerID = ?
+            AND listening_history.RatingGiven IS NOT NULL
+            """,
+            (username,)
+        )
+
+        results = cursor.fetchall()
+        conn.close()
+
         if results:
             print("You have rated these podcasts :")
             for result in results:
-                print(f"- {result[0]}")
+                print(f"\n- {result[0]}")
                 print(f"  Rating: {result[1]}")
             print('''\nWhat action would you like to take?
     1. Update a rating
@@ -73,8 +74,14 @@ def view_ratings(username):
                     remove_rating(podcast_id, username)
             elif choice == "3":
                 main(username)
+                return
+            else:
+                print("Invalid choice. Please try again.")
+                time.sleep(1)
         else:
             print("You have no rated podcasts.")
+            time.sleep(1)
+            return
 
 def add_rating(podcast_id, check_for_update, username):
     clear()
