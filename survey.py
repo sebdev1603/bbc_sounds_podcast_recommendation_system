@@ -6,7 +6,6 @@ def clear():
     app.clear()
 
 def survey(username):
-    # Ensure user_id is an integer to match database ListenerID type
     user_id = int(username) if str(username).isdigit() else username
 
     clear()
