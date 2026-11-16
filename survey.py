@@ -1,7 +1,6 @@
 import sqlite3
 import time
 
-
 def clear():
     import main as app
     app.clear()
@@ -11,11 +10,8 @@ def main():
     import main as app
     app.main()
 
-
 def survey(username):
     clear()
-    print("***BBC SOUNDS SURVEY***\n")
-    print("Please answer the following questions:\n")
 
     valid_genres = [
         "News", "Travel", "History", "Comedy", "True Crime",
@@ -27,12 +23,15 @@ def survey(username):
     i = 0
 
     while True:
-            clear()
-            try:
-                i > 0
-            except ValueError:
-                print(f"\nSelected genres: {', '.join(favorite_genres)}\n")
-            print('''These are the available genres of podcasts:
+        clear()
+        print("***BBC SOUNDS SURVEY***")
+
+        if i > 0:
+            print(f"\nSelected genres: {', '.join(favorite_genres)}\n")
+        else:
+            i = 0
+
+        print('''These are the available genres of podcasts:
         
             News
             Travel
@@ -48,39 +47,40 @@ def survey(username):
             Health
             ''')
 
-            print("\nEnter as many genres as you like (up to 5), enter nothing when you are finished")
-            question1 = input("\nWhat are your favorite genre of podcasts? (or press Enter when finished): ").strip()
-            if question1 == "":
-                if favorite_genres:
-                    break
-                print("You must enter at least one genre.")
-                continue
-
-            if any(character.isdigit() for character in question1):
-                print("Please do not include numbers.")
-                continue
-
-            matched_genre = next((g for g in valid_genres if g.lower() == question1.lower()), None)
-            if not matched_genre:
-                clear()
-                print("Invalid genre. Please choose from the list provided.")
-                time.sleep(1)
-                clear()
-                continue
-
-            if matched_genre in favorite_genres:
-                clear()
-                print(f"You have already added '{matched_genre}'. Choose a different genre or press Enter to finish.")
-                time.sleep(1)
-                clear()
-                continue
-
-            favorite_genres.append(matched_genre)
-            
-            i = i + 1
-            if i == 5:
-                print("\nYou have entered the maximum amount of favourite genres (5).")
+        print("\nEnter as many genres as you like (up to 5), enter nothing when you are finished")
+        question1 = input("\nWhat are your favorite genre of podcasts? (or press Enter when finished): ").strip()
+        if question1 == "":
+            if favorite_genres:
                 break
+            print("You must enter at least one genre.")
+            continue
+
+        if any(character.isdigit() for character in question1):
+            print("Please do not include numbers.")
+            continue
+
+        matched_genre = next((g for g in valid_genres if g.lower() == question1.lower()), None)
+        if not matched_genre:
+            clear()
+            print("Invalid genre. Please choose from the list provided.")
+            time.sleep(1)
+            clear()
+            continue
+
+        if matched_genre in favorite_genres:
+            clear()
+            print("Remove", matched_genre, "from your list of favorite genres.")
+            favorite_genres.remove(matched_genre)
+            time.sleep(1)
+            clear()
+            continue
+
+        favorite_genres.append(matched_genre)
+
+        i = i + 1
+        if i == 5:
+            print("\nYou have entered the maximum amount of favourite genres (5).")
+            break
         
     question1 = ",".join(favorite_genres)
 
