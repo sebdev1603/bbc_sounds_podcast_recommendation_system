@@ -13,12 +13,14 @@ import survey as Survey
 username = None
 
 def username_exists(username):
+    user_id = int(username) if str(username).isdigit() else username
+    
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
     cursor.execute(
         "SELECT 1 FROM listeners WHERE ListenerID = ?",
-        (username,)
+        (user_id,)
     )
 
     result = cursor.fetchone()
@@ -31,8 +33,9 @@ def clear():
 def main():
     while True:
         clear()
-        print(Survey.is_survey_complete(username))
+        
         print("***BBC SOUNDS***")
+
         if Survey.is_survey_complete(username):
             print('''
         1. Search for podcasts
@@ -75,7 +78,7 @@ def main():
             Rating.view_ratings(username)
         elif choice == "8":
             if Survey.is_survey_complete(username):
-                Survey.delete_survey(username)
+               Survey.delete_survey(username)
             else:
                 Survey.survey(username)
         elif choice == "9":
@@ -158,5 +161,5 @@ if __name__ == "__main__":
             clear()
             print("Continuing without completing the survey. You may not receive personalized recommendations.")
             time.sleep(1)
-
+    
     main()

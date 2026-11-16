@@ -5,12 +5,14 @@ def clear():
     import main as app
     app.clear()
 
-
-def main():
-    import main as app
-    app.main()
-
 def survey(username):
+    import main as app
+    if username is None:
+        username = app.username
+
+    # Ensure user_id is an integer to match database ListenerID type
+    user_id = int(username) if str(username).isdigit() else username
+
     clear()
 
     valid_genres = [
@@ -96,31 +98,34 @@ def survey(username):
             print("Please do not include numbers.")
             question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
 
-    while question2 != "Long" and question2 != "Medium" and question2 != "Short":
-        print("Please enter a valid option: Short, Medium, or Long.")
-        question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").capitalize()
-
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
     cursor.execute(
         "UPDATE listeners SET CompleteSurvey = 1, FavoriteGenres = ?, LengthPreference = ? WHERE ListenerID = ?",
-        (question1, question2, username)
+        (question1, question2, user_id)
     )
 
     conn.commit()
     conn.close()
 
+    clear()
     print("\nThank you for completing the survey!")
-    main()
+    time.sleep(1)
 
 def delete_survey(username):
+    import main as app
+    if username is None:
+        username = app.username
+
+    user_id = int(username) if str(username).isdigit() else username
+
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
     cursor.execute(
         "UPDATE listeners SET CompleteSurvey = 0, FavoriteGenres = ?, LengthPreference = ? WHERE ListenerID = ?",
-        ("", None, username)
+        ("", None, user_id)
     )
 
     conn.commit()
@@ -129,19 +134,23 @@ def delete_survey(username):
     clear()
     print("\nYour survey responses have been deleted.")
     time.sleep(1)
-    main()
 
 def is_survey_complete(username):
+    import main as app
+    if username is None:
+        username = app.username
+
+    user_id = int(username) if str(username).isdigit() else username
+
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
     cursor.execute(
         "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
-        (username,)
+        (user_id,)
     )
 
     result = cursor.fetchone()
-
     conn.close()
 
     return result is not None
