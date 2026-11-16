@@ -93,20 +93,34 @@ def view_podcast_details(podcast_title, username):
         (podcast_title,)
     )
     podcast = cursor.fetchone()
-    conn.close()
 
     while True:
         if podcast:
+            clear()
             print(f"\nTitle: {podcast[1]}")
             print(f"Category: {podcast[2]}")
             print(f"Length: {podcast[3]} minutes")
             print(f"Ratings: {podcast[5]}")
+
+            cursor.execute(
+                '''SELECT TimesListened FROM listening_history WHERE PodcastID = ? AND ListenerID = ?''',
+
+            (podcast[0], username)
+            )
+
+            times_listened = cursor.fetchone()
+
+            conn.close()
+            if times_listened == None:
+                print("You have not listened to this podcast yet.")
+            else:
+                print(f"Listened times: {times_listened[0]}")
             print('''\nWhat action would you like to take?
 
             1. Add to favourites
             2. Add a rating
             3. Listen to the podcast
-            4. Return to main menu''')
+            4. Go back''')
             choice = input("\nEnter your choice: ").strip()
 
             if choice == "1":
@@ -116,28 +130,23 @@ def view_podcast_details(podcast_title, username):
                 Rating.add_rating(podcast[0], False, username)
                 view_podcast_details(podcast_title, username)
             elif choice == "3":
+                clear()
                 print("Listening to the podcast...")
                 print("... (simulated) ...")
                 conn = sqlite3.connect("database.db")
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
-                    (username, podcast[0])
-                )
-                times_listened = cursor.fetchone()
-                if times_listened:
-                    print(f"You have listened to this podcast {times_listened[0]} times.")
-                else:
-                    print("You have not listened to this podcast yet.")
+                    "UPDATE listening_history SET TimesListened = TimesListened + 1 WHERE PodcastID = ? AND ListenerID = ?",
+                    (podcast_title, username))
+
+                conn.commit()
                 conn.close()
-                view_podcast_details(podcast_title, username)
+                time.sleep(2)
             elif choice == "4":
-                return  # Cleanly drops back to the main menu loop!
+                return
         else:
             print("\nPodcast not found.")
             time.sleep(1)
-            Search.search_programmes(username, lambda title: view_podcast_details(title, username))
-            return
 
 if __name__ == "__main__":
     username = input("Enter your username: ").strip()
