@@ -255,22 +255,22 @@ def add_favourite_genre(genre_name, username):
     
     conn.close()
     
-def view_favourite_programmes(username, view_podcast_details):
-    clear()
-    print("***FAVOURITE PODCASTS***\n")
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
-            ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
-            ) WHERE listeners.ListenerID = ?""",
-        (username,)
-    )
-
-    results = cursor.fetchall()
-
+def view_favourite_programmes(username):
     while True:
+        clear()
+        print("***FAVOURITE PODCASTS***\n")
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
+                ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
+                ) WHERE listeners.ListenerID = ?""",
+            (username,)
+        )
+
+        results = cursor.fetchall()
+
         if results:
             print("Your favourite podcasts:")
             for result in results:
@@ -285,6 +285,8 @@ def view_favourite_programmes(username, view_podcast_details):
             3. Return to main menu''')
 
         choice = input("\nEnter your choice: ").strip()
+        conn.close()
+
         if choice == "1":
             podcast_title = input("Enter the title of the podcast you want to view details for (The name must match exactly): ").strip()
             if podcast_title not in [result[0] for result in results]:
@@ -292,7 +294,7 @@ def view_favourite_programmes(username, view_podcast_details):
                 time.sleep(1)
                 clear()
             else:
-                view_podcast_details(podcast_title)
+                view_podcast_details(podcast_title, username)
         elif choice == "2":
             print("\nTo go back, press Enter without typing anything.")
             print("\nWARNING: Deleting a favourite podcast is permanent and cannot be undone.")
@@ -301,21 +303,18 @@ def view_favourite_programmes(username, view_podcast_details):
                 clear()
                 print("\nReturning to favourites menu...")
                 time.sleep(1)
-                view_favourite_programmes(username, view_podcast_details)
+                continue
             elif podcast_title not in [result[0] for result in results]:
                 print("\nThe podcast is not in your favourites.")
                 time.sleep(1)
-                clear()
             else:
                 delete_favourite_programme(podcast_title, username)
         elif choice == "3":
             main(username)
+            return
         else:
             print("Invalid choice")
             time.sleep(1)
-            clear()
-
-    conn.close()
 
 def delete_favourite_programme(podcast_title, username):
     conn = sqlite3.connect("database.db")
@@ -350,6 +349,8 @@ def delete_favourite_programme(podcast_title, username):
         print("\nPodcast removed from favourites.")
     else:
         print("\nPodcast not found.")
+
+    time.sleep(1)
 
     conn.close()
 
