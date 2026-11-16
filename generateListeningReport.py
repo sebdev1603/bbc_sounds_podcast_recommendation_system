@@ -1,16 +1,13 @@
 import sqlite3
 import pandas as pd
 
-
 def clear():
     import main as app
     app.clear()
 
-
 def main(username):
     import main as app
     app.main(username)
-
 
 def generate_report(username):
     user_id = int(username) if str(username).isdigit() else username
@@ -32,7 +29,7 @@ def generate_report(username):
     conn.close()
 
     if not df.empty:
-        print(f"\nYou listened to {len(df)} different podcasts.")
+        print(f"You listened to {len(df)} different podcasts.")
         print(f"\nThe most listened podcast is '{df.iloc[0]['Title']}' with {df.iloc[0]['TimesListened']} listens.")
         print(f"\nThe least listened podcast is '{df.iloc[-1]['Title']}' with {df.iloc[-1]['TimesListened']} listens.")
 
