@@ -51,9 +51,8 @@ def view_listening_history(username, view_podcast_details):
             else:
                 view_podcast_details(podcast_title)
         elif choice == "2":
-            podcast_title = input(
-                "Enter the title of the podcast you want to remove from your listening history (The name must match exactly): "
-            ).strip()
+            podcast_title = input("Enter the title of the podcast you want to remove from your listening history (The name must match exactly): ").strip()
+            podcast_title = podcast_title.capitalize()
             if podcast_title not in [result[0] for result in results]:
                 print("\nThe podcast is not in your listening history.")
                 time.sleep(1)
