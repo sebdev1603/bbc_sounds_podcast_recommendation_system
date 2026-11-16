@@ -86,66 +86,88 @@ def main(username):
             time.sleep(1)
 
 def view_podcast_details(podcast_title, username):
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM podcasts WHERE Title = ?",
-        (podcast_title,)
-    )
-    podcast = cursor.fetchone()
+    user_id = int(username) if str(username).isdigit() else username
 
     while True:
-        if podcast:
-            clear()
-            print(f"\nTitle: {podcast[1]}")
-            print(f"Category: {podcast[2]}")
-            print(f"Length: {podcast[3]} minutes")
-            print(f"Ratings: {podcast[5]}")
+        # Fetch fresh podcast details each loop iteration
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM podcasts WHERE Title = ?",
+            (podcast_title,)
+        )
+        podcast = cursor.fetchone()
 
-            cursor.execute(
-                '''SELECT TimesListened FROM listening_history WHERE PodcastID = ? AND ListenerID = ?''',
-
-            (podcast[0], username)
-            )
-
-            times_listened = cursor.fetchone()
-
+        if not podcast:
             conn.close()
-            if times_listened == None:
-                print("You have not listened to this podcast yet.")
-            else:
-                print(f"Listened times: {times_listened[0]}")
-            print('''\nWhat action would you like to take?
+            print("\nPodcast not found.")
+            time.sleep(1)
+            return
 
-            1. Add to favourites
-            2. Add a rating
-            3. Listen to the podcast
-            4. Go back''')
-            choice = input("\nEnter your choice: ").strip()
+        clear()
+        print(f"\nTitle: {podcast[1]}")
+        print(f"Category: {podcast[2]}")
+        print(f"Length: {podcast[3]} minutes")
+        print(f"Ratings: {podcast[5]}")
 
-            if choice == "1":
-                Favourites.add_to_favourites(podcast[0], username)
-                view_podcast_details(podcast_title, username)
-            elif choice == "2":
-                Rating.add_rating(podcast[0], False, username)
-                view_podcast_details(podcast_title, username)
-            elif choice == "3":
-                clear()
-                print("Listening to the podcast...")
-                print("... (simulated) ...")
-                conn = sqlite3.connect("database.db")
-                cursor = conn.cursor()
+        # Check listening history using podcast[0] (PodcastID)
+        cursor.execute(
+            "SELECT TimesListened FROM listening_history WHERE PodcastID = ? AND ListenerID = ?",
+            (podcast[0], user_id)
+        )
+        times_listened = cursor.fetchone()
+        conn.close()
+
+        if times_listened is None:
+            print("You have not listened to this podcast yet.")
+        else:
+            print(f"Listened times: {times_listened[0]}")
+
+        print('''\nWhat action would you like to take?
+
+        1. Add to favourites
+        2. Add a rating
+        3. Listen to the podcast
+        4. Go back''')
+        choice = input("\nEnter your choice: ").strip()
+
+        if choice == "1":
+            Favourites.add_to_favourites(podcast[0], username)
+        elif choice == "2":
+            Rating.add_rating(podcast[0], False, username)
+        elif choice == "3":
+            clear()
+            print("Listening to the podcast...")
+            print("... (simulated) ...")
+            
+            conn = sqlite3.connect("database.db")
+            cursor = conn.cursor()
+            
+            # Check if a history row already exists for this user/podcast
+            cursor.execute(
+                "SELECT 1 FROM listening_history WHERE PodcastID = ? AND ListenerID = ?",
+                (podcast[0], user_id)
+            )
+            exists = cursor.fetchone()
+            
+            if exists:
                 cursor.execute(
                     "UPDATE listening_history SET TimesListened = TimesListened + 1 WHERE PodcastID = ? AND ListenerID = ?",
-                    (podcast_title, username))
+                    (podcast[0], user_id)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened) VALUES (?, ?, 1)",
+                    (podcast[0], user_id)
+                )
 
-                conn.commit()
-                conn.close()
-                time.sleep(2)
-            elif choice == "4":
-                return
+            conn.commit()
+            conn.close()
+            time.sleep(2)
+        elif choice == "4":
+            return
         else:
-            print("\nPodcast not found.")
+            print("Invalid choice.")
             time.sleep(1)
 
 if __name__ == "__main__":
