@@ -1,6 +1,5 @@
 import sqlite3
 
-
 def clear():
     import main as app
     app.clear()
@@ -9,7 +8,6 @@ def clear():
 def main():
     import main as app
     app.main()
-
 
 def search_programmes(view_podcast_details):
     clear()
