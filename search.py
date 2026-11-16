@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 def clear():
     import main as app
@@ -46,11 +47,15 @@ def search_programmes(username, view_podcast_details):
                 print(result[0])
         else:
             print("\nNo podcasts found matching your search query.")
+            time.sleep(1)
+            search_programmes()
+
 
     conn.close()
 
     print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
     choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ").strip()
+    choice = choice.capitalize()
     if choice == "":
         main(username)
         return
