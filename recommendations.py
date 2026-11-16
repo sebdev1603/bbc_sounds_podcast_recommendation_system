@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_recommendations(username, view_podcast_details=None):
@@ -82,10 +82,10 @@ def view_recommendations(username, view_podcast_details=None):
                         else:
                             print(f"\nYou selected '{matched_podcast}'.")
                             time.sleep(1)
-                            main()
+                            main(username)
                         return
                 elif choice == "2":
-                    main()
+                    main(username)
                     return
                 else:
                     matched_podcast = next(
@@ -98,7 +98,7 @@ def view_recommendations(username, view_podcast_details=None):
                         else:
                             print(f"\nYou selected '{matched_podcast}'.")
                             time.sleep(1)
-                            main()
+                            main(username)
                         return
                     print("\nInvalid choice. Please try again.")
                     time.sleep(1)
@@ -106,11 +106,11 @@ def view_recommendations(username, view_podcast_details=None):
             print("No recommendations available based on your survey responses.")
             print("\nGoing back to menu...")
             time.sleep(1)
-            main()
+            main(username)
     else:
         conn.close()
         print("No survey responses found for your account.")
         time.sleep(1)
         print("\nGoing back to menu...")
         time.sleep(1)
-        main()
+        main(username)

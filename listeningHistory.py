@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_listening_history(username, view_podcast_details):
@@ -51,9 +51,8 @@ def view_listening_history(username, view_podcast_details):
             else:
                 view_podcast_details(podcast_title)
         elif choice == "2":
-            podcast_title = input(
-                "Enter the title of the podcast you want to remove from your listening history (The name must match exactly): "
-            ).strip()
+            podcast_title = input("Enter the title of the podcast you want to remove from your listening history (The name must match exactly): ").strip()
+            podcast_title = podcast_title.capitalize()
             if podcast_title not in [result[0] for result in results]:
                 print("\nThe podcast is not in your listening history.")
                 time.sleep(1)
@@ -63,13 +62,13 @@ def view_listening_history(username, view_podcast_details):
         elif choice == "3":
             delete_listening_history(username)
         elif choice == "4":
-            main()
+            main(username)
     else:
         print("You have no listening history.")
         time.sleep(1)
         print("\nReturning to main menu...")
         time.sleep(1)
-        main()
+        main(username)
 
     conn.close()
 

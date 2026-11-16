@@ -7,9 +7,9 @@ def clear():
     app.clear()
 
 
-def main():
+def main(username):
     import main as app
-    app.main()
+    app.main(username)
 
 
 def view_ratings(username):
@@ -20,7 +20,7 @@ def view_ratings(username):
 
     cursor.execute(
         """
-        SELECT podcasts.Title
+        SELECT podcasts.Title, listening_history.RatingGiven
         FROM podcasts
         JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID
         WHERE listening_history.ListenerID = ?
@@ -33,9 +33,10 @@ def view_ratings(username):
 
     while True:
         if results:
-            print("You have rated these podcasts  :")
+            print("You have rated these podcasts :")
             for result in results:
                 print(f"- {result[0]}")
+                print(f"  Rating: {result[1]}")
             print('''\nWhat action would you like to take?
     1. Update a rating
     2. Remove a rating
@@ -74,7 +75,7 @@ def view_ratings(username):
                     conn.close()
                     remove_rating(podcast_id, username)
             elif choice == "3":
-                main()
+                main(username)
         else:
             print("You have no rated podcasts.")
 
