@@ -53,8 +53,7 @@ def search_programmes(username, view_podcast_details):
 
     conn.close()
 
-    print("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu.")
-    choice = input("\nWhich podcast would you like to listen to? (Enter the title exactly as shown above): ").strip()
+    choice = input("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu: ").strip()
     choice = choice.capitalize()
     if choice == "":
         main(username)
