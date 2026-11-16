@@ -1,16 +1,40 @@
 import sqlite3
 import time
 
-
 def clear():
     import main as app
     app.clear()
-
 
 def main(username):
     import main as app
     app.main(username)
 
+def view_podcast_details(podcast_title, username):
+    import main as app
+    app.view_podcast_details(podcast_title, username)
+
+def get_favorite_genre_count(username):
+    user_id = int(username) if str(username).isdigit() else username
+    
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+        (user_id,)
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if result and result[0]:
+        genres_list = [g.strip() for g in result[0].split(',') if g.strip()]
+        genre_count = len(genres_list)
+    else:
+        genre_count = 0
+
+    return genre_count
+
+# All the actual functions
 
 def view_favourite_genres(username):
     clear()
@@ -42,18 +66,195 @@ def view_favourite_genres(username):
         results = cursor.fetchall()
 
         if results:
-            print("Podcasts matching your favourite genres:")
-            for title, category in results:
-                print(f"- {title} ({category})")
+            while True:
+                conn = sqlite3.connect("database.db")
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+                    (username,)
+                )
+                res = cursor.fetchone()
+
+                cursor.execute(
+                    """
+                        SELECT podcasts.Title, podcasts.Category
+                        FROM podcasts
+                        JOIN listeners ON (
+                            ',' || listeners.FavoriteGenres || ',' LIKE '%,' || podcasts.Category || ',%'
+                        )
+                        WHERE listeners.ListenerID = ?
+                        """,
+                    (username,)
+                )
+
+                results = cursor.fetchall()
+                conn.close()
+
+                clear()
+                print("Podcasts matching your favourite genres:", res[0].replace(',', ', '))
+                for title, category in results:
+                    print(f"\n- {title}")
+                    print(f"  {category}")
+                print('''\nWhat would you like to do next?
+        1. View details of a podcast
+        2. Remove a favourite genre
+        3. Add a favourite genre
+        4. Return to main menu''')
+                choice = input("Enter your choice: ").strip()
+                while choice not in ['1', '2', '3', '4']:
+                    print("Invalid choice. Please enter 1, 2, 3, or 4.")
+                    choice = input("Enter your choice: ")
+                
+                if choice == '1':
+                    podcast_title = input("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu: ").strip()
+                    podcast_title = podcast_title.capitalize()
+                    if podcast_title == "":
+                        print()
+                    elif podcast_title not in [result[0] for result in results]:
+                        print("\nEnter a valid option from the list.")
+                        time.sleep(1)
+                    else:
+                        view_podcast_details(podcast_title, username)
+                
+                elif choice == '2':
+                    cursor.execute(
+                        "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+                        (username,)
+                    )
+                    result = cursor.fetchone()
+                    
+                    if not result or not result[0]:
+                        print("\nYou have no favourite genres set.")
+                        time.sleep(1)
+                        continue
+
+                    print(f"\nYour favourite genres: {result[0].replace(',', ', ')}\n")
+                    print("\nTo go back, press Enter without typing anything.")
+                    print("\nWARNING: Deleting a favourite genre is permanent and cannot be undone.")
+                    genre_name = input("Enter the name of the genre you want to delete from favourites (Enter it correctly!): ").strip()
+                    
+                    if genre_name == "":
+                        clear()
+                        print("\nGoing back to the menu...")
+                        time.sleep(1)
+                    else:
+                        # Correctly call delete_favourite_genre instead of delete_favourite_programme
+                        delete_favourite_genre(genre_name, username)
+                
+                elif choice == '3':
+                    while get_favorite_genre_count(username) < 5:
+                        
+                        clear()
+                        valid_genres = [
+                            "News", "Travel", "History", "Comedy", "True Crime",
+                            "Technology", "Science", "Business", "Gaming",
+                            "Entertainment", "Sport", "Health"
+                        ]
+
+                        print('''These are the available genres of podcasts:
+
+    News
+    Travel
+    History
+    Comedy
+    True Crime
+    Technology
+    Science
+    Business
+    Gaming
+    Entertainment
+    Sport
+    Health
+                            ''')
+
+                        genre_name = input("\nEnter the name of the genre you want favourite, or press Enter to return to go back (Type it correctly!): ").strip()
+                        genre_name = genre_name.capitalize()
+                        if genre_name == "":
+                            view_favourite_genres(username)
+                        elif genre_name not in valid_genres:
+                            print("\nEnter a valid option from the list.")
+                            time.sleep(1)
+                        else:
+                            add_favourite_genre(genre_name, username)
+                    if get_favorite_genre_count(username) == 5:
+                        clear()
+                        print("You have reached the maximum number of favourite genres.")
+                
+                elif choice == '4':
+                    main(username)
         else:
             print("No podcasts found matching your favourite genres.")
     else:
         print("You have no favourite genres set.")
 
     conn.close()
-    input("\nPress Enter to return to the main menu...")
     main(username)
 
+def delete_favourite_genre(genre_name, username):
+    user_id = int(username) if str(username).isdigit() else username
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+        (user_id,)
+    )
+    result = cursor.fetchone()
+    
+    if result and result[0]:
+        current_genres = [g.strip() for g in result[0].split(',') if g.strip()]
+        
+        matched = next((g for g in current_genres if g.lower() == genre_name.lower()), None)
+        
+        if matched:
+            current_genres.remove(matched)
+            updated_genres = ",".join(current_genres)
+            
+            cursor.execute(
+                "UPDATE listeners SET FavoriteGenres = ? WHERE ListenerID = ?",
+                (updated_genres, user_id)
+            )
+            conn.commit()
+            print(f"\n'{matched}' removed from your favourite genres.")
+            time.sleep(1)
+        else:
+            print("\nGenre not found in your favourites.")
+            time.sleep(1)
+    else:
+        print("\nYou have no favourite genres set.")
+        time.sleep(1)
+
+    conn.close()
+
+def add_favourite_genre(genre_name, username):
+    clear()
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+            "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
+            (username,)
+        )
+    
+    result = cursor.fetchone()
+    current_favourites = result[0] if result else ""
+    
+    if str(genre_name) not in current_favourites.split(','):
+        updated_favourites = current_favourites + ("," if current_favourites else "") + str(genre_name)
+        cursor.execute(
+            "UPDATE listeners SET FavoriteGenres = ? WHERE ListenerID = ?",
+            (updated_favourites, username)
+        )
+        conn.commit()
+        print("\nGenre added to favourites.")
+        time.sleep(1)
+    else:
+        print("\nGenre is already in favourites.")
+        time.sleep(1)
+    
+    conn.close()
+    
 def view_favourite_programmes(username, view_podcast_details):
     clear()
     print("***FAVOURITE PODCASTS***\n")
