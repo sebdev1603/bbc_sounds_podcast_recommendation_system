@@ -20,7 +20,7 @@ def view_ratings(username):
 
     cursor.execute(
         """
-        SELECT podcasts.Title
+        SELECT podcasts.Title, listening_history.RatingGiven
         FROM podcasts
         JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID
         WHERE listening_history.ListenerID = ?
@@ -33,9 +33,10 @@ def view_ratings(username):
 
     while True:
         if results:
-            print("You have rated these podcasts  :")
+            print("You have rated these podcasts :")
             for result in results:
                 print(f"- {result[0]}")
+                print(f"  Rating: {result[1]}")
             print('''\nWhat action would you like to take?
     1. Update a rating
     2. Remove a rating
