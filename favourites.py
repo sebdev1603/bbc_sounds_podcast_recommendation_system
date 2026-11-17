@@ -94,13 +94,14 @@ def view_favourite_genres(username):
                 clear()
                 print("Podcasts matching your favourite genres:", res[0].replace(',', ', '))
                 for title, category in results:
-                    print(f"\n- {title}")
-                    print(f"  {category}")
+                    print(f"\n-{title}")
+                    print(f"  Genre: {category}")
                 print('''\nWhat would you like to do next?
+        
         1. View details of a podcast
         2. Remove a favourite genre
         3. Add a favourite genre
-        4. Return to main menu''')
+        4. Return to main menu\n''')
                 choice = input("Enter your choice: ").strip()
                 while choice not in ['1', '2', '3', '4']:
                     print("Invalid choice. Please enter 1, 2, 3, or 4.")
@@ -115,14 +116,12 @@ def view_favourite_genres(username):
                         print("\nEnter a valid option from the list.")
                         time.sleep(1)
                     else:
+                        conn.close()  
                         view_podcast_details(podcast_title, username)
+                        break
                 
                 elif choice == '2':
-                    cursor.execute(
-                        "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
-                        (username,)
-                    )
-                    result = cursor.fetchone()
+                    result = res  
                     
                     if not result or not result[0]:
                         print("\nYou have no favourite genres set.")
@@ -139,10 +138,12 @@ def view_favourite_genres(username):
                         print("\nGoing back to the menu...")
                         time.sleep(1)
                     else:
-                        # Correctly call delete_favourite_genre instead of delete_favourite_programme
+                        conn.close()
                         delete_favourite_genre(genre_name, username)
+                        break
                 
                 elif choice == '3':
+                    conn.close() 
                     while get_favorite_genre_count(username) < 5:
                         
                         clear()
@@ -151,6 +152,28 @@ def view_favourite_genres(username):
                             "Technology", "Science", "Business", "Gaming",
                             "Entertainment", "Sport", "Health"
                         ]
+
+                        add_conn = sqlite3.connect("database.db")
+                        add_cursor = add_conn.cursor()
+                        
+                        add_cursor.execute(
+                        """
+                        SELECT podcasts.Title, podcasts.Category
+                        FROM podcasts
+                        JOIN listeners ON (
+                            ',' || listeners.FavoriteGenres || ',' LIKE '%,' || podcasts.Category || ',%'
+                        )
+                        WHERE listeners.ListenerID = ?
+                        """,
+                        (username,)
+                        )
+
+                        results = add_cursor.fetchall()
+                        current_res = add_cursor.fetchone()
+                        add_conn.close()
+
+                        clear()
+                        print("Your favourite genres: ", res[0].replace(',', ', '))
 
                         print('''These are the available genres of podcasts:
 
@@ -171,7 +194,7 @@ def view_favourite_genres(username):
                         genre_name = input("\nEnter the name of the genre you want favourite, or press Enter to return to go back (Type it correctly!): ").strip()
                         genre_name = genre_name.capitalize()
                         if genre_name == "":
-                            view_favourite_genres(username)
+                            break
                         elif genre_name not in valid_genres:
                             print("\nEnter a valid option from the list.")
                             time.sleep(1)
@@ -180,9 +203,14 @@ def view_favourite_genres(username):
                     if get_favorite_genre_count(username) == 5:
                         clear()
                         print("You have reached the maximum number of favourite genres.")
+                        time.sleep(1)
                 
                 elif choice == '4':
+                    conn.close()
                     main(username)
+                    break
+                
+                conn.close()
         else:
             print("No podcasts found matching your favourite genres.")
     else:

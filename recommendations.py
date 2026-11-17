@@ -12,7 +12,12 @@ def main(username):
     app.main(username)
 
 
-def view_recommendations(username, view_podcast_details=None):
+def view_podcast_details(podcast_title, username):
+    import main as app
+    app.view_podcast_details(podcast_title, username)
+
+
+def view_recommendations(username):
     clear()
     print("***YOUR RECOMMENDATIONS***\n")
     conn = sqlite3.connect("database.db")
@@ -56,7 +61,7 @@ def view_recommendations(username, view_podcast_details=None):
                 for recommendation in recommendations:
                     print(f"\n- {recommendation[0]}")
                     print(f"  Genre: {recommendation[1]}")
-                    print(f"  Average length: {recommendation[2]}")
+                    print(f"  Average length: {recommendation[2]} minutes")
 
                 print('''\nWhat would you like to do next?
 
@@ -67,6 +72,7 @@ def view_recommendations(username, view_podcast_details=None):
 
                 if choice == "1":
                     podcast_title = input("\nEnter the title of the podcast you want to choose (The name must match exactly): ").strip()
+                    podcast_title = podcast_title.capitalize()
                     if podcast_title == "":
                         continue
                     matched_podcast = next(
@@ -76,30 +82,14 @@ def view_recommendations(username, view_podcast_details=None):
                     if not matched_podcast:
                         print("\nThe podcast is not in your recommendations.")
                         time.sleep(1)
-                    else:
-                        if view_podcast_details:
-                            view_podcast_details(matched_podcast)
-                        else:
-                            print(f"\nYou selected '{matched_podcast}'.")
-                            time.sleep(1)
-                            main(username)
-                        return
+                    else:    
+                        print(f"\nYou selected '{matched_podcast}'.")
+                        time.sleep(1)
+                        view_podcast_details(podcast_title, username)
                 elif choice == "2":
                     main(username)
                     return
                 else:
-                    matched_podcast = next(
-                        (rec[0] for rec in recommendations if rec[0].lower() == choice.lower()),
-                        None
-                    )
-                    if matched_podcast:
-                        if view_podcast_details:
-                            view_podcast_details(matched_podcast)
-                        else:
-                            print(f"\nYou selected '{matched_podcast}'.")
-                            time.sleep(1)
-                            main(username)
-                        return
                     print("\nInvalid choice. Please try again.")
                     time.sleep(1)
         else:
