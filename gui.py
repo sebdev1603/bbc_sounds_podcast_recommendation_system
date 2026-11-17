@@ -1,4 +1,3 @@
-import base64
 from contextlib import contextmanager
 import math
 import sqlite3
@@ -22,7 +21,6 @@ TEXT_WHITE = "#f7f7f7"
 TEXT_GRAY = "#a8abb1"
 TEXT_LIGHT = "#d6d8dc"
 GOLD_STAR = "#ffd166"
-GREEN_TINT = "#72d6a3"
 DEFAULT_FONT = "Segoe UI"
 
 GENRE_LIST = [
@@ -31,6 +29,14 @@ GENRE_LIST = [
 ]
 DURATION_RANGES = {"Short": (0, 30), "Medium": (25, 45), "Long": (45, 60)}
 PALETTE_SWATCHES = ["#5b315e", "#185a70", "#7a3d2d", "#2e6654", "#6c5631", "#373e79"]
+GENRE_CIRCLE_COLOURS = [
+    ("#b79cff", "#5e17eb", "#2e0b70"), ("#9cecff", "#38b6ff", "#0b4f78"),
+    ("#ffb7ad", "#e84a5f", "#7c1f2c"), ("#b9f4c7", "#43aa8b", "#175b49"),
+    ("#ffe8a6", "#f9c74f", "#80600b"), ("#d9bcff", "#8d1370", "#49083a"),
+    ("#9dfff0", "#1bd5d3", "#087675"), ("#ffc8f0", "#ff5cb8", "#80245d"),
+    ("#bed0ff", "#4b56d2", "#252a75"), ("#ffd4ad", "#ff914d", "#8c3b0d"),
+    ("#c4f2ff", "#56ccf2", "#1d6880"), ("#f5d0ff", "#b54dce", "#5d176d"),
+]
 
 
 def format_user_id(uid):
@@ -372,6 +378,15 @@ class BBCSoundsGUI(tk.Tk):
             )
         return row_pane
 
+    def create_genre_circle(self, container, genre_name, idx, size=54, background_col=CARD_BG):
+        light_col, middle_col, outline_col = GENRE_CIRCLE_COLOURS[idx % len(GENRE_CIRCLE_COLOURS)]
+        circle_canvas = tk.Canvas(container, width=size, height=size, bg=background_col, highlightthickness=0, cursor="hand2")
+        for inset, fill_col in [(2, outline_col), (5, middle_col), (10, light_col), (16, middle_col)]:
+            circle_canvas.create_oval(inset, inset, size - inset, size - inset, fill=fill_col, outline="")
+        circle_canvas.create_oval(2, 2, size - 2, size - 2, outline=outline_col, width=2)
+        circle_canvas.create_text(size / 2, size / 2, text=genre_name[:1].upper(), fill=TEXT_WHITE, font=(DEFAULT_FONT, 14, "bold"))
+        return circle_canvas
+
     def render_podcast_card(self, parent_widget, podcast_data, compact=False, show_play_btn=False, show_remove_btn=False):
         pid, title, category, length_mins = podcast_data[:4]
         card_frame = self.create_card_frame(parent_widget)
@@ -673,7 +688,7 @@ class BBCSoundsGUI(tk.Tk):
                 self.render_podcast_grid(page, history_rows[:4], columns_count=4, show_play=True, max_count=4)
             else:
                 self.render_section_title(page, "Explore the catalogue")
-                self.render_podcast_grid(page, self.query_podcasts(limit=4), columns_count=4, show_play=True, max_count=4)
+                self.render_podcast_grid(page, self.query_podcasts(item_limit=4), columns_count=4, show_play=True, max_count=4)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load BBC Sounds", err)
 
@@ -690,19 +705,41 @@ class BBCSoundsGUI(tk.Tk):
         self.create_button(search_box_row, "Search", lambda: perform_search_action(), primary=True).pack(side="right")
 
         results_pane = tk.Frame(page, bg=DARK_BG)
-        results_pane.pack(fill="both", expand=True)
 
         def perform_search_action(_event=None):
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
-                matching_rows = self.query_podcasts(self.search_text.get(), limit=80)
+                matching_rows = self.query_podcasts(self.search_text.get(), item_limit=80)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 for idx, pod in enumerate(matching_rows):
                     self.render_podcast_card(results_pane, pod, compact=True, show_play_btn=True)
             except sqlite3.Error as err:
                 self.show_db_error("Search failed", err)
 
+        self.render_section_title(page, "Browse categories", "Choose a theme to filter the programme catalogue.")
+        category_row = tk.Frame(page, bg=DARK_BG)
+        category_row.pack(fill="x", pady=(0, 12))
+        try:
+            all_categories = []
+            for podcast in self.query_podcasts(item_limit=100):
+                if podcast[2] and podcast[2] not in all_categories:
+                    all_categories.append(podcast[2])
+            for idx, category_name in enumerate(all_categories[:6]):
+                category_button = tk.Button(
+                    category_row, text=category_name.upper(),
+                    command=lambda name=category_name: (self.search_text.set(name), perform_search_action()),
+                    font=(DEFAULT_FONT, 10, "bold"), fg=TEXT_WHITE,
+                    bg=PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)],
+                    activebackground=ORANGE_ACCENT, activeforeground=TEXT_WHITE,
+                    relief="flat", bd=0, cursor="hand2", padx=14, pady=16,
+                )
+                category_button.pack(side="left", padx=(0, 8), fill="x", expand=True)
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't load categories", err)
+
+        self.render_section_title(page, "Programmes")
+        results_pane.pack(fill="both", expand=True)
         self.search_text.set("")
         text_entry.bind("<Return>", perform_search_action)
         self.create_button(search_box_row, "Browse all", lambda: (self.search_text.set(""), perform_search_action()), compact=True).pack(
@@ -721,7 +758,7 @@ class BBCSoundsGUI(tk.Tk):
                                       "Choose your favourite genres and episode length to unlock tailored recommendations.")
             self.create_button(page, "Set up your preferences  →", self.show_preferences, primary=True).pack(anchor="w", pady=7)
             self.render_section_title(page, "Explore the catalogue while you decide")
-            self.render_podcast_grid(page, self.query_podcasts(limit=8), show_play=True)
+            self.render_podcast_grid(page, self.query_podcasts(item_limit=8), show_play=True)
             return
         self.create_label(page, f"YOUR GENRES   {genres_val.replace(',', '  ·  ')}     /     {length_val} episodes",
                           10, ORANGE_HL, "bold").pack(anchor="w", pady=(0, 12))
@@ -760,27 +797,47 @@ class BBCSoundsGUI(tk.Tk):
 
     def show_ratings(self):
         page = self.build_shell("Your ratings")
-        self.render_page_title(page, "Your ratings", "Your scores help keep your personal library in order.")
+        self.render_page_title(page, "Podcasts you rated", "Every programme you have scored is collected here.")
         rating_rows = self.fetch_user_ratings()
         if not rating_rows:
             self.render_empty_message(page, "No ratings yet", "Listen to a programme, then add a rating from its details page.")
             self.create_button(page, "Explore programmes", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
             return
+
+        summary_bar = self.create_card_frame(page, bg="#1d1e22")
+        summary_bar.pack(fill="x", pady=(0, 12))
+        self.create_label(summary_bar, str(len(rating_rows)), 24, ORANGE_ACCENT, "bold").pack(
+            side="left", padx=(18, 8), pady=12
+        )
+        self.create_label(summary_bar, "ratings in your library", 10, TEXT_GRAY).pack(side="left", pady=18)
+        self.create_label(summary_bar, "Select a programme to update or remove its score.", 10, TEXT_LIGHT).pack(
+            side="right", padx=18, pady=18
+        )
+
+        ratings_grid = tk.Frame(page, bg=DARK_BG)
+        ratings_grid.pack(fill="x")
+        for column_idx in range(4):
+            ratings_grid.grid_columnconfigure(column_idx, weight=1, uniform="rating-cards")
+
         for idx, row in enumerate(rating_rows):
-            card = self.create_card_frame(page)
-            card.pack(fill="x", pady=5)
-            cover = self.generate_podcast_cover(card, row[0], row[1], row[2], 78, 78, compact=True)
-            cover.pack(side="left", padx=10, pady=9)
+            card = self.create_card_frame(ratings_grid)
+            card.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=6, pady=6)
+            cover = self.generate_podcast_cover(card, row[0], row[1], row[2], 190, 145)
+            cover.pack(fill="x", padx=9, pady=(9, 0))
             details_pane = tk.Frame(card, bg=CARD_BG)
-            details_pane.pack(side="left", fill="both", expand=True, pady=12)
-            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold").pack(anchor="w")
-            self.create_label(details_pane, str(row[2]), 10, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
-            self.create_star_rating_bar(details_pane, row[3], size=15, background_col=CARD_BG).pack(anchor="w", pady=(2, 0))
+            details_pane.pack(fill="both", expand=True, padx=13, pady=12)
+            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=180).pack(anchor="w")
+            self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
+            self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG).pack(
+                anchor="w", pady=(5, 10)
+            )
+            button_row = tk.Frame(details_pane, bg=CARD_BG)
+            button_row.pack(fill="x")
             self.create_button(
-                card, "Change rating", lambda target_id=row[0]: self.rate_programme(target_id, self.show_ratings), compact=True
-            ).pack(side="right", padx=10)
-            self.create_button(card, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
-                side="right", padx=(0, 4)
+                button_row, "Change rating", lambda target_id=row[0]: self.rate_programme(target_id, self.show_ratings), compact=True
+            ).pack(side="left")
+            self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
+                side="right"
             )
 
     def show_genres(self):
@@ -884,41 +941,72 @@ class BBCSoundsGUI(tk.Tk):
             if not podcast_rec:
                 messagebox.showinfo("Programme unavailable", "This programme is no longer in the catalogue.", parent=self)
                 return
-            page = self.build_shell("Programme details")
-            self.create_button(page, "←  Back to discover", self.show_search, compact=True).pack(anchor="w", pady=(4, 14))
-            hero_box = self.create_card_frame(page)
-            hero_box.pack(fill="x", pady=5)
-            cover_art = self.generate_podcast_cover(hero_box, podcast_id, podcast_rec[1], podcast_rec[2], 250, 225)
-            cover_art.pack(side="left", padx=16, pady=16)
-            details_box = tk.Frame(hero_box, bg=CARD_BG)
-            details_box.pack(side="left", fill="both", expand=True, padx=(0, 18), pady=17)
-            self.create_label(details_box, podcast_rec[1], 24, TEXT_WHITE, "bold", wraplength=650).pack(anchor="w", pady=(7, 8))
-            self.create_label(details_box, str(podcast_rec[2] or "Programme"), 12, ORANGE_HL, "bold").pack(anchor="w")
-            length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
-            self.create_label(details_box, length_text, 10, TEXT_GRAY).pack(anchor="w", pady=(6, 20))
-
-            action_row = tk.Frame(details_box, bg=CARD_BG)
-            action_row.pack(anchor="w")
-            self.create_button(action_row, "▶  Listen", lambda: self.listen(podcast_id), primary=True).pack(side="left", padx=(0, 8))
-            self.create_button(action_row, "★  Rate", lambda: self.rate_programme(podcast_id)).pack(side="left", padx=4)
-            fav_label = "♥  Saved" if self.check_if_favourited(podcast_id) else "♡  Add to favourites"
-            self.create_button(action_row, fav_label, lambda: self.toggle_favourite(podcast_id)).pack(side="left", padx=4)
 
             with self.get_db_connection() as conn:
                 history_record = conn.execute(
                     "SELECT TimesListened, RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+
+            page = self.build_shell("Programme details")
+            back_row = tk.Frame(page, bg=DARK_BG)
+            back_row.pack(fill="x", pady=(2, 14))
+            self.create_button(back_row, "←  Back to discover", self.show_search, compact=True).pack(side="left")
+            self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
+
+            hero_box = tk.Frame(page, bg=DARK_BG)
+            hero_box.pack(fill="x", pady=(0, 8))
+            cover_panel = self.create_card_frame(hero_box, bg="#272727")
+            cover_panel.pack(side="left", padx=(0, 28))
+            cover_art = self.generate_podcast_cover(cover_panel, podcast_id, podcast_rec[1], podcast_rec[2], 275, 275)
+            cover_art.pack(padx=10, pady=10)
+
+            actions_box = tk.Frame(hero_box, bg=DARK_BG, width=195)
+            actions_box.pack(side="right", fill="y", padx=(24, 0), pady=20)
+            actions_box.pack_propagate(False)
+            self.create_label(actions_box, "PROGRAMME ACTIONS", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 10))
+            fav_text = "♥  Remove from favourites" if self.check_if_favourited(podcast_id) else "♡  Save to favourites"
+            for action_text, action_func in [
+                (fav_text, lambda: self.toggle_favourite(podcast_id)),
+                ("★  Rate this programme", lambda: self.rate_programme(podcast_id)),
+            ]:
+                action_label = self.create_label(actions_box, action_text, 10, TEXT_WHITE, "bold", cursor="hand2")
+                action_label.pack(anchor="w", pady=6)
+                action_label.bind("<Button-1>", lambda _event, callback=action_func: callback())
+
+            details_box = tk.Frame(hero_box, bg=DARK_BG)
+            details_box.pack(side="left", fill="both", expand=True, pady=10)
+            self.create_label(details_box, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold").pack(anchor="w")
+            self.create_label(details_box, podcast_rec[1], 30, TEXT_WHITE, "bold", wraplength=490).pack(anchor="w", pady=(8, 6))
+            length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
+            self.create_label(details_box, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY).pack(anchor="w")
+
+            play_row = tk.Frame(details_box, bg=DARK_BG)
+            play_row.pack(anchor="w", pady=(25, 12))
+            play_canvas = tk.Canvas(play_row, width=74, height=74, bg=DARK_BG, highlightthickness=0, cursor="hand2")
+            play_canvas.pack(side="left", padx=(0, 14))
+            play_canvas.create_oval(3, 3, 71, 71, fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2)
+            play_canvas.create_polygon(31, 22, 31, 52, 56, 37, fill=TEXT_WHITE, outline="")
+            play_canvas.bind("<Button-1>", lambda _event: self.listen(podcast_id))
+
+            play_copy = tk.Frame(play_row, bg=DARK_BG)
+            play_copy.pack(side="left", pady=10)
+            self.create_label(play_copy, "Listen now", 14, TEXT_WHITE, "bold").pack(anchor="w")
+
+            tk.Frame(page, bg=TEXT_GRAY, height=1).pack(fill="x", pady=(18, 18))
+
             if history_record:
-                sub_card = self.create_card_frame(page)
-                sub_card.pack(fill="x", pady=9)
-                self.create_label(sub_card, "YOUR LISTENING", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=15, pady=(12, 5))
+                sub_card = self.create_card_frame(page, bg="#1d1e22")
+                sub_card.pack(fill="x", pady=(20, 8))
+                self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold").pack(anchor="w", padx=16, pady=(12, 5))
                 play_count = history_record[0] or 0
                 given_rating = history_record[1]
                 summary_text = f"{play_count} plays" + (f"  ·  your rating: {'★' * int(given_rating)}" if given_rating else "")
-                self.create_label(sub_card, summary_text, 11, TEXT_WHITE).pack(anchor="w", padx=15, pady=(0, 12))
+                self.create_label(sub_card, summary_text, 11, TEXT_WHITE).pack(anchor="w", padx=16, pady=(0, 8))
                 if given_rating:
-                    self.create_star_rating_bar(sub_card, given_rating, size=18, background_col=CARD_BG).pack(anchor="w", padx=15, pady=(0, 14))
+                    self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
+                        anchor="w", padx=16, pady=(0, 14)
+                    )
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
@@ -1052,16 +1140,8 @@ class BBCSoundsGUI(tk.Tk):
         bg_col = "#38251d" if selected else CARD_BG
         border_col = ORANGE_ACCENT if selected else BORDER_LINE
         tile_box = tk.Frame(parent_widget, bg=bg_col, highlightthickness=1, highlightbackground=border_col)
-        photo_obj = self.get_svg_photo_object("2.svg", (idx % 11) + 3, (48, 48))
-        if photo_obj:
-            img_lbl = tk.Label(tile_box, image=photo_obj, bg=bg_col)
-            img_lbl.image = photo_obj
-            img_lbl.pack(pady=(10, 3))
-        else:
-            canvas_marker = tk.Canvas(tile_box, width=45, height=45, bg=bg_col, highlightthickness=0)
-            canvas_marker.pack(pady=(10, 3))
-            canvas_marker.create_oval(4, 4, 41, 41, fill=PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)], outline="")
-            canvas_marker.create_text(22, 22, text=genre_name[:1].upper(), fill=TEXT_WHITE, font=(DEFAULT_FONT, 14, "bold"))
+        canvas_marker = self.create_genre_circle(tile_box, genre_name, idx, 45, bg_col)
+        canvas_marker.pack(pady=(10, 3))
         self.create_label(tile_box, genre_name, 9, ORANGE_HL if selected else TEXT_WHITE, "bold", anchor="center", bg=bg_col).pack(
             fill="x", padx=3, pady=(0, 10)
         )
@@ -1088,21 +1168,13 @@ class BBCSoundsGUI(tk.Tk):
             tile = tk.Frame(grid_frame, bg=CARD_BG, highlightthickness=1, highlightbackground=BORDER_LINE, cursor="hand2")
             tile.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=5, pady=5)
             grid_frame.grid_columnconfigure(idx % 4, weight=1, uniform="genre-options")
-            photo_obj = self.get_svg_photo_object("2.svg", (idx % 11) + 3, (54, 54))
-            if photo_obj:
-                img_lbl = tk.Label(tile, image=photo_obj, bg=CARD_BG, cursor="hand2")
-                img_lbl.image = photo_obj
-                img_lbl.pack(pady=(9, 3))
-            else:
-                art_cnv = tk.Canvas(tile, width=52, height=52, bg=CARD_BG, highlightthickness=0)
-                art_cnv.pack(pady=(9, 3))
-                art_cnv.create_oval(5, 5, 47, 47, fill=PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)], outline="")
-                art_cnv.create_text(26, 26, text=g_name[:1], fill=TEXT_WHITE, font=(DEFAULT_FONT, 13, "bold"))
+            art_cnv = self.create_genre_circle(tile, g_name, idx, 54, CARD_BG)
+            art_cnv.pack(pady=(9, 3))
             check_lbl = self.create_label(tile, g_name, 9, TEXT_WHITE, "bold", anchor="center", bg=CARD_BG)
             check_lbl.pack(fill="x", padx=3, pady=(0, 9))
             for sub_widget in (tile, *tile.winfo_children()):
                 sub_widget.bind("<Button-1>", lambda _e, name_val=g_name: self.toggle_genre_selection(name_val, counter_label))
-            self.genre_elements[g_name] = (tile, check_lbl)
+            self.genre_elements[g_name] = (tile, check_lbl, art_cnv)
 
         self.update_genre_tile_styles(counter_label)
         self.render_section_title(page, "Episode length", "Pick the average episode length you enjoy most.")
@@ -1132,11 +1204,12 @@ class BBCSoundsGUI(tk.Tk):
     def update_genre_tile_styles(self, counter_lbl=None):
         if counter_lbl and counter_lbl.winfo_exists():
             counter_lbl.config(text=f"{len(self.active_genres)} / 5 selected")
-        for name, (tile, lbl) in getattr(self, "genre_elements", {}).items():
+        for name, (tile, lbl, circle) in getattr(self, "genre_elements", {}).items():
             is_active = name in self.active_genres
             background_color = "#38251d" if is_active else CARD_BG
             tile.configure(bg=background_color, highlightbackground=ORANGE_ACCENT if is_active else BORDER_LINE)
             lbl.configure(bg=background_color, fg=ORANGE_HL if is_active else TEXT_WHITE)
+            circle.configure(bg=background_color)
             for child in tile.winfo_children():
                 if isinstance(child, tk.Label) and child is not lbl:
                     child.configure(bg=background_color)
