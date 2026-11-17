@@ -6,13 +6,16 @@ def clear():
     app.clear()
 
 
+
 def main(username):
     import main as app
     app.main(username)
 
+
 def view_podcast_details(podcast_title, username):
     import main as app
     app.view_podcast_details(podcast_title, username)
+
 
 def search_programmes(username):
     clear()
