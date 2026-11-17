@@ -97,10 +97,11 @@ def view_favourite_genres(username):
                     print(f"\n-{title}")
                     print(f"  Genre: {category}")
                 print('''\nWhat would you like to do next?
+        
         1. View details of a podcast
         2. Remove a favourite genre
         3. Add a favourite genre
-        4. Return to main menu''')
+        4. Return to main menu\n''')
                 choice = input("Enter your choice: ").strip()
                 while choice not in ['1', '2', '3', '4']:
                     print("Invalid choice. Please enter 1, 2, 3, or 4.")
