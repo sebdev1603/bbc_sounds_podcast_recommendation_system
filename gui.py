@@ -78,6 +78,10 @@ class BBCSoundsGUI(tk.Tk):
         self.minsize(1024, 700)
         self.configure(bg=DARK_BG)
 
+        self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
+        self._ui_scale_factor = 1.0
+        self._resize_after_id = None
+
         self.current_user = None
         self.active_genres = []
         self.active_length = "Medium"
@@ -95,7 +99,37 @@ class BBCSoundsGUI(tk.Tk):
         self._search_entry = None
         self._search_prompt = None
 
+        self.bind("<Configure>", self.schedule_interface_scaling)
         self.show_login()
+
+    def schedule_interface_scaling(self, event):
+        if event.widget is not self:
+            return
+        if self._resize_after_id is not None:
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after(120, self.apply_interface_scaling)
+
+    def apply_interface_scaling(self):
+        """Scale point-based UI elements to suit the current window dimensions."""
+        self._resize_after_id = None
+        width_factor = self.winfo_width() / 1320
+        height_factor = self.winfo_height() / 850
+        new_scale_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
+        if abs(new_scale_factor - self._ui_scale_factor) < 0.035:
+            return
+        self._ui_scale_factor = new_scale_factor
+        self.tk.call("tk", "scaling", self._base_tk_scaling * new_scale_factor)
+        pending_widgets = list(self.winfo_children())
+        while pending_widgets:
+            widget = pending_widgets.pop()
+            pending_widgets.extend(widget.winfo_children())
+            try:
+                font_spec = widget.cget("font")
+                if font_spec:
+                    widget.configure(font=font_spec)
+            except tk.TclError:
+                pass
+        self.update_idletasks()
 
     @contextmanager
     def get_db_connection(self):
@@ -540,24 +574,52 @@ class BBCSoundsGUI(tk.Tk):
             self.create_button(button_strip, "▶", lambda target_id=pid: self.listen(target_id), primary=True, compact=True).pack(side="right")
         return card_frame
 
-    def render_podcast_grid(self, parent_widget, items_list, columns_count=4, show_play=False, max_count=8):
+    def render_podcast_grid(
+        self, parent_widget, items_list, columns_count=6,
+        show_play=False, max_count=8, single_row=False,
+    ):
         if not items_list:
             self.render_empty_message(parent_widget, "No programmes to show yet", "Try another search, or explore all programmes.")
             return
         grid_container = tk.Frame(parent_widget, bg=parent_widget.cget("bg"))
         grid_container.pack(fill="x")
-        for col_idx in range(columns_count):
-            grid_container.grid_columnconfigure(col_idx, weight=1, uniform="programme")
 
         next_index = 0
+        rendered_cards = []
+        current_columns = [0]
+
+        def reflow_cards(_event=None):
+            available_width = grid_container.winfo_width()
+            if available_width <= 1:
+                available_width = max(1, self.winfo_width() - 110)
+            responsive_columns = max(2, min(columns_count, available_width // 260))
+            if responsive_columns == current_columns[0] and _event is not None:
+                return
+            current_columns[0] = responsive_columns
+            for col_idx in range(columns_count):
+                grid_container.grid_columnconfigure(
+                    col_idx, weight=1 if col_idx < responsive_columns else 0,
+                    uniform="programme" if col_idx < responsive_columns else "",
+                )
+            visible_count = responsive_columns if single_row else len(rendered_cards)
+            for card_idx, card_widget in enumerate(rendered_cards):
+                if card_idx >= visible_count:
+                    card_widget.grid_remove()
+                    continue
+                card_widget.grid(
+                    row=card_idx // responsive_columns,
+                    column=card_idx % responsive_columns,
+                    sticky="nsew", padx=5, pady=5,
+                )
 
         def render_card(podcast):
             nonlocal next_index
-            idx = next_index
             next_index += 1
             card = self.render_podcast_card(grid_container, podcast, show_play_btn=show_play)
-            card.grid(row=idx // columns_count, column=idx % columns_count, sticky="nsew", padx=5, pady=5)
+            rendered_cards.append(card)
+            reflow_cards()
 
+        grid_container.bind("<Configure>", reflow_cards)
         self.render_in_batches(items_list[:max_count], render_card)
 
     def render_empty_message(self, parent_widget, heading, subtitle):
@@ -832,7 +894,7 @@ class BBCSoundsGUI(tk.Tk):
                     "h.TimesListened, h.RatingGiven "
                     "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
                     "WHERE h.ListenerID = ? ORDER BY COALESCE(h.TimesListened, 0) DESC, "
-                    "p.Title COLLATE NOCASE LIMIT 4",
+                    "p.Title COLLATE NOCASE LIMIT 8",
                     (self.current_user,),
                 ).fetchall()
                 favourite_count = 0
@@ -888,7 +950,10 @@ class BBCSoundsGUI(tk.Tk):
             if rec_list:
                 self.render_section_title(page, "Made for you", "A match for your favourite genres and episode length.",
                                           "See all", self.show_recommendations)
-                self.render_podcast_grid(page, rec_list, columns_count=4, show_play=True, max_count=4)
+                self.render_podcast_grid(
+                    page, rec_list, columns_count=6, show_play=True,
+                    max_count=8, single_row=True,
+                )
             elif not self.get_row_field(listener_info, "CompleteSurvey", 0):
                 self.render_section_title(page, "Make recommendations personal")
                 survey_prompt = self.create_card_frame(page)
@@ -903,10 +968,16 @@ class BBCSoundsGUI(tk.Tk):
             if history_rows:
                 self.render_section_title(page, "Pick up where you left off", "Your most played programmes.",
                                           "Listening history", self.show_history)
-                self.render_podcast_grid(page, history_rows[:4], columns_count=4, show_play=True, max_count=4)
+                self.render_podcast_grid(
+                    page, history_rows, columns_count=6, show_play=True,
+                    max_count=8, single_row=True,
+                )
             else:
                 self.render_section_title(page, "Explore the catalogue")
-                self.render_podcast_grid(page, self.query_podcasts(item_limit=4), columns_count=4, show_play=True, max_count=4)
+                self.render_podcast_grid(
+                    page, self.query_podcasts(item_limit=8), columns_count=6,
+                    show_play=True, max_count=8, single_row=True,
+                )
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load BBC Sounds", err)
 
