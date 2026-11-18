@@ -9,6 +9,7 @@ import rating as Rating
 import recommendations as Recommendations
 import search as Search
 import survey as Survey
+from last_listened import record_last_listened
 
 def username_exists(username):
     user_id = int(username) if str(username).isdigit() else username
@@ -202,6 +203,7 @@ def view_podcast_details(podcast_title, username):
                     (podcast[0], user_id)
                 )
 
+            record_last_listened(conn, user_id, podcast[0])
             conn.commit()
             conn.close()
             time.sleep(2)
