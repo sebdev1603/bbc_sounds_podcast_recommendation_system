@@ -6,6 +6,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from tkinter import messagebox, simpledialog
 
+from last_listened import get_last_listened, order_listening_history, record_last_listened
+
 ROOT_PATH = Path(__file__).resolve().parent
 DATABASE_PATH = ROOT_PATH / "database.db"
 CANVA_DIR = ROOT_PATH / "canva design"
@@ -194,7 +196,7 @@ class BBCSoundsGUI(tk.Tk):
 
     def fetch_user_history(self):
         with self.get_db_connection() as conn:
-            return conn.execute(
+            rows = conn.execute(
                 "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins, "
                 "h.TimesListened, h.RatingGiven "
                 "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
@@ -202,6 +204,7 @@ class BBCSoundsGUI(tk.Tk):
                 "p.Title COLLATE NOCASE",
                 (self.current_user,),
             ).fetchall()
+            return order_listening_history(conn, self.current_user, rows, 0, 4)
 
     def fetch_user_favourites(self):
         listener_row = self.get_listener_data()
@@ -694,6 +697,7 @@ class BBCSoundsGUI(tk.Tk):
 
     def show_login(self, error_message=""):
         self.cancel_pending_render()
+        self._dismissed_last_listened = None
         if self._search_after_id is not None:
             self.after_cancel(self._search_after_id)
             self._search_after_id = None
@@ -876,6 +880,7 @@ class BBCSoundsGUI(tk.Tk):
         self.update_search_prompt()
         tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
 
+        self.add_last_listened_prompt(shell_box)
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
         area_frame.pack(fill="both", expand=True)
         canvas_pane = tk.Canvas(area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0)
@@ -898,6 +903,52 @@ class BBCSoundsGUI(tk.Tk):
         self.bind_smooth_scroll(canvas_pane, content_pane)
         self.current_page = content_pane
         return content_pane
+
+    def add_last_listened_prompt(self, shell):
+        if self.current_user is None:
+            return
+        try:
+            with self.get_db_connection() as conn:
+                recent = get_last_listened(conn, self.current_user)
+        except sqlite3.Error:
+            return
+        if recent is None:
+            return
+
+        podcast_id, title, category = recent
+        if podcast_id == self._dismissed_last_listened:
+            return
+
+        footer = self.create_card_frame(shell, bg="#262228")
+        footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10))
+        tk.Frame(footer, bg=ORANGE_ACCENT, width=3).pack(side="left", fill="y")
+        row = tk.Frame(footer, bg=footer.cget("bg"))
+        row.pack(fill="x", padx=10, pady=7)
+
+        def dismiss():
+            self._dismissed_last_listened = podcast_id
+            footer.destroy()
+
+        self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
+        self.create_button(
+            row, "▶  Play", lambda: self.listen(podcast_id), primary=True, compact=True,
+        ).pack(side="right")
+
+        cover = self.generate_podcast_cover(row, podcast_id, title, category, 62, 62, compact=True)
+        cover.pack(side="left", padx=(0, 11))
+        details = tk.Frame(row, bg=row.cget("bg"), cursor="hand2", takefocus=True,
+                           highlightthickness=1, highlightbackground=row.cget("bg"),
+                           highlightcolor=ORANGE_HL)
+        details.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        title_label = self.create_label(details, title, 13, TEXT_WHITE, "bold", cursor="hand2")
+        title_label.pack(fill="x", pady=(6, 1))
+        subtitle = f"Last played  ·  {category}" if category else "Last played"
+        subtitle_label = self.create_label(details, subtitle, 9, TEXT_GRAY, cursor="hand2")
+        subtitle_label.pack(fill="x")
+        for widget in (row, cover, details, title_label, subtitle_label):
+            widget.bind("<Button-1>", lambda _event: self.show_detail(podcast_id))
+        details.bind("<Return>", lambda _event: self.show_detail(podcast_id))
+        details.bind("<space>", lambda _event: self.show_detail(podcast_id))
 
     def bind_smooth_scroll(self, canvas, content):
         remaining = 0.0
@@ -1278,6 +1329,14 @@ class BBCSoundsGUI(tk.Tk):
             self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
                 side="right"
             )
+            final_row, used_columns = divmod(len(rating_rows), 4)
+            if idx == len(rating_rows) - 1 and used_columns:
+                self.create_label(
+                    ratings_grid, "No more results", 15, "#777b83", "bold", anchor="center",
+                ).grid(
+                    row=final_row, column=used_columns, columnspan=4 - used_columns,
+                    sticky="nsew", padx=6, pady=6,
+                )
         self.render_in_batches(rating_rows, render_rating_card)
 
     def show_genres(self):
@@ -1529,6 +1588,8 @@ class BBCSoundsGUI(tk.Tk):
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened) VALUES (?, ?, 1)",
                         (podcast_id, self.current_user),
                     )
+                record_last_listened(conn, self.current_user, podcast_id)
+            self._dismissed_last_listened = None
             messagebox.showinfo("Now playing", "Listening to this programme…\n\nPlayback is simulated in this prototype.", parent=self)
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
