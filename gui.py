@@ -1,11 +1,14 @@
+from collections import OrderedDict
 from contextlib import contextmanager
 import math
 import random
+from time import monotonic
 import sqlite3
 import tkinter as tk
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from tkinter import messagebox, simpledialog
+from tkinter import font as tkfont
 
 from last_listened import get_last_listened, order_listening_history, record_last_listened
 
@@ -25,6 +28,7 @@ TEXT_GRAY = "#a8abb1"
 TEXT_LIGHT = "#d6d8dc"
 GOLD_STAR = "#ffd166"
 DEFAULT_FONT = "Segoe UI"
+PODCASTS_PER_PAGE = 12
 
 GENRE_LIST = [
     "News", "Travel", "History", "Comedy", "True Crime", "Technology",
@@ -73,6 +77,32 @@ def blend_colour(hex_colour, target_colour, amount):
     return "#" + "".join(f"{channel:02x}" for channel in mixed)
 
 
+class RoundedPanel(tk.Frame):
+    def __init__(self, parent, surface, border=BORDER_LINE, **kwargs):
+        super().__init__(parent, bg=parent.cget("bg"), **kwargs)
+        self.surface = surface
+        self.border = border
+        self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), bd=0, highlightthickness=0)
+        self.backdrop.place(relwidth=1, relheight=1)
+        self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=surface, outline=border)
+        self.backdrop.bind("<Configure>", self.draw_surface)
+
+    def cget(self, key):
+        return self.surface if key in ("bg", "background") else super().cget(key)
+
+    def draw_surface(self, event):
+        w, h = event.width - 1, event.height - 1
+        r = min(12, w / 2, h / 2)
+        self.backdrop.coords(
+            self.shape, r, 1, w-r, 1, w, 1, w, r, w, h-r, w, h,
+            w-r, h, r, h, 1, h, 1, h-r, 1, r, 1, 1,
+        )
+
+    def set_surface(self, surface, border):
+        self.surface = surface
+        self.backdrop.itemconfigure(self.shape, fill=surface, outline=border)
+
+
 class BBCSoundsGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -90,6 +120,8 @@ class BBCSoundsGUI(tk.Tk):
         self.active_length = "Medium"
         self.svg_store = {}
         self.image_store = {}
+        self.cover_images = OrderedDict()
+        self.button_images = OrderedDict()
         self.genre_elements = {}
         self.length_buttons = {}
         self.search_text = tk.StringVar()
@@ -102,6 +134,7 @@ class BBCSoundsGUI(tk.Tk):
         self._search_entry = None
         self._search_prompt = None
         self._tab_transition_direction = None
+        self._scroll_priority_until = 0.0
 
         self.bind("<Configure>", self.schedule_interface_scaling)
         self.show_login()
@@ -131,9 +164,10 @@ class BBCSoundsGUI(tk.Tk):
                 font_spec = widget.cget("font")
                 if font_spec:
                     widget.configure(font=font_spec)
+                    if hasattr(widget, "_rounded_colours"):
+                        self.style_rounded_button(widget, *widget._rounded_colours)
             except tk.TclError:
                 pass
-        self.update_idletasks()
 
     @contextmanager
     def get_db_connection(self):
@@ -327,35 +361,64 @@ class BBCSoundsGUI(tk.Tk):
             **kwargs,
         )
 
-    @staticmethod
-    def create_button(container, text_val, command_func, primary=False, compact=False, **kwargs):
-        return tk.Button(
+    def create_button(self, container, text_val, command_func, primary=False, compact=False, **kwargs):
+        font_spec = kwargs.pop("font", (DEFAULT_FONT, 10 if compact else 11, "bold" if primary else "normal"))
+        face = kwargs.pop("face", ORANGE_ACCENT if primary else INPUT_BG)
+        foreground = kwargs.pop("fg", TEXT_WHITE if primary else TEXT_LIGHT)
+        background = container.cget("bg")
+        button = tk.Button(
             container,
             text=text_val,
             command=command_func,
-            font=(DEFAULT_FONT, 10 if compact else 11, "bold" if primary else "normal"),
-            bg=ORANGE_ACCENT if primary else INPUT_BG,
-            fg=TEXT_WHITE if primary else TEXT_LIGHT,
-            activebackground=ORANGE_HL if primary else BORDER_LINE,
+            font=font_spec, compound="center",
+            bg=background, fg=foreground,
+            activebackground=background,
             activeforeground=TEXT_WHITE,
             disabledforeground=TEXT_GRAY,
             relief="flat",
             bd=0,
             cursor="hand2",
-            padx=13 if compact else 17,
-            pady=7 if compact else 10,
+            padx=0, pady=0, highlightthickness=1,
+            highlightbackground=background, highlightcolor=ORANGE_HL,
             **kwargs,
         )
+        button._rounded_padding = (24, 12) if compact else (32, 16)
+        self.style_rounded_button(button, face, ORANGE_HL if primary else BORDER_LINE)
+        button.bind("<Enter>", lambda _e: button.configure(image=button._hover_image))
+        button.bind("<Leave>", lambda _e: button.configure(image=button._normal_image))
+        return button
+
+    def style_rounded_button(self, button, face, hover):
+        button._rounded_colours = (face, hover)
+        metrics = tkfont.Font(root=self, font=button.cget("font"))
+        pad_x, pad_y = button._rounded_padding
+        height = metrics.metrics("linespace") + pad_y
+        text = button.cget("text")
+        width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
+        button._normal_image = self.rounded_button_image(width, height, face)
+        button._hover_image = self.rounded_button_image(width, height, hover)
+        button.configure(image=button._normal_image)
+
+    def rounded_button_image(self, width, height, colour):
+        key = (width, height, colour)
+        if key not in self.button_images:
+            image = tk.PhotoImage(master=self, width=width, height=height)
+            radius = min(10, height // 2, width // 2)
+            image.put(colour, to=(0, radius, width, height - radius))
+            for y in range(radius):
+                inset = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
+                if inset * 2 < width:
+                    image.put(colour, to=(inset, y, width - inset, y + 1))
+                    image.put(colour, to=(inset, height-y-1, width-inset, height-y))
+            self.button_images[key] = image
+            if len(self.button_images) > 128:
+                self.button_images.popitem(last=False)
+        self.button_images.move_to_end(key)
+        return self.button_images[key]
 
     @staticmethod
     def create_card_frame(container, **kwargs):
-        return tk.Frame(
-            container,
-            bg=kwargs.pop("bg", CARD_BG),
-            highlightthickness=1,
-            highlightbackground=BORDER_LINE,
-            **kwargs,
-        )
+        return RoundedPanel(container, kwargs.pop("bg", CARD_BG), **kwargs)
 
     def draw_app_logo(self, container, scaling=1):
         row_frame = tk.Frame(container, bg=container.cget("bg"))
@@ -408,7 +471,11 @@ class BBCSoundsGUI(tk.Tk):
         else:
             canvas_obj = tk.Canvas(frame_box, width=width_px, height=height_px, bg=frame_box.cget("bg"), highlightthickness=0)
             canvas_obj.pack(fill="both", expand=True)
-            canvas_obj.create_oval(width_px * 0.22, height_px * 0.12, width_px * 0.78, height_px * 0.72, outline="#ffffff55", width=3)
+            outline_colour = blend_colour(frame_box.cget("bg"), "#ffffff", 0.33)
+            canvas_obj.create_oval(
+                width_px * 0.22, height_px * 0.12, width_px * 0.78, height_px * 0.72,
+                outline=outline_colour, width=3,
+            )
             canvas_obj.create_arc(
                 width_px * 0.28, height_px * 0.18, width_px * 0.72, height_px * 0.62,
                 start=25, extent=300, style="arc", outline=ORANGE_HL, width=5
@@ -420,82 +487,63 @@ class BBCSoundsGUI(tk.Tk):
             )
         return frame_box
 
-    def generate_podcast_cover(self, container, pid, title_text, category_text, width_px, height_px, compact=False):
-        fallback_colours = ["#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c"]
+    def generate_podcast_cover(self, container, pid, title_text, category_text, width_px, height_px):
+        fallback_colours = ("#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c")
         try:
-            design_idx = int(pid)
+            design_index = int(pid)
         except (TypeError, ValueError):
-            design_idx = sum(ord(char) for char in str(title_text))
+            design_index = sum(ord(char) for char in str(title_text))
 
-        category_name = str(category_text or "BBC Sounds")
-        genre_details = GENRE_TILE_DETAILS.get(category_name)
-        bg_tone = genre_details[0] if genre_details else fallback_colours[design_idx % len(fallback_colours)]
-        genre_icon = genre_details[1] if genre_details else category_name[:1].upper()
-        highlight_tone = blend_colour(bg_tone, "#ffffff", 0.48)
-        soft_tone = blend_colour(bg_tone, "#ffffff", 0.18)
-        shade_tone = blend_colour(bg_tone, "#000000", 0.58)
+        category = str(category_text or "BBC Sounds")
+        genre = GENRE_TILE_DETAILS.get(category)
+        colour = genre[0] if genre else fallback_colours[design_index % len(fallback_colours)]
+        icon = genre[1] if genre else category[:1].upper()
+        pattern = design_index % 3
+        key = (colour, pattern, width_px, height_px)
+        image = self.cover_images.get(key)
+        if image is None:
+            image = self.make_cover_image(colour, pattern, width_px, height_px)
+            self.cover_images[key] = image
+            if len(self.cover_images) > 128:
+                self.cover_images.popitem(last=False)
+        self.cover_images.move_to_end(key)
 
-        cnv = tk.Canvas(container, width=width_px, height=height_px, bg=bg_tone, highlightthickness=0, cursor="hand2")
-        cnv.pack_propagate(False)
-
-        # Layered shapes give each generated cover the feel of designed podcast artwork.
-        if design_idx % 3 == 0:
-            cnv.create_polygon(
-                0, height_px * 0.18, width_px, 0, width_px, height_px * 0.42, 0, height_px * 0.62,
-                fill=soft_tone, outline="",
-            )
-        elif design_idx % 3 == 1:
-            cnv.create_oval(-width_px * 0.22, -height_px * 0.3, width_px * 0.82, height_px * 0.72,
-                            fill=soft_tone, outline="")
-            cnv.create_oval(width_px * 0.62, height_px * 0.08, width_px * 1.15, height_px * 0.66,
-                            fill=highlight_tone, outline="")
-        else:
-            stripe_width = max(5, width_px // 10)
-            for stripe_x in range(-height_px, width_px, stripe_width * 2):
-                cnv.create_polygon(
-                    stripe_x, 0, stripe_x + stripe_width, 0,
-                    stripe_x + height_px + stripe_width, height_px, stripe_x + height_px, height_px,
-                    fill=soft_tone, outline="",
-                )
-
-        cnv.create_text(
-            width_px * 0.08, height_px * 0.09, text="BBC  SOUNDS", anchor="nw",
-            fill=TEXT_WHITE, font=(DEFAULT_FONT, max(6, width_px // 25), "bold"),
+        cover = tk.Label(
+            container, image=image, compound="center", text=icon,
+            font=(DEFAULT_FONT, max(11, min(width_px, height_px) // 6), "bold"),
+            bg=colour, fg=TEXT_WHITE, cursor="hand2", bd=0, highlightthickness=0,
         )
+        cover.image = image
+        return cover
 
-        disc_size = min(width_px, height_px) * (0.46 if compact else 0.42)
-        disc_x = width_px * (0.5 if compact else 0.74)
-        disc_y = height_px * (0.49 if compact else 0.43)
-        cnv.create_oval(
-            disc_x - disc_size / 2 - 3, disc_y - disc_size / 2 - 3,
-            disc_x + disc_size / 2 + 3, disc_y + disc_size / 2 + 3,
-            fill=shade_tone, outline=TEXT_WHITE, width=max(1, width_px // 70),
-        )
-        cnv.create_oval(
-            disc_x - disc_size / 2 + 5, disc_y - disc_size / 2 + 5,
-            disc_x + disc_size / 2 - 5, disc_y + disc_size / 2 - 5,
-            fill=bg_tone, outline=highlight_tone, width=max(1, width_px // 80),
-        )
-        cnv.create_text(
-            disc_x, disc_y, text=genre_icon, fill=TEXT_WHITE,
-            font=(DEFAULT_FONT, max(12, int(disc_size * 0.34)), "bold"),
-        )
-
-        footer_height = height_px * (0.25 if compact else 0.33)
-        cnv.create_rectangle(0, height_px - footer_height, width_px, height_px, fill=shade_tone, outline="")
-        cnv.create_text(
-            width_px * 0.08, height_px - footer_height + height_px * 0.055,
-            text=category_name.upper()[:22], anchor="nw", fill=highlight_tone,
-            font=(DEFAULT_FONT, max(6, width_px // 24), "bold"),
-        )
-        if not compact:
-            cover_title = " ".join(str(title_text).upper().split()[:5])
-            cnv.create_text(
-                width_px * 0.08, height_px - footer_height + height_px * 0.145,
-                text=cover_title[:38], anchor="nw", width=width_px * 0.84, fill=TEXT_WHITE,
-                font=(DEFAULT_FONT, max(8, width_px // 19), "bold"),
-            )
-        return cnv
+    def make_cover_image(self, colour, pattern, width, height):
+        """Rasterize a reusable cover background with no extra dependencies."""
+        base = bytes.fromhex(colour[1:])
+        light = bytes.fromhex(blend_colour(colour, "#ffffff", 0.20)[1:])
+        dark = bytes.fromhex(blend_colour(colour, "#000000", 0.55)[1:])
+        rim = bytes.fromhex(blend_colour(colour, "#ffffff", 0.55)[1:])
+        stripe_width = max(5, width // 9)
+        stripes = (light * stripe_width + base * stripe_width) * (width // (2 * stripe_width) + 2)
+        centre_x, centre_y = width // 2, height // 2
+        radius = min(width, height) // 4
+        pixels = bytearray(f"P6\n{width} {height}\n255\n".encode("ascii"))
+        for y in range(height):
+            if pattern == 0:
+                edge = max(0, min(width, width - (y - height // 4) * 2))
+                row = bytearray(light * edge + base * (width - edge))
+            elif pattern == 1:
+                shift = (y % (2 * stripe_width)) * 3
+                row = bytearray(stripes[shift:shift + width * 3])
+            else:
+                row = bytearray((base if y < height * 0.72 else light) * width)
+            dy = y - centre_y
+            for ring_radius, ring_colour in ((radius + 2, rim), (radius, dark)):
+                if abs(dy) <= ring_radius:
+                    span = math.isqrt(ring_radius ** 2 - dy ** 2)
+                    left, right = centre_x - span, centre_x + span + 1
+                    row[left * 3:right * 3] = ring_colour * (right - left)
+            pixels.extend(row)
+        return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
 
     def create_star_rating_bar(self, container, score_val, star_size=18, background_col=None):
         row_pane = tk.Frame(container, bg=background_col or container.cget("bg"))
@@ -585,7 +633,7 @@ class BBCSoundsGUI(tk.Tk):
 
         if compact:
             card_frame.pack(fill="x", pady=5)
-            cover = self.generate_podcast_cover(card_frame, pid, title, category, 92, 92, compact=True)
+            cover = self.generate_podcast_cover(card_frame, pid, title, category, 92, 92)
             cover.pack(side="left", padx=11, pady=10)
             details_pane = tk.Frame(card_frame, bg=CARD_BG)
             details_pane.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=12)
@@ -631,15 +679,26 @@ class BBCSoundsGUI(tk.Tk):
     def render_podcast_grid(
         self, parent_widget, items_list, columns_count=6,
         show_play=False, show_remove=False, max_count=8, single_row=False,
-        rating_index=None,
+        rating_index=None, show_end=True,
     ):
         if not items_list:
             self.render_empty_message(parent_widget, "No programmes to show yet", "Try another search, or explore all programmes.")
             return
+        displayed_items = items_list[:max_count]
+        if not single_row and len(displayed_items) > PODCASTS_PER_PAGE:
+            self.paginate_podcasts(
+                parent_widget, displayed_items,
+                lambda parent, rows, last: self.render_podcast_grid(
+                    parent, rows, columns_count, show_play=show_play,
+                    show_remove=show_remove, max_count=len(rows), rating_index=rating_index,
+                    show_end=show_end and last and len(displayed_items) == len(items_list),
+                ),
+            )
+            return
+
         grid_container = tk.Frame(parent_widget, bg=parent_widget.cget("bg"))
         grid_container.pack(fill="x")
 
-        displayed_items = items_list[:max_count]
         end_message = self.create_label(
             grid_container, "No more results", 15, "#777b83", "bold", anchor="center",
         )
@@ -676,7 +735,7 @@ class BBCSoundsGUI(tk.Tk):
 
             item_count = len(rendered_cards)
             final_row, used_columns = divmod(item_count, responsive_columns)
-            if item_count == len(items_list) and used_columns and (not single_row or final_row == 0):
+            if show_end and item_count == len(items_list) and used_columns and (not single_row or final_row == 0):
                 end_message.grid(
                     row=final_row, column=used_columns,
                     columnspan=responsive_columns - used_columns,
@@ -697,6 +756,63 @@ class BBCSoundsGUI(tk.Tk):
         grid_container.bind("<Configure>", reflow_cards)
         self.render_in_batches(displayed_items, render_card)
 
+    def paginate_podcasts(self, parent, items, render_page):
+        if len(items) <= PODCASTS_PER_PAGE:
+            render_page(parent, items, True)
+            return
+
+        background = parent.cget("bg")
+        wrapper = tk.Frame(parent, bg=background)
+        wrapper.pack(fill="x")
+        top = tk.Frame(wrapper, bg=background)
+        top.pack(pady=5)
+        body = tk.Frame(wrapper, bg=background)
+        body.pack(fill="x")
+        bottom = tk.Frame(wrapper, bg=background)
+        bottom.pack(pady=5)
+        page_count = math.ceil(len(items) / PODCASTS_PER_PAGE)
+        page_number = 0
+        status = tk.StringVar(master=wrapper)
+        controls = []
+        content = self.current_page
+        canvas = content.master
+
+        def change_page(number, scroll=False):
+            nonlocal page_number
+            if scroll:
+                region = canvas.cget("scrollregion")
+                if region:
+                    height = int(float(region.split()[3]))
+                    if height:
+                        offset = wrapper.winfo_rooty() - content.winfo_rooty()
+                        canvas.yview_moveto(max(0, offset - 8) / height)
+                self.cancel_pending_render()
+            page_number = number
+            for child in body.winfo_children():
+                child.destroy()
+            last = page_number == page_count - 1
+            status.set(f"Page {page_number + 1} of {page_count}")
+            for previous, following in controls:
+                previous.configure(state="normal" if page_number else "disabled")
+                following.configure(state="disabled" if last else "normal")
+            start = page_number * PODCASTS_PER_PAGE
+            render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
+
+        for bar in (top, bottom):
+            previous = self.create_button(
+                bar, "‹ Previous", lambda: change_page(page_number - 1, scroll=True), compact=True,
+            )
+            previous.pack(side="left")
+            tk.Label(bar, textvariable=status, bg=background, fg=TEXT_GRAY, font=(DEFAULT_FONT, 10)).pack(
+                side="left", padx=12,
+            )
+            following = self.create_button(
+                bar, "Next ›", lambda: change_page(page_number + 1, scroll=True), compact=True,
+            )
+            following.pack(side="left")
+            controls.append((previous, following))
+        change_page(0)
+
     def render_empty_message(self, parent_widget, heading, subtitle):
         box_pane = self.create_card_frame(parent_widget)
         box_pane.pack(fill="x", pady=8)
@@ -710,8 +826,12 @@ class BBCSoundsGUI(tk.Tk):
 
     def _render_next_batch(self):
         self._pending_render_id = None
+        if monotonic() < self._scroll_priority_until:
+            self._pending_render_id = self.after(24, self._render_next_batch)
+            return
+        deadline = monotonic() + 0.004
         rendered_count = 0
-        while self._render_queue and rendered_count < 6:
+        while self._render_queue and rendered_count < 4:
             items_iter, render_item = self._render_queue[0]
             try:
                 item = next(items_iter)
@@ -720,8 +840,10 @@ class BBCSoundsGUI(tk.Tk):
                 continue
             render_item(item)
             rendered_count += 1
+            if monotonic() >= deadline:
+                break
         if self._render_queue:
-            self._pending_render_id = self.after(1, self._render_next_batch)
+            self._pending_render_id = self.after(8, self._render_next_batch)
 
     def cancel_pending_render(self):
         if self._pending_render_id is not None:
@@ -770,12 +892,13 @@ class BBCSoundsGUI(tk.Tk):
         self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY).pack(anchor="w", padx=20)
 
         id_var = tk.StringVar()
+        input_panel = self.create_card_frame(login_panel, bg=INPUT_BG)
+        input_panel.pack(fill="x", padx=20, pady=(15, 10))
         text_entry = tk.Entry(
-            login_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
-            insertbackground=TEXT_WHITE, relief="flat", highlightthickness=1,
-            highlightbackground=BORDER_LINE, highlightcolor=ORANGE_ACCENT,
+            input_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
+            insertbackground=TEXT_WHITE, relief="flat", highlightthickness=0,
         )
-        text_entry.pack(fill="x", padx=20, pady=(15, 10), ipady=10)
+        text_entry.pack(fill="x", padx=12, pady=5, ipady=4)
 
         status_label = self.create_label(login_panel, error_message, 10, "#ff9868", wraplength=390)
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
@@ -888,24 +1011,22 @@ class BBCSoundsGUI(tk.Tk):
             selected_flag = label_text == active_tab_title or (label_text == "Report" and active_tab_title == "Listening report") or (
                 label_text == "Profile" and profile_tab_active
             )
-            tk.Button(
-                nav_row, text=label_text.upper(),
-                command=lambda go=handler, tab=label_text: self.transition_to(go, tab),
-                font=(DEFAULT_FONT, 9, "bold"),
-                bg=ORANGE_ACCENT if selected_flag else "#080808", fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
-                activebackground=ORANGE_HL, activeforeground=TEXT_WHITE, relief="flat", bd=0,
-                cursor="hand2", padx=11, pady=8,
-            ).pack(side="left", padx=2)
+            self.create_button(
+                nav_row, label_text.upper(), lambda go=handler, tab=label_text: self.transition_to(go, tab),
+                compact=True, primary=selected_flag, font=(DEFAULT_FONT, 9, "bold"),
+                face=ORANGE_ACCENT if selected_flag else "#080808",
+                fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
+            ).pack(side="left", padx=1)
         self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
-        search_container = tk.Frame(topbar, bg=INPUT_BG, width=230, height=38)
+        search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
         search_container.pack(side="right", padx=(0, 14), pady=23)
         search_container.pack_propagate(False)
         self._search_entry = tk.Entry(
             search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
-            highlightthickness=1, highlightbackground=BORDER_LINE, highlightcolor=ORANGE_ACCENT,
+            highlightthickness=0,
         )
-        self._search_entry.pack(fill="both", expand=True, ipady=7)
+        self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
         self._search_prompt = tk.Label(
             search_container, text="Search programmes...", font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
@@ -920,7 +1041,9 @@ class BBCSoundsGUI(tk.Tk):
         self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
         area_frame.pack(fill="both", expand=True)
-        canvas_pane = tk.Canvas(area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0)
+        canvas_pane = tk.Canvas(
+            area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0, yscrollincrement=1,
+        )
         scroll_bar = tk.Scrollbar(area_frame, orient="vertical", command=canvas_pane.yview,
                                   bg=SIDEBAR_BG, troughcolor=DARK_BG, activebackground=ORANGE_ACCENT)
         scroll_bar.pack(side="right", fill="y")
@@ -937,7 +1060,7 @@ class BBCSoundsGUI(tk.Tk):
                 canvas_pane.itemconfigure(canvas_window, width=event.width)
 
         canvas_pane.bind("<Configure>", resize_content)
-        self.bind_smooth_scroll(canvas_pane, content_pane)
+        self.bind_page_scroll(canvas_pane, scroll_bar)
         self.current_page = content_pane
         self._page_transition_target = (canvas_pane, canvas_window)
         self._tab_order = [label for label, _ in nav_links]
@@ -958,6 +1081,7 @@ class BBCSoundsGUI(tk.Tk):
             return
         direction = 1 if current not in self._tab_order or self._tab_order.index(tab) > self._tab_order.index(current) else -1
         canvas._leaving_page = True
+        self.cancel_pending_render()
 
         def open_next_page():
             self._tab_transition_direction = direction
@@ -1006,12 +1130,13 @@ class BBCSoundsGUI(tk.Tk):
         overlay = tk.Frame(canvas.master, bg=DARK_BG, bd=0, highlightthickness=0)
         canvas._genre_overlay = overlay
         # Cover only the content viewport, leaving the scrollbar and chrome available.
-        frame_count = 16 if entering else 12
+        duration = 0.240 if entering else 0.180
+        started = monotonic()
 
-        def draw_frame(index):
+        def draw_frame():
             if not overlay.winfo_exists() or not canvas.winfo_exists():
                 return
-            progress = index / frame_count
+            progress = min(1.0, (monotonic() - started) / duration)
             covered = (1 - progress) ** 2 if entering else progress ** 2
             width = round(canvas.winfo_width() * covered)
             align_right = direction < 0 if entering else direction > 0
@@ -1019,28 +1144,28 @@ class BBCSoundsGUI(tk.Tk):
             if width:
                 overlay.place(x=x, y=canvas.winfo_y(), width=width, height=canvas.winfo_height())
                 overlay.lift()
-            if index < frame_count:
-                self.after(15, draw_frame, index + 1)
+            if progress < 1:
+                self.after(15, draw_frame)
             else:
                 overlay.destroy()
                 on_complete()
 
-        draw_frame(0)
+        draw_frame()
 
     def slide_page(self, canvas, canvas_window, end_x, duration_ms, on_complete=None):
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
             canvas.after_cancel(previous_frame)
         start_x = canvas.coords(canvas_window)[0]
-        frame_count = duration_ms // 15
+        started = monotonic()
 
-        def draw_frame(index):
+        def draw_frame():
             canvas._slide_frame = None
-            progress = index / frame_count
+            progress = min(1.0, (monotonic() - started) * 1000 / duration_ms)
             eased = progress ** 2 if end_x else 1 - (1 - progress) ** 3
             canvas.coords(canvas_window, round(start_x + (end_x - start_x) * eased), 0)
-            if index < frame_count:
-                canvas._slide_frame = canvas.after(15, draw_frame, index + 1)
+            if progress < 1:
+                canvas._slide_frame = canvas.after(15, draw_frame)
             elif on_complete:
                 on_complete()
 
@@ -1051,7 +1176,7 @@ class BBCSoundsGUI(tk.Tk):
 
             canvas.bind("<Destroy>", cancel_animation, add="+")
             canvas._slide_cleanup_bound = True
-        draw_frame(0)
+        draw_frame()
 
     def add_last_listened_prompt(self, shell, show_average=True):
         if self.current_user is None:
@@ -1083,7 +1208,7 @@ class BBCSoundsGUI(tk.Tk):
             row, "▶  Play", lambda: self.listen(podcast_id), primary=True, compact=True,
         ).pack(side="right")
 
-        cover = self.generate_podcast_cover(row, podcast_id, title, category, 62, 62, compact=True)
+        cover = self.generate_podcast_cover(row, podcast_id, title, category, 62, 62)
         cover.pack(side="left", padx=(0, 11))
         details = tk.Frame(row, bg=row.cget("bg"), cursor="hand2", takefocus=True,
                            highlightthickness=1, highlightbackground=row.cget("bg"),
@@ -1101,42 +1226,69 @@ class BBCSoundsGUI(tk.Tk):
         details.bind("<Return>", lambda _event: self.show_detail(podcast_id))
         details.bind("<space>", lambda _event: self.show_detail(podcast_id))
 
-    def bind_smooth_scroll(self, canvas, content):
-        remaining = 0.0
-        frame_job = None
+    def bind_page_scroll(self, canvas, scrollbar):
+        """Ease wheel detents briefly and keep direct scrolling responsive."""
+        fraction = 0.0
+        pending_frame = None
+        target = None
 
-        def scroll_frame():
-            nonlocal remaining, frame_job
-            frame_job = None
-            if not canvas.winfo_exists():
-                return
-            height = content.winfo_height()
-            if height <= canvas.winfo_height():
-                remaining = 0.0
-                return
-            step = round(remaining * 0.32)
-            if abs(remaining) < 4:
-                step = round(remaining)
-                remaining = 0.0
+        def cancel_animation():
+            nonlocal pending_frame, target
+            if pending_frame is not None:
+                canvas.after_cancel(pending_frame)
+                pending_frame = None
+            target = None
+
+        def drag_scrollbar(*args):
+            cancel_animation()
+            self._scroll_priority_until = monotonic() + 0.080
+            canvas.yview(*args)
+
+        def draw_frame(start, started):
+            nonlocal pending_frame, target
+            pending_frame = None
+            progress = min(1.0, (monotonic() - started) / 0.065)
+            position = round(start + (target - start) * (1 - (1 - progress) ** 2))
+            canvas.yview_scroll(position - round(canvas.canvasy(0)), "units")
+            if progress < 1 and position != target:
+                pending_frame = canvas.after(10, draw_frame, start, started)
             else:
-                remaining -= step
-            start, end = canvas.yview()
-            target = max(0.0, min(1.0 - (end - start), start + step / height))
-            canvas.yview_moveto(target)
-            if remaining:
-                frame_job = self.after(12, scroll_frame)
+                target = None
 
         def on_wheel(event):
-            nonlocal remaining, frame_job
-            distance = -event.delta * 0.7
-            if remaining * distance < 0:
-                remaining = 0.0
-            remaining = max(-480.0, min(480.0, remaining + distance))
-            if frame_job is None:
-                scroll_frame()
+            nonlocal fraction, target
+            if not event.delta:
+                return "break"
+            self._scroll_priority_until = monotonic() + 0.080
+            if event.delta % 120:
+                cancel_animation()
+                fraction -= event.delta * 48 / 120
+                pixels = int(fraction)
+                fraction -= pixels
+                if pixels:
+                    canvas.yview_scroll(pixels, "units")
+                return "break"
+
+            current = round(canvas.canvasy(0))
+            distance = -event.delta * 48 // 120
+            queued = target - current if target is not None else 0
+            cancel_animation()
+            if queued * distance > 0:
+                distance += queued
+            region = canvas.cget("scrollregion")
+            if region:
+                bottom = int(float(region.split()[3]))
+                maximum = max(0, bottom - canvas.winfo_height())
+                target = max(0, min(maximum, current + max(-144, min(144, distance))))
+                if target != current:
+                    draw_frame(current, monotonic())
+                else:
+                    target = None
             return "break"
 
+        scrollbar.configure(command=drag_scrollbar)
         canvas.bind_all("<MouseWheel>", on_wheel)
+        canvas.bind("<Destroy>", lambda _event: cancel_animation(), add="+")
 
     def schedule_live_search(self, _event=None):
         """Refresh results shortly after the user pauses typing in the header search."""
@@ -1335,16 +1487,13 @@ class BBCSoundsGUI(tk.Tk):
                         f"Explore {category_name.lower()} shows and stories",
                     ),
                 )
-                category_card = tk.Frame(
-                    category_row, bg=tile_colour, cursor="hand2",
-                    highlightthickness=1, highlightbackground=BORDER_LINE,
-                )
+                category_card = self.create_card_frame(category_row, bg=tile_colour, cursor="hand2")
                 category_card.grid(
                     row=idx // columns_count, column=idx % columns_count,
                     sticky="nsew", padx=5, pady=5,
                 )
                 accent_line = tk.Frame(category_card, bg=ORANGE_HL, height=3, cursor="hand2")
-                accent_line.pack(fill="x")
+                accent_line.pack(fill="x", padx=12, pady=(2, 0))
                 card_header = tk.Frame(category_card, bg=tile_colour, cursor="hand2")
                 card_header.pack(fill="x", padx=15, pady=(13, 5))
                 icon_label = tk.Label(
@@ -1374,7 +1523,7 @@ class BBCSoundsGUI(tk.Tk):
                     self.search_text.set(name), perform_search_action()
                 )
                 for clickable_widget in (
-                    category_card, accent_line, card_header, icon_label,
+                    category_card, category_card.backdrop, accent_line, card_header, icon_label,
                     title_label, description_label, action_label,
                 ):
                     clickable_widget.bind("<Button-1>", open_genre)
@@ -1459,7 +1608,10 @@ class BBCSoundsGUI(tk.Tk):
             side="right", padx=18, pady=18
         )
 
-        ratings_grid = tk.Frame(page, bg=DARK_BG)
+        self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
+
+    def render_ratings_page(self, parent, rating_rows, last_page):
+        ratings_grid = tk.Frame(parent, bg=DARK_BG)
         ratings_grid.pack(fill="x")
         for column_idx in range(4):
             ratings_grid.grid_columnconfigure(column_idx, weight=1, uniform="rating-cards")
@@ -1488,7 +1640,7 @@ class BBCSoundsGUI(tk.Tk):
                 side="right"
             )
             final_row, used_columns = divmod(len(rating_rows), 4)
-            if idx == len(rating_rows) - 1 and used_columns:
+            if last_page and idx == len(rating_rows) - 1 and used_columns:
                 self.create_label(
                     ratings_grid, "No more results", 15, "#777b83", "bold", anchor="center",
                 ).grid(
@@ -1866,7 +2018,7 @@ class BBCSoundsGUI(tk.Tk):
     def build_genre_tile(self, parent_widget, genre_name, idx, selected=False):
         bg_col = "#38251d" if selected else CARD_BG
         border_col = ORANGE_ACCENT if selected else BORDER_LINE
-        tile_box = tk.Frame(parent_widget, bg=bg_col, highlightthickness=1, highlightbackground=border_col)
+        tile_box = RoundedPanel(parent_widget, bg_col, border_col)
         canvas_marker = self.create_genre_circle(tile_box, genre_name, idx, 45, bg_col)
         canvas_marker.pack(pady=(10, 3))
         self.create_label(tile_box, genre_name, 9, ORANGE_HL if selected else TEXT_WHITE, "bold", anchor="center", bg=bg_col).pack(
@@ -1893,7 +2045,7 @@ class BBCSoundsGUI(tk.Tk):
         self.genre_elements = {}
         genre_tiles = []
         for idx, g_name in enumerate(GENRE_LIST):
-            tile = tk.Frame(grid_frame, bg=CARD_BG, highlightthickness=1, highlightbackground=BORDER_LINE, cursor="hand2")
+            tile = self.create_card_frame(grid_frame, cursor="hand2")
             art_cnv = self.create_genre_circle(tile, g_name, idx, 54, CARD_BG)
             art_cnv.pack(pady=(9, 3))
             check_lbl = self.create_label(tile, g_name, 9, TEXT_WHITE, "bold", anchor="center", bg=CARD_BG)
@@ -1958,7 +2110,7 @@ class BBCSoundsGUI(tk.Tk):
         for name, (tile, lbl, circle) in getattr(self, "genre_elements", {}).items():
             is_active = name in self.active_genres
             background_color = "#38251d" if is_active else CARD_BG
-            tile.configure(bg=background_color, highlightbackground=ORANGE_ACCENT if is_active else BORDER_LINE)
+            tile.set_surface(background_color, ORANGE_ACCENT if is_active else BORDER_LINE)
             lbl.configure(bg=background_color, fg=ORANGE_HL if is_active else TEXT_WHITE)
             circle.configure(bg=background_color)
             for child in tile.winfo_children():
@@ -1973,9 +2125,11 @@ class BBCSoundsGUI(tk.Tk):
         for val_key, button_obj in getattr(self, "length_buttons", {}).items():
             active_flag = val_key == self.active_length
             button_obj.configure(
-                bg=ORANGE_ACCENT if active_flag else INPUT_BG,
-                activebackground=ORANGE_HL if active_flag else BORDER_LINE,
                 fg=TEXT_WHITE if active_flag else TEXT_LIGHT
+            )
+            self.style_rounded_button(
+                button_obj, ORANGE_ACCENT if active_flag else INPUT_BG,
+                ORANGE_HL if active_flag else BORDER_LINE,
             )
 
     def save_user_preferences(self):
