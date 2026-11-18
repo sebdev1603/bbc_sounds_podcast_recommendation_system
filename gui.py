@@ -100,6 +100,7 @@ class BBCSoundsGUI(tk.Tk):
         self._live_search_callback = None
         self._search_entry = None
         self._search_prompt = None
+        self._tab_transition_direction = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
         self.show_login()
@@ -854,7 +855,9 @@ class BBCSoundsGUI(tk.Tk):
                 label_text == "Profile" and profile_tab_active
             )
             tk.Button(
-                nav_row, text=label_text.upper(), command=handler, font=(DEFAULT_FONT, 9, "bold"),
+                nav_row, text=label_text.upper(),
+                command=lambda go=handler, tab=label_text: self.transition_to(go, tab),
+                font=(DEFAULT_FONT, 9, "bold"),
                 bg=ORANGE_ACCENT if selected_flag else "#080808", fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
                 activebackground=ORANGE_HL, activeforeground=TEXT_WHITE, relief="flat", bd=0,
                 cursor="hand2", padx=11, pady=8,
@@ -902,7 +905,119 @@ class BBCSoundsGUI(tk.Tk):
         canvas_pane.bind("<Configure>", resize_content)
         self.bind_smooth_scroll(canvas_pane, content_pane)
         self.current_page = content_pane
+        self._page_transition_target = (canvas_pane, canvas_window)
+        self._tab_order = [label for label, _ in nav_links]
+        self._active_nav_tab = (
+            "Profile" if profile_tab_active else
+            "Report" if active_tab_title == "Listening report" else active_tab_title
+        )
+        if self._tab_transition_direction is not None:
+            self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
         return content_pane
+
+    def transition_to(self, destination, tab):
+        canvas, window = self._page_transition_target
+        if getattr(canvas, "_leaving_page", False):
+            return
+        current = self._active_nav_tab
+        if tab == current:
+            return
+        direction = 1 if current not in self._tab_order or self._tab_order.index(tab) > self._tab_order.index(current) else -1
+        canvas._leaving_page = True
+
+        def open_next_page():
+            self._tab_transition_direction = direction
+            try:
+                destination()
+            finally:
+                self._tab_transition_direction = None
+
+        if current == "Genres":
+            self.wipe_genres(canvas, direction, entering=False, on_complete=open_next_page)
+        else:
+            self.slide_page(canvas, window, -direction * canvas.winfo_width(), 210, open_next_page)
+
+    def animate_page_entry(self, canvas, canvas_window, direction):
+        canvas.itemconfigure(canvas_window, state="hidden")
+        canvas._entering_page = True
+
+        def finish_entry():
+            canvas._entering_page = False
+            canvas.event_generate("<<PageEntryComplete>>")
+
+        def reveal_page():
+            if not canvas.winfo_exists():
+                return
+            if self._active_nav_tab == "Genres":
+                canvas.coords(canvas_window, 0, 0)
+                self.wipe_genres(canvas, direction, entering=True, on_complete=finish_entry)
+                canvas.itemconfigure(canvas_window, state="normal")
+                return
+            canvas.itemconfigure(canvas_window, state="normal")
+            self.slide_page(canvas, canvas_window, 0, 285, finish_entry)
+
+        def start_entry(event):
+            canvas.unbind("<Configure>", configure_binding)
+            canvas.itemconfigure(canvas_window, width=event.width)
+            canvas.coords(canvas_window, direction * event.width, 0)
+            canvas.after_idle(reveal_page)
+
+        configure_binding = canvas.bind("<Configure>", start_entry, add="+")
+
+    def wipe_genres(self, canvas, direction, entering, on_complete):
+        """Reveal stationary Tk buttons using a single opaque overlay."""
+        previous_overlay = getattr(canvas, "_genre_overlay", None)
+        if previous_overlay is not None and previous_overlay.winfo_exists():
+            previous_overlay.destroy()
+        overlay = tk.Frame(canvas.master, bg=DARK_BG, bd=0, highlightthickness=0)
+        canvas._genre_overlay = overlay
+        # Cover only the content viewport, leaving the scrollbar and chrome available.
+        frame_count = 16 if entering else 12
+
+        def draw_frame(index):
+            if not overlay.winfo_exists() or not canvas.winfo_exists():
+                return
+            progress = index / frame_count
+            covered = (1 - progress) ** 2 if entering else progress ** 2
+            width = round(canvas.winfo_width() * covered)
+            align_right = direction < 0 if entering else direction > 0
+            x = canvas.winfo_x() + (canvas.winfo_width() - width if align_right else 0)
+            if width:
+                overlay.place(x=x, y=canvas.winfo_y(), width=width, height=canvas.winfo_height())
+                overlay.lift()
+            if index < frame_count:
+                self.after(15, draw_frame, index + 1)
+            else:
+                overlay.destroy()
+                on_complete()
+
+        draw_frame(0)
+
+    def slide_page(self, canvas, canvas_window, end_x, duration_ms, on_complete=None):
+        previous_frame = getattr(canvas, "_slide_frame", None)
+        if previous_frame is not None:
+            canvas.after_cancel(previous_frame)
+        start_x = canvas.coords(canvas_window)[0]
+        frame_count = duration_ms // 15
+
+        def draw_frame(index):
+            canvas._slide_frame = None
+            progress = index / frame_count
+            eased = progress ** 2 if end_x else 1 - (1 - progress) ** 3
+            canvas.coords(canvas_window, round(start_x + (end_x - start_x) * eased), 0)
+            if index < frame_count:
+                canvas._slide_frame = canvas.after(15, draw_frame, index + 1)
+            elif on_complete:
+                on_complete()
+
+        if not getattr(canvas, "_slide_cleanup_bound", False):
+            def cancel_animation(_event):
+                if canvas._slide_frame is not None:
+                    canvas.after_cancel(canvas._slide_frame)
+
+            canvas.bind("<Destroy>", cancel_animation, add="+")
+            canvas._slide_cleanup_bound = True
+        draw_frame(0)
 
     def add_last_listened_prompt(self, shell):
         if self.current_user is None:
@@ -1134,6 +1249,8 @@ class BBCSoundsGUI(tk.Tk):
 
         def perform_search_action(_event=None):
             nonlocal last_search
+            if getattr(page.master, "_entering_page", False):
+                return
             self.update_search_prompt()
             search_term = self.search_text.get().strip()
             if search_term == last_search:
@@ -1230,7 +1347,10 @@ class BBCSoundsGUI(tk.Tk):
 
         self.render_section_title(page, "Programmes")
         results_pane.pack(fill="both", expand=True)
-        perform_search_action()
+        if getattr(page.master, "_entering_page", False):
+            page.master.bind("<<PageEntryComplete>>", perform_search_action)
+        else:
+            perform_search_action()
 
     def show_recommendations(self):
         page = self.build_shell("For you")
