@@ -592,8 +592,8 @@ class BBCSoundsGUI(tk.Tk):
                 activebackground=ORANGE_HL, activeforeground=TEXT_WHITE, relief="flat", bd=0,
                 cursor="hand2", padx=11, pady=8,
             ).pack(side="left", padx=2)
-        self.create_button(topbar, "Search", self.show_search, compact=True).pack(side="right", padx=(6, 9), pady=20)
-        self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", pady=20)
+        self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
+        self.create_button(topbar, "Search", self.show_search, compact=True).pack(side="right", pady=20)
         tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
 
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
