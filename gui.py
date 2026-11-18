@@ -604,7 +604,7 @@ class BBCSoundsGUI(tk.Tk):
 
         displayed_items = items_list[:max_count]
         end_message = self.create_label(
-            grid_container, "No more results", 10, "#777b83", anchor="center",
+            grid_container, "No more results", 15, "#777b83", "bold", anchor="center",
         )
         rendered_cards = []
         current_columns = [0]
@@ -614,16 +614,20 @@ class BBCSoundsGUI(tk.Tk):
             if available_width <= 1:
                 available_width = max(1, self.winfo_width() - 110)
             responsive_columns = max(2, min(columns_count, available_width // 260))
-            if responsive_columns == current_columns[0] and _event is not None:
+            columns_changed = responsive_columns != current_columns[0]
+            if not columns_changed and _event is not None:
                 return
             current_columns[0] = responsive_columns
-            for col_idx in range(columns_count):
-                grid_container.grid_columnconfigure(
-                    col_idx, weight=1 if col_idx < responsive_columns else 0,
-                    uniform="programme" if col_idx < responsive_columns else "",
-                )
+            if columns_changed:
+                for col_idx in range(columns_count):
+                    grid_container.grid_columnconfigure(
+                        col_idx, weight=1 if col_idx < responsive_columns else 0,
+                        uniform="programme" if col_idx < responsive_columns else "",
+                    )
             visible_count = responsive_columns if single_row else len(rendered_cards)
-            for card_idx, card_widget in enumerate(rendered_cards):
+            first_card = 0 if columns_changed else len(rendered_cards) - 1
+            for card_idx in range(first_card, len(rendered_cards)):
+                card_widget = rendered_cards[card_idx]
                 if card_idx >= visible_count:
                     card_widget.grid_remove()
                     continue
@@ -670,7 +674,7 @@ class BBCSoundsGUI(tk.Tk):
     def _render_next_batch(self):
         self._pending_render_id = None
         rendered_count = 0
-        while self._render_queue and rendered_count < 12:
+        while self._render_queue and rendered_count < 6:
             items_iter, render_item = self._render_queue[0]
             try:
                 item = next(items_iter)
@@ -690,6 +694,10 @@ class BBCSoundsGUI(tk.Tk):
 
     def show_login(self, error_message=""):
         self.cancel_pending_render()
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+            self._search_after_id = None
+        self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
         for child_widget in self.winfo_children():
@@ -742,16 +750,12 @@ class BBCSoundsGUI(tk.Tk):
             try:
                 with self.get_db_connection() as conn:
                     found_record = conn.execute(
-                        "SELECT ListenerID FROM listeners WHERE ListenerID = ?",
+                        "SELECT ListenerID, CompleteSurvey FROM listeners WHERE ListenerID = ?",
                         (format_user_id(username_input),),
                     ).fetchone()
                 if found_record:
                     self.current_user = found_record[0]
-                    listener_obj = self.get_listener_data()
-                    if not listener_obj:
-                        status_label.config(text="That listener account could not be loaded.")
-                        return
-                    if not self.get_row_field(listener_obj, "CompleteSurvey", 0):
+                    if not found_record["CompleteSurvey"]:
                         self.active_genres = []
                         self.active_length = "Medium"
                     self.show_home()
@@ -769,7 +773,18 @@ class BBCSoundsGUI(tk.Tk):
         right_side.pack_propagate(False)
         disc_canvas = tk.Canvas(right_side, bg=right_side.cget("bg"), highlightthickness=0)
         disc_canvas.pack(fill="both", expand=True)
-        disc_canvas.bind("<Configure>", self.paint_vinyl_record)
+        def queue_record_paint(event):
+            pending = getattr(disc_canvas, "_paint_job", None)
+            if pending is not None:
+                self.after_cancel(pending)
+            disc_canvas._paint_job = self.after(100, paint_record, event)
+
+        def paint_record(event):
+            disc_canvas._paint_job = None
+            if disc_canvas.winfo_exists():
+                self.paint_vinyl_record(event)
+
+        disc_canvas.bind("<Configure>", queue_record_paint)
 
     @staticmethod
     def paint_vinyl_record(event):
@@ -871,11 +886,55 @@ class BBCSoundsGUI(tk.Tk):
         canvas_pane.configure(yscrollcommand=scroll_bar.set)
         content_pane = tk.Frame(canvas_pane, bg=DARK_BG, padx=46, pady=28)
         canvas_window = canvas_pane.create_window((0, 0), window=content_pane, anchor="nw")
-        content_pane.bind("<Configure>", lambda _e: canvas_pane.configure(scrollregion=canvas_pane.bbox("all")))
-        canvas_pane.bind("<Configure>", lambda e: canvas_pane.itemconfigure(canvas_window, width=e.width))
-        canvas_pane.bind_all("<MouseWheel>", lambda e: canvas_pane.yview_scroll(int(-e.delta / 120), "units"))
+        content_pane.bind(
+            "<Configure>", lambda event: canvas_pane.configure(scrollregion=(0, 0, event.width, event.height)),
+        )
+
+        def resize_content(event):
+            if event.width != content_pane.winfo_width():
+                canvas_pane.itemconfigure(canvas_window, width=event.width)
+
+        canvas_pane.bind("<Configure>", resize_content)
+        self.bind_smooth_scroll(canvas_pane, content_pane)
         self.current_page = content_pane
         return content_pane
+
+    def bind_smooth_scroll(self, canvas, content):
+        remaining = 0.0
+        frame_job = None
+
+        def scroll_frame():
+            nonlocal remaining, frame_job
+            frame_job = None
+            if not canvas.winfo_exists():
+                return
+            height = content.winfo_height()
+            if height <= canvas.winfo_height():
+                remaining = 0.0
+                return
+            step = round(remaining * 0.32)
+            if abs(remaining) < 4:
+                step = round(remaining)
+                remaining = 0.0
+            else:
+                remaining -= step
+            start, end = canvas.yview()
+            target = max(0.0, min(1.0 - (end - start), start + step / height))
+            canvas.yview_moveto(target)
+            if remaining:
+                frame_job = self.after(12, scroll_frame)
+
+        def on_wheel(event):
+            nonlocal remaining, frame_job
+            distance = -event.delta * 0.7
+            if remaining * distance < 0:
+                remaining = 0.0
+            remaining = max(-480.0, min(480.0, remaining + distance))
+            if frame_job is None:
+                scroll_frame()
+            return "break"
+
+        canvas.bind_all("<MouseWheel>", on_wheel)
 
     def schedule_live_search(self, _event=None):
         """Refresh results shortly after the user pauses typing in the header search."""
@@ -1020,20 +1079,27 @@ class BBCSoundsGUI(tk.Tk):
         self.render_page_title(page, "Browse genres", "Choose a genre below, or use the search bar above.")
 
         results_pane = tk.Frame(page, bg=DARK_BG)
+        last_search = None
 
         def perform_search_action(_event=None):
+            nonlocal last_search
             self.update_search_prompt()
+            search_term = self.search_text.get().strip()
+            if search_term == last_search:
+                return
             self.cancel_pending_render()
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
-                matching_rows = self.query_podcasts(self.search_text.get(), item_limit=80)
+                matching_rows = self.query_podcasts(search_term, item_limit=80)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
                     results_pane, matching_rows, columns_count=6,
                     show_play=True, max_count=80,
                 )
+                last_search = search_term
             except sqlite3.Error as err:
+                last_search = None
                 self.show_db_error("Search failed", err)
 
         self._live_search_callback = perform_search_action
