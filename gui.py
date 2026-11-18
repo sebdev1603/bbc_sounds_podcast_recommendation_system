@@ -29,6 +29,20 @@ GENRE_LIST = [
 ]
 DURATION_RANGES = {"Short": (0, 30), "Medium": (25, 45), "Long": (45, 60)}
 PALETTE_SWATCHES = ["#5b315e", "#185a70", "#7a3d2d", "#2e6654", "#6c5631", "#373e79"]
+GENRE_TILE_DETAILS = {
+    "News": ("#7a2838", "N", "Headlines, investigations and current affairs"),
+    "Travel": ("#176c78", "✈", "Journeys, places and stories from around the world"),
+    "History": ("#76512d", "H", "People and events that shaped our world"),
+    "Comedy": ("#7b3f91", "☺", "Stand-up, panel shows and funny conversations"),
+    "True Crime": ("#633344", "?", "Real cases, mysteries and investigations"),
+    "Technology": ("#285d8b", ">_", "Digital culture, inventions and the future"),
+    "Science": ("#23705b", "Σ", "Discoveries, nature and how things work"),
+    "Business": ("#6f5d24", "£", "Money, markets, careers and entrepreneurship"),
+    "Gaming": ("#394a91", "+", "Games, creators and player culture"),
+    "Entertainment": ("#9a3e67", "★", "Film, television, music and celebrity stories"),
+    "Sport": ("#39713b", "●", "Matches, athletes and expert sporting analysis"),
+    "Health": ("#8a4b35", "♥", "Wellbeing, medicine and healthier living"),
+}
 GENRE_CIRCLE_COLOURS = [
     ("#b79cff", "#5e17eb", "#2e0b70"), ("#9cecff", "#38b6ff", "#0b4f78"),
     ("#ffb7ad", "#e84a5f", "#7c1f2c"), ("#b9f4c7", "#43aa8b", "#175b49"),
@@ -46,6 +60,14 @@ def format_user_id(uid):
 
 def sanitize_column_name(col):
     return '"' + str(col).replace('"', '""') + '"'
+
+
+def blend_colour(hex_colour, target_colour, amount):
+    """Blend two #RRGGBB colours for generated programme artwork."""
+    source = tuple(int(hex_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
+    target = tuple(int(target_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
+    mixed = tuple(round(start + (end - start) * amount) for start, end in zip(source, target))
+    return "#" + "".join(f"{channel:02x}" for channel in mixed)
 
 
 class BBCSoundsGUI(tk.Tk):
@@ -68,6 +90,10 @@ class BBCSoundsGUI(tk.Tk):
         self._sort_sql = None
         self._pending_render_id = None
         self._render_queue = []
+        self._search_after_id = None
+        self._live_search_callback = None
+        self._search_entry = None
+        self._search_prompt = None
 
         self.show_login()
 
@@ -344,35 +370,79 @@ class BBCSoundsGUI(tk.Tk):
         return frame_box
 
     def generate_podcast_cover(self, container, pid, title_text, category_text, width_px, height_px, compact=False):
-        color_sets = [
-            ("#6e4dbb", "#b9a7ff", "#19132e"),
-            ("#ee6b4d", "#ffc09e", "#391912"),
-            ("#178d9a", "#9be9e5", "#0e2635"),
-            ("#b44272", "#ffb1cb", "#351124"),
-            ("#658d31", "#d9ef90", "#172b1a"),
-            ("#d28a24", "#ffe19a", "#35200c"),
-        ]
+        fallback_colours = ["#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c"]
         try:
-            palette_idx = int(pid) % len(color_sets)
+            design_idx = int(pid)
         except (TypeError, ValueError):
-            palette_idx = sum(ord(char) for char in str(title_text)) % len(color_sets)
-        bg_tone, highlight_tone, shade_tone = color_sets[palette_idx]
+            design_idx = sum(ord(char) for char in str(title_text))
+
+        category_name = str(category_text or "BBC Sounds")
+        genre_details = GENRE_TILE_DETAILS.get(category_name)
+        bg_tone = genre_details[0] if genre_details else fallback_colours[design_idx % len(fallback_colours)]
+        genre_icon = genre_details[1] if genre_details else category_name[:1].upper()
+        highlight_tone = blend_colour(bg_tone, "#ffffff", 0.48)
+        soft_tone = blend_colour(bg_tone, "#ffffff", 0.18)
+        shade_tone = blend_colour(bg_tone, "#000000", 0.58)
 
         cnv = tk.Canvas(container, width=width_px, height=height_px, bg=bg_tone, highlightthickness=0, cursor="hand2")
         cnv.pack_propagate(False)
-        cnv.create_rectangle(0, height_px * 0.7, width_px, height_px, fill=shade_tone, outline="")
-        cnv.create_oval(width_px * 0.44, height_px * 0.05, width_px * 1.06, height_px * 0.67, fill=highlight_tone, outline="")
-        cnv.create_oval(width_px * 0.57, height_px * 0.18, width_px * 0.95, height_px * 0.56, fill=bg_tone, outline="")
-        cnv.create_line(width_px * 0.1, height_px * 0.17, width_px * 0.48, height_px * 0.72, fill="#ffffff", width=max(2, width_px // 45))
+
+        # Layered shapes give each generated cover the feel of designed podcast artwork.
+        if design_idx % 3 == 0:
+            cnv.create_polygon(
+                0, height_px * 0.18, width_px, 0, width_px, height_px * 0.42, 0, height_px * 0.62,
+                fill=soft_tone, outline="",
+            )
+        elif design_idx % 3 == 1:
+            cnv.create_oval(-width_px * 0.22, -height_px * 0.3, width_px * 0.82, height_px * 0.72,
+                            fill=soft_tone, outline="")
+            cnv.create_oval(width_px * 0.62, height_px * 0.08, width_px * 1.15, height_px * 0.66,
+                            fill=highlight_tone, outline="")
+        else:
+            stripe_width = max(5, width_px // 10)
+            for stripe_x in range(-height_px, width_px, stripe_width * 2):
+                cnv.create_polygon(
+                    stripe_x, 0, stripe_x + stripe_width, 0,
+                    stripe_x + height_px + stripe_width, height_px, stripe_x + height_px, height_px,
+                    fill=soft_tone, outline="",
+                )
+
         cnv.create_text(
-            width_px * 0.1, height_px * 0.79, text=str(category_text or "BBC SOUNDS").upper()[:20],
-            anchor="w", fill=highlight_tone, font=(DEFAULT_FONT, max(6, width_px // 22), "bold")
+            width_px * 0.08, height_px * 0.09, text="BBC  SOUNDS", anchor="nw",
+            fill=TEXT_WHITE, font=(DEFAULT_FONT, max(6, width_px // 25), "bold"),
+        )
+
+        disc_size = min(width_px, height_px) * (0.46 if compact else 0.42)
+        disc_x = width_px * (0.5 if compact else 0.74)
+        disc_y = height_px * (0.49 if compact else 0.43)
+        cnv.create_oval(
+            disc_x - disc_size / 2 - 3, disc_y - disc_size / 2 - 3,
+            disc_x + disc_size / 2 + 3, disc_y + disc_size / 2 + 3,
+            fill=shade_tone, outline=TEXT_WHITE, width=max(1, width_px // 70),
+        )
+        cnv.create_oval(
+            disc_x - disc_size / 2 + 5, disc_y - disc_size / 2 + 5,
+            disc_x + disc_size / 2 - 5, disc_y + disc_size / 2 - 5,
+            fill=bg_tone, outline=highlight_tone, width=max(1, width_px // 80),
+        )
+        cnv.create_text(
+            disc_x, disc_y, text=genre_icon, fill=TEXT_WHITE,
+            font=(DEFAULT_FONT, max(12, int(disc_size * 0.34)), "bold"),
+        )
+
+        footer_height = height_px * (0.25 if compact else 0.33)
+        cnv.create_rectangle(0, height_px - footer_height, width_px, height_px, fill=shade_tone, outline="")
+        cnv.create_text(
+            width_px * 0.08, height_px - footer_height + height_px * 0.055,
+            text=category_name.upper()[:22], anchor="nw", fill=highlight_tone,
+            font=(DEFAULT_FONT, max(6, width_px // 24), "bold"),
         )
         if not compact:
-            words = " ".join(str(title_text).upper().split()[:3])
+            cover_title = " ".join(str(title_text).upper().split()[:5])
             cnv.create_text(
-                width_px * 0.1, height_px * 0.91, text=words[:25], anchor="w", fill=TEXT_WHITE,
-                font=(DEFAULT_FONT, max(7, width_px // 18), "bold")
+                width_px * 0.08, height_px - footer_height + height_px * 0.145,
+                text=cover_title[:38], anchor="nw", width=width_px * 0.84, fill=TEXT_WHITE,
+                font=(DEFAULT_FONT, max(8, width_px // 19), "bold"),
             )
         return cnv
 
@@ -605,6 +675,10 @@ class BBCSoundsGUI(tk.Tk):
 
     def build_shell(self, active_tab_title):
         self.cancel_pending_render()
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+            self._search_after_id = None
+        self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         for widget in self.winfo_children():
             widget.destroy()
@@ -618,7 +692,7 @@ class BBCSoundsGUI(tk.Tk):
         self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
 
         nav_links = [
-            ("Home", self.show_home), ("Discover", self.show_search),
+            ("Home", self.show_home), ("Genres", self.show_search),
             ("For you", self.show_recommendations), ("Favourites", self.show_favourites),
             ("History", self.show_history), ("Ratings", self.show_ratings),
             ("Report", self.show_report), ("Profile", self.show_profile),
@@ -637,7 +711,24 @@ class BBCSoundsGUI(tk.Tk):
                 cursor="hand2", padx=11, pady=8,
             ).pack(side="left", padx=2)
         self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
-        self.create_button(topbar, "Search", self.show_search, compact=True).pack(side="right", pady=20)
+        search_container = tk.Frame(topbar, bg=INPUT_BG, width=230, height=38)
+        search_container.pack(side="right", padx=(0, 14), pady=23)
+        search_container.pack_propagate(False)
+        self._search_entry = tk.Entry(
+            search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
+            bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER_LINE, highlightcolor=ORANGE_ACCENT,
+        )
+        self._search_entry.pack(fill="both", expand=True, ipady=7)
+        self._search_prompt = tk.Label(
+            search_container, text="Search programmes...", font=(DEFAULT_FONT, 10),
+            bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
+        )
+        self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
+        self._search_entry.bind("<FocusIn>", lambda _event: self._search_prompt.place_forget())
+        self._search_entry.bind("<FocusOut>", lambda _event: self.update_search_prompt())
+        self._search_entry.bind("<KeyRelease>", self.schedule_live_search)
+        self.update_search_prompt()
         tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
 
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
@@ -655,6 +746,31 @@ class BBCSoundsGUI(tk.Tk):
         canvas_pane.bind_all("<MouseWheel>", lambda e: canvas_pane.yview_scroll(int(-e.delta / 120), "units"))
         self.current_page = content_pane
         return content_pane
+
+    def schedule_live_search(self, _event=None):
+        """Refresh results shortly after the user pauses typing in the header search."""
+        self.update_search_prompt()
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+        self._search_after_id = self.after(180, self.apply_live_search)
+
+    def update_search_prompt(self):
+        if self._search_prompt is None or not self._search_prompt.winfo_exists():
+            return
+        if self.search_text.get() or self.focus_get() == self._search_entry:
+            self._search_prompt.place_forget()
+        else:
+            self._search_prompt.place(x=9, rely=0.5, anchor="w")
+
+    def apply_live_search(self):
+        self._search_after_id = None
+        if self._live_search_callback is not None:
+            self._live_search_callback()
+            return
+        self.show_search()
+        if self._search_entry is not None:
+            self._search_entry.focus_set()
+            self._search_entry.icursor(tk.END)
 
     def show_home(self):
         try:
@@ -761,20 +877,13 @@ class BBCSoundsGUI(tk.Tk):
             self.show_db_error("Couldn't load BBC Sounds", err)
 
     def show_search(self):
-        page = self.build_shell("Discover")
-        self.render_page_title(page, "Discover programmes", "Search by title or genre to find your next listen.")
-        search_box_row = tk.Frame(page, bg=DARK_BG)
-        search_box_row.pack(fill="x", pady=(3, 8))
-        text_entry = tk.Entry(search_box_row, textvariable=self.search_text, font=(DEFAULT_FONT, 13), bg=CARD_BG,
-                              fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat", highlightthickness=1,
-                              highlightbackground=BORDER_LINE, highlightcolor=ORANGE_ACCENT)
-        text_entry.pack(side="left", fill="x", expand=True, ipady=11, padx=(0, 10))
-        text_entry.insert(0, "")
-        self.create_button(search_box_row, "Search", lambda: perform_search_action(), primary=True).pack(side="right")
+        page = self.build_shell("Genres")
+        self.render_page_title(page, "Browse genres", "Choose a genre below, or use the search bar above.")
 
         results_pane = tk.Frame(page, bg=DARK_BG)
 
         def perform_search_action(_event=None):
+            self.update_search_prompt()
             self.cancel_pending_render()
             for child in results_pane.winfo_children():
                 child.destroy()
@@ -788,40 +897,83 @@ class BBCSoundsGUI(tk.Tk):
             except sqlite3.Error as err:
                 self.show_db_error("Search failed", err)
 
-        self.render_section_title(page, "Browse categories", "Choose a theme to filter the programme catalogue.")
+        self._live_search_callback = perform_search_action
+
+        self.render_section_title(page, "All genres", "Select a genre to see every matching programme.")
         category_row = tk.Frame(page, bg=DARK_BG)
         category_row.pack(fill="x", pady=(0, 12))
         try:
-            category_sort = self.determine_sort_sql()
             with self.get_db_connection() as conn:
                 category_rows = conn.execute(
-                    f"SELECT Category FROM podcasts ORDER BY {category_sort} LIMIT 100"
+                    "SELECT DISTINCT Category FROM podcasts "
+                    "WHERE Category IS NOT NULL AND TRIM(Category) <> '' "
+                    "ORDER BY Category COLLATE NOCASE"
                 ).fetchall()
-            all_categories = []
-            for category_result in category_rows:
-                category_name = category_result[0]
-                if category_name and category_name not in all_categories:
-                    all_categories.append(category_name)
-            for idx, category_name in enumerate(all_categories[:6]):
-                category_button = tk.Button(
-                    category_row, text=category_name.upper(),
-                    command=lambda name=category_name: (self.search_text.set(name), perform_search_action()),
-                    font=(DEFAULT_FONT, 10, "bold"), fg=TEXT_WHITE,
-                    bg=PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)],
-                    activebackground=ORANGE_ACCENT, activeforeground=TEXT_WHITE,
-                    relief="flat", bd=0, cursor="hand2", padx=14, pady=16,
+            available_categories = {str(row[0]).strip() for row in category_rows}
+            all_categories = [name for name in GENRE_LIST if name in available_categories]
+            all_categories.extend(sorted(available_categories.difference(all_categories), key=str.casefold))
+
+            columns_count = 4
+            for column_idx in range(columns_count):
+                category_row.grid_columnconfigure(column_idx, weight=1, uniform="genre")
+
+            for idx, category_name in enumerate(all_categories):
+                tile_colour, tile_icon, tile_description = GENRE_TILE_DETAILS.get(
+                    category_name,
+                    (
+                        PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)],
+                        category_name[:1].upper(),
+                        f"Explore {category_name.lower()} shows and stories",
+                    ),
                 )
-                category_button.pack(side="left", padx=(0, 8), fill="x", expand=True)
+                category_card = tk.Frame(
+                    category_row, bg=tile_colour, cursor="hand2",
+                    highlightthickness=1, highlightbackground=BORDER_LINE,
+                )
+                category_card.grid(
+                    row=idx // columns_count, column=idx % columns_count,
+                    sticky="nsew", padx=5, pady=5,
+                )
+                accent_line = tk.Frame(category_card, bg=ORANGE_HL, height=3, cursor="hand2")
+                accent_line.pack(fill="x")
+                card_header = tk.Frame(category_card, bg=tile_colour, cursor="hand2")
+                card_header.pack(fill="x", padx=15, pady=(13, 5))
+                icon_label = tk.Label(
+                    card_header, text=tile_icon, width=3, height=1,
+                    font=(DEFAULT_FONT, 14, "bold"), bg="#17181b", fg=TEXT_WHITE,
+                    cursor="hand2",
+                )
+                icon_label.pack(side="left", padx=(0, 10))
+                title_label = tk.Label(
+                    card_header, text=category_name.upper(), font=(DEFAULT_FONT, 11, "bold"),
+                    bg=tile_colour, fg=TEXT_WHITE, anchor="w", cursor="hand2",
+                )
+                title_label.pack(side="left", fill="x", expand=True)
+                description_label = tk.Label(
+                    category_card, text=tile_description, font=(DEFAULT_FONT, 9),
+                    bg=tile_colour, fg="#f0f0f0", justify="left", anchor="nw",
+                    wraplength=225, cursor="hand2",
+                )
+                description_label.pack(fill="x", padx=15, pady=(3, 12))
+                action_label = tk.Label(
+                    category_card, text="BROWSE PROGRAMMES  →", font=(DEFAULT_FONT, 8, "bold"),
+                    bg=tile_colour, fg="#ffffff", anchor="w", cursor="hand2",
+                )
+                action_label.pack(fill="x", padx=15, pady=(0, 14))
+
+                open_genre = lambda _event=None, name=category_name: (
+                    self.search_text.set(name), perform_search_action()
+                )
+                for clickable_widget in (
+                    category_card, accent_line, card_header, icon_label,
+                    title_label, description_label, action_label,
+                ):
+                    clickable_widget.bind("<Button-1>", open_genre)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load categories", err)
 
         self.render_section_title(page, "Programmes")
         results_pane.pack(fill="both", expand=True)
-        self.search_text.set("")
-        text_entry.bind("<Return>", perform_search_action)
-        self.create_button(search_box_row, "Browse all", lambda: (self.search_text.set(""), perform_search_action()), compact=True).pack(
-            side="right", padx=(0, 8)
-        )
         perform_search_action()
 
     def show_recommendations(self):
