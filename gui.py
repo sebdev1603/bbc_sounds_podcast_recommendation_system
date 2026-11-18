@@ -65,6 +65,9 @@ class BBCSoundsGUI(tk.Tk):
         self.length_buttons = {}
         self.search_text = tk.StringVar()
         self.current_page = None
+        self._sort_sql = None
+        self._pending_render_id = None
+        self._render_queue = []
 
         self.show_login()
 
@@ -97,12 +100,17 @@ class BBCSoundsGUI(tk.Tk):
         return lookup_dict.get(key_name.lower(), default_val)
 
     def determine_sort_sql(self):
+        if self._sort_sql is not None:
+            return self._sort_sql
         with self.get_db_connection() as conn:
             columns_map = {row[1].lower(): row[1] for row in conn.execute("PRAGMA table_info(podcasts)")}
         for candidate in ("averagerating", "average_rating", "ratingaverage"):
             if candidate in columns_map:
-                return sanitize_column_name(columns_map[candidate]) + " DESC"
-        return "Title COLLATE NOCASE ASC"
+                self._sort_sql = sanitize_column_name(columns_map[candidate]) + " DESC"
+                break
+        else:
+            self._sort_sql = "Title COLLATE NOCASE ASC"
+        return self._sort_sql
 
     def get_single_podcast(self, pid):
         with self.get_db_connection() as conn:
@@ -436,9 +444,17 @@ class BBCSoundsGUI(tk.Tk):
         grid_container.pack(fill="x")
         for col_idx in range(columns_count):
             grid_container.grid_columnconfigure(col_idx, weight=1, uniform="programme")
-        for idx, podcast in enumerate(items_list[:max_count]):
+
+        next_index = 0
+
+        def render_card(podcast):
+            nonlocal next_index
+            idx = next_index
+            next_index += 1
             card = self.render_podcast_card(grid_container, podcast, show_play_btn=show_play)
             card.grid(row=idx // columns_count, column=idx % columns_count, sticky="nsew", padx=5, pady=5)
+
+        self.render_in_batches(items_list[:max_count], render_card)
 
     def render_empty_message(self, parent_widget, heading, subtitle):
         box_pane = self.create_card_frame(parent_widget)
@@ -446,7 +462,34 @@ class BBCSoundsGUI(tk.Tk):
         self.create_label(box_pane, heading, 13, TEXT_WHITE, "bold").pack(anchor="w", padx=16, pady=(15, 5))
         self.create_label(box_pane, subtitle, 10, TEXT_GRAY, wraplength=700).pack(anchor="w", padx=16, pady=(0, 15))
 
+    def render_in_batches(self, items_list, render_item):
+        self._render_queue.append([iter(items_list), render_item])
+        if self._pending_render_id is None:
+            self._pending_render_id = self.after_idle(self._render_next_batch)
+
+    def _render_next_batch(self):
+        self._pending_render_id = None
+        rendered_count = 0
+        while self._render_queue and rendered_count < 12:
+            items_iter, render_item = self._render_queue[0]
+            try:
+                item = next(items_iter)
+            except StopIteration:
+                self._render_queue.pop(0)
+                continue
+            render_item(item)
+            rendered_count += 1
+        if self._render_queue:
+            self._pending_render_id = self.after(1, self._render_next_batch)
+
+    def cancel_pending_render(self):
+        if self._pending_render_id is not None:
+            self.after_cancel(self._pending_render_id)
+            self._pending_render_id = None
+        self._render_queue.clear()
+
     def show_login(self, error_message=""):
+        self.cancel_pending_render()
         self.unbind_all("<MouseWheel>")
         self.current_user = None
         for child_widget in self.winfo_children():
@@ -561,6 +604,7 @@ class BBCSoundsGUI(tk.Tk):
                                fill="#737780", outline=TEXT_WHITE, width=1)
 
     def build_shell(self, active_tab_title):
+        self.cancel_pending_render()
         self.unbind_all("<MouseWheel>")
         for widget in self.winfo_children():
             widget.destroy()
@@ -621,16 +665,40 @@ class BBCSoundsGUI(tk.Tk):
             self.render_page_title(page, f"Good to have you back, {first_name}",
                                    "Settle in and find something worth listening to.")
 
-            history_rows = self.fetch_user_history()
-            favourite_rows = self.fetch_user_favourites()
-            rating_rows = self.fetch_user_ratings()
+            favourite_ids = [
+                item.strip()
+                for item in str(self.get_row_field(listener_info, "FavoritePodcasts", "") or "").split(",")
+                if item.strip()
+            ]
+            with self.get_db_connection() as conn:
+                history_counts = conn.execute(
+                    "SELECT COUNT(*), COUNT(h.RatingGiven) "
+                    "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                    "WHERE h.ListenerID = ?",
+                    (self.current_user,),
+                ).fetchone()
+                history_rows = conn.execute(
+                    "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins, "
+                    "h.TimesListened, h.RatingGiven "
+                    "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                    "WHERE h.ListenerID = ? ORDER BY COALESCE(h.TimesListened, 0) DESC, "
+                    "p.Title COLLATE NOCASE LIMIT 4",
+                    (self.current_user,),
+                ).fetchall()
+                favourite_count = 0
+                if favourite_ids:
+                    placeholders = ",".join("?" for _ in favourite_ids)
+                    favourite_count = conn.execute(
+                        f"SELECT COUNT(*) FROM podcasts WHERE PodcastID IN ({placeholders})",
+                        favourite_ids,
+                    ).fetchone()[0]
 
             stats_pane = tk.Frame(page, bg=DARK_BG)
             stats_pane.pack(fill="x", pady=(4, 12))
             metric_list = [
-                (str(len(history_rows)), "programmes in your history"),
-                (str(len(favourite_rows)), "favourites saved"),
-                (str(len(rating_rows)), "ratings given"),
+                (str(history_counts[0]), "programmes in your history"),
+                (str(favourite_count), "favourites saved"),
+                (str(history_counts[1]), "ratings given"),
             ]
             for idx, (val_str, cap_str) in enumerate(metric_list):
                 stats_pane.grid_columnconfigure(idx, weight=1, uniform="stats")
@@ -707,13 +775,16 @@ class BBCSoundsGUI(tk.Tk):
         results_pane = tk.Frame(page, bg=DARK_BG)
 
         def perform_search_action(_event=None):
+            self.cancel_pending_render()
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
                 matching_rows = self.query_podcasts(self.search_text.get(), item_limit=80)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
-                for idx, pod in enumerate(matching_rows):
-                    self.render_podcast_card(results_pane, pod, compact=True, show_play_btn=True)
+                self.render_in_batches(
+                    matching_rows,
+                    lambda pod: self.render_podcast_card(results_pane, pod, compact=True, show_play_btn=True),
+                )
             except sqlite3.Error as err:
                 self.show_db_error("Search failed", err)
 
@@ -721,10 +792,16 @@ class BBCSoundsGUI(tk.Tk):
         category_row = tk.Frame(page, bg=DARK_BG)
         category_row.pack(fill="x", pady=(0, 12))
         try:
+            category_sort = self.determine_sort_sql()
+            with self.get_db_connection() as conn:
+                category_rows = conn.execute(
+                    f"SELECT Category FROM podcasts ORDER BY {category_sort} LIMIT 100"
+                ).fetchall()
             all_categories = []
-            for podcast in self.query_podcasts(item_limit=100):
-                if podcast[2] and podcast[2] not in all_categories:
-                    all_categories.append(podcast[2])
+            for category_result in category_rows:
+                category_name = category_result[0]
+                if category_name and category_name not in all_categories:
+                    all_categories.append(category_name)
             for idx, category_name in enumerate(all_categories[:6]):
                 category_button = tk.Button(
                     category_row, text=category_name.upper(),
@@ -777,11 +854,13 @@ class BBCSoundsGUI(tk.Tk):
             self.render_empty_message(page, "No favourites saved yet", "Open any programme and tap the heart to keep it here.")
             self.create_button(page, "Find a programme", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
             return
-        for idx, pod in enumerate(fav_rows):
-            self.render_podcast_card(page, pod, compact=True, show_play_btn=True)
+        self.render_in_batches(
+            fav_rows,
+            lambda pod: self.render_podcast_card(page, pod, compact=True, show_play_btn=True),
+        )
 
     def show_history(self):
-        page = self.build_shell("Listening history")
+        page = self.build_shell("History")
         self.render_page_title(page, "Listening history", "A record of what you have played in BBC Sounds.")
         history_rows = self.fetch_user_history()
         if not history_rows:
@@ -792,11 +871,15 @@ class BBCSoundsGUI(tk.Tk):
         control_bar.pack(fill="x", pady=(0, 7))
         self.create_label(control_bar, f"{len(history_rows)} programmes", 10, TEXT_GRAY).pack(side="left")
         self.create_button(control_bar, "Clear history", self.clear_history, compact=True).pack(side="right")
-        for idx, pod in enumerate(history_rows):
-            self.render_podcast_card(page, pod, compact=True, show_play_btn=True, show_remove_btn=True)
+        self.render_in_batches(
+            history_rows,
+            lambda pod: self.render_podcast_card(
+                page, pod, compact=True, show_play_btn=True, show_remove_btn=True
+            ),
+        )
 
     def show_ratings(self):
-        page = self.build_shell("Your ratings")
+        page = self.build_shell("Ratings")
         self.render_page_title(page, "Podcasts you rated", "Every programme you have scored is collected here.")
         rating_rows = self.fetch_user_ratings()
         if not rating_rows:
@@ -819,8 +902,9 @@ class BBCSoundsGUI(tk.Tk):
         for column_idx in range(4):
             ratings_grid.grid_columnconfigure(column_idx, weight=1, uniform="rating-cards")
 
-        for idx, row in enumerate(rating_rows):
+        def render_rating_card(row):
             card = self.create_card_frame(ratings_grid)
+            idx = len(ratings_grid.winfo_children()) - 1
             card.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=6, pady=6)
             cover = self.generate_podcast_cover(card, row[0], row[1], row[2], 190, 145)
             cover.pack(fill="x", padx=9, pady=(9, 0))
@@ -839,6 +923,7 @@ class BBCSoundsGUI(tk.Tk):
             self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
                 side="right"
             )
+        self.render_in_batches(rating_rows, render_rating_card)
 
     def show_genres(self):
         page = self.build_shell("Your genres")
@@ -870,18 +955,43 @@ class BBCSoundsGUI(tk.Tk):
 
     def show_report(self):
         page = self.build_shell("Listening report")
-        history_rows = self.fetch_user_history()
-        rating_rows = self.fetch_user_ratings()
+        with self.get_db_connection() as conn:
+            history_summary = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(COALESCE(h.TimesListened, 0)), 0) "
+                "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                "WHERE h.ListenerID = ?",
+                (self.current_user,),
+            ).fetchone()
+            top_programme = conn.execute(
+                "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins, "
+                "h.TimesListened, h.RatingGiven "
+                "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                "WHERE h.ListenerID = ? ORDER BY COALESCE(h.TimesListened, 0) DESC, "
+                "p.Title COLLATE NOCASE LIMIT 1",
+                (self.current_user,),
+            ).fetchone()
+            rating_summary = conn.execute(
+                "SELECT COUNT(h.RatingGiven), AVG(h.RatingGiven) "
+                "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                "WHERE h.ListenerID = ?",
+                (self.current_user,),
+            ).fetchone()
+            rating_rows = conn.execute(
+                "SELECT p.PodcastID, p.Title, p.Category, h.RatingGiven, h.TimesListened "
+                "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
+                "WHERE h.ListenerID = ? AND h.RatingGiven IS NOT NULL "
+                "ORDER BY p.Title COLLATE NOCASE LIMIT 8",
+                (self.current_user,),
+            ).fetchall()
         self.render_page_title(page, "Your listening report", "A snapshot of your recent listening activity.")
-        total_plays = sum(int(row[4] or 0) for row in history_rows)
-        mean_rating = (sum(float(row[3]) for row in rating_rows) / len(rating_rows)) if rating_rows else None
-        top_programme = history_rows[0] if history_rows else None
+        total_plays = history_summary[1]
+        mean_rating = rating_summary[1]
 
         stats_grid = tk.Frame(page, bg=DARK_BG)
         stats_grid.pack(fill="x", pady=6)
         stat_cards = [
             (str(total_plays), "total plays"),
-            (str(len(history_rows)), "programmes played"),
+            (str(history_summary[0]), "programmes played"),
             ("—" if mean_rating is None else f"{mean_rating:.1f} / 5", "average rating"),
         ]
         for idx, (metric_val, metric_title) in enumerate(stat_cards):
@@ -905,9 +1015,10 @@ class BBCSoundsGUI(tk.Tk):
 
         if rating_rows:
             self.render_section_title(page, "Your rated programmes")
-            for idx, row in enumerate(rating_rows[:8]):
+            def render_report_rating(row):
                 self.render_podcast_card(page, (row[0], row[1], row[2], None), compact=True)
                 self.create_label(page, "Your rating: " + "★" * int(row[3]), 9, GOLD_STAR).pack(anchor="e", pady=(0, 4))
+            self.render_in_batches(rating_rows, render_report_rating)
 
     def show_profile(self):
         page = self.build_shell("Profile & survey")
