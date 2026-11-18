@@ -465,6 +465,40 @@ class BBCSoundsGUI(tk.Tk):
         circle_canvas.create_text(size / 2, size / 2, text=genre_name[:1].upper(), fill=TEXT_WHITE, font=(DEFAULT_FONT, 14, "bold"))
         return circle_canvas
 
+    def create_default_profile_avatar(self, container, size=112):
+        """Draw a clean, neutral white-and-grey default avatar."""
+        avatar = tk.Canvas(
+            container, width=size, height=size, bg=container.cget("bg"),
+            highlightthickness=0,
+        )
+        centre = size / 2
+        outer_margin = size * 0.06
+        avatar.create_oval(
+            outer_margin, outer_margin,
+            size - outer_margin, size - outer_margin,
+            fill="#55585e", outline="#e7e8ea", width=3,
+        )
+
+        head_radius = size * 0.16
+        head_y = size * 0.38
+        shoulder_top = size * 0.57
+        silhouette = "#f4f4f5"
+        avatar.create_oval(
+            centre - head_radius, head_y - head_radius,
+            centre + head_radius, head_y + head_radius,
+            fill=silhouette, outline="",
+        )
+        avatar.create_oval(
+            size * 0.23, shoulder_top,
+            size * 0.77, size * 0.88,
+            fill=silhouette, outline="",
+        )
+        avatar.create_rectangle(
+            size * 0.18, size * 0.79, size * 0.82, size * 0.92,
+            fill="#55585e", outline="",
+        )
+        return avatar
+
     def render_podcast_card(self, parent_widget, podcast_data, compact=False, show_play_btn=False, show_remove_btn=False):
         pid, title, category, length_mins = podcast_data[:4]
         card_frame = self.create_card_frame(parent_widget)
@@ -1178,8 +1212,20 @@ class BBCSoundsGUI(tk.Tk):
         self.render_page_title(page, "Profile & survey", "Update your preferences whenever your listening changes.")
         info_card = self.create_card_frame(page)
         info_card.pack(fill="x", pady=(4, 12))
-        self.create_label(info_card, "LISTENER ID", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=17, pady=(14, 4))
-        self.create_label(info_card, str(self.current_user), 14, TEXT_WHITE, "bold").pack(anchor="w", padx=17, pady=(0, 14))
+        avatar = self.create_default_profile_avatar(info_card, 112)
+        avatar.pack(side="left", padx=(20, 18), pady=18)
+        profile_details = tk.Frame(info_card, bg=CARD_BG)
+        profile_details.pack(side="left", fill="both", expand=True, pady=20)
+        display_name = (
+            self.get_row_field(listener_info, "Username", None)
+            or self.get_row_field(listener_info, "Name", None)
+            or "BBC Sounds listener"
+        )
+        self.create_label(profile_details, "YOUR PROFILE", 8, ORANGE_HL, "bold").pack(anchor="w", pady=(3, 5))
+        self.create_label(profile_details, str(display_name), 19, TEXT_WHITE, "bold").pack(anchor="w")
+        self.create_label(profile_details, f"Listener ID  ·  {self.current_user}", 10, TEXT_GRAY).pack(
+            anchor="w", pady=(7, 0)
+        )
 
         genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "")
         length_str = self.get_row_field(listener_info, "LengthPreference", "") or "Not selected"
