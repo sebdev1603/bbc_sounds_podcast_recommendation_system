@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import math
+import random
 import sqlite3
 import tkinter as tk
 import xml.etree.ElementTree as ET
@@ -183,17 +184,19 @@ class BBCSoundsGUI(tk.Tk):
                 (pid,),
             ).fetchone()
 
-    def query_podcasts(self, search_term="", item_limit=100):
+    def query_podcasts(self, search_term="", item_limit=100, *, shuffle=False):
         query_str = "SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts"
         params = []
         if search_term.strip():
             pattern = f"%{search_term.strip()}%"
             query_str += " WHERE Title LIKE ? OR Category LIKE ?"
             params.extend([pattern, pattern])
-        query_str += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
-        params.append(item_limit)
+        if not shuffle:
+            query_str += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
+            params.append(item_limit)
         with self.get_db_connection() as conn:
-            return conn.execute(query_str, params).fetchall()
+            rows = conn.execute(query_str, params).fetchall()
+        return self.shuffle_podcasts(rows, item_limit) if shuffle else rows
 
     def fetch_user_history(self):
         with self.get_db_connection() as conn:
@@ -231,7 +234,7 @@ class BBCSoundsGUI(tk.Tk):
                 (self.current_user,),
             ).fetchall()
 
-    def get_custom_recommendations(self, count_limit=8):
+    def get_custom_recommendations(self, count_limit=8, *, shuffle=False):
         listener_row = self.get_listener_data()
         user_genres = [
             g.strip()
@@ -243,13 +246,17 @@ class BBCSoundsGUI(tk.Tk):
             return []
         low_limit, high_limit = DURATION_RANGES[preferred_len]
         marks = ",".join("?" for _ in user_genres)
+        query = (
+            "SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts "
+            f"WHERE Category IN ({marks}) AND AverageLengthMins BETWEEN ? AND ?"
+        )
+        params = (*user_genres, low_limit, high_limit)
+        if not shuffle:
+            query += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
+            params += (count_limit,)
         with self.get_db_connection() as conn:
-            return conn.execute(
-                f"SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts "
-                f"WHERE Category IN ({marks}) AND AverageLengthMins BETWEEN ? AND ? "
-                f"ORDER BY {self.determine_sort_sql()} LIMIT ?",
-                (*user_genres, low_limit, high_limit, count_limit),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
+        return self.shuffle_podcasts(rows, count_limit) if shuffle else rows
 
     def check_if_favourited(self, pid):
         listener_row = self.get_listener_data()
@@ -543,6 +550,29 @@ class BBCSoundsGUI(tk.Tk):
         )
         return avatar
 
+    def get_podcast_averages(self):
+        if self._podcast_averages is None:
+            with self.get_db_connection() as conn:
+                self._podcast_averages = dict(conn.execute(
+                    "SELECT PodcastID, AVG(RatingGiven) FROM listening_history "
+                    "WHERE RatingGiven BETWEEN 1 AND 5 GROUP BY PodcastID"
+                ).fetchall())
+        return self._podcast_averages
+
+    def shuffle_podcasts(self, rows, limit):
+        averages = self.get_podcast_averages()
+
+        def draw_priority(row):
+            # Exponential draws give higher weights earlier positions without duplicates.
+            score = averages.get(row[0], 2.5)
+            return random.expovariate(score)
+
+        return sorted(rows, key=draw_priority)[:limit]
+
+    def podcast_average_text(self, podcast_id):
+        average = self.get_podcast_averages().get(podcast_id)
+        return f"★ {average:.1f} / 5 average" if average is not None else "Not yet rated"
+
     def render_podcast_card(
         self, parent_widget, podcast_data, compact=False,
         show_play_btn=False, show_remove_btn=False, rating_value=None,
@@ -561,6 +591,7 @@ class BBCSoundsGUI(tk.Tk):
             details_pane.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=12)
             self.create_label(details_pane, title, 12, TEXT_WHITE, "bold").pack(anchor="w")
             self.create_label(details_pane, meta_info, 10, TEXT_GRAY).pack(anchor="w", pady=(5, 0))
+            self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w")
             self.create_button(details_pane, "View details", lambda target_id=pid: self.show_detail(target_id), compact=True).pack(
                 anchor="w", pady=(9, 0)
             )
@@ -579,8 +610,10 @@ class BBCSoundsGUI(tk.Tk):
         details_pane = tk.Frame(card_frame, bg=CARD_BG)
         details_pane.pack(fill="both", expand=True, padx=12, pady=11)
         self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=170).pack(anchor="w")
-        self.create_label(details_pane, meta_info, 9, TEXT_GRAY).pack(anchor="w", pady=(4, 10))
+        self.create_label(details_pane, meta_info, 9, TEXT_GRAY).pack(anchor="w", pady=(4, 3))
+        self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w", pady=(0, 9))
         if rating_value is not None:
+            self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
             self.create_star_rating_bar(details_pane, rating_value, star_size=14, background_col=CARD_BG).pack(
                 anchor="w", pady=(0, 9)
             )
@@ -825,6 +858,7 @@ class BBCSoundsGUI(tk.Tk):
 
     def build_shell(self, active_tab_title):
         self.cancel_pending_render()
+        self._podcast_averages = None
         if self._search_after_id is not None:
             self.after_cancel(self._search_after_id)
             self._search_after_id = None
@@ -883,7 +917,7 @@ class BBCSoundsGUI(tk.Tk):
         self.update_search_prompt()
         tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
 
-        self.add_last_listened_prompt(shell_box)
+        self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
         area_frame.pack(fill="both", expand=True)
         canvas_pane = tk.Canvas(area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0)
@@ -1019,7 +1053,7 @@ class BBCSoundsGUI(tk.Tk):
             canvas._slide_cleanup_bound = True
         draw_frame(0)
 
-    def add_last_listened_prompt(self, shell):
+    def add_last_listened_prompt(self, shell, show_average=True):
         if self.current_user is None:
             return
         try:
@@ -1058,6 +1092,8 @@ class BBCSoundsGUI(tk.Tk):
         title_label = self.create_label(details, title, 13, TEXT_WHITE, "bold", cursor="hand2")
         title_label.pack(fill="x", pady=(6, 1))
         subtitle = f"Last played  ·  {category}" if category else "Last played"
+        if show_average:
+            subtitle += f"  ·  {self.podcast_average_text(podcast_id)}"
         subtitle_label = self.create_label(details, subtitle, 9, TEXT_GRAY, cursor="hand2")
         subtitle_label.pack(fill="x")
         for widget in (row, cover, details, title_label, subtitle_label):
@@ -1259,7 +1295,7 @@ class BBCSoundsGUI(tk.Tk):
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
-                matching_rows = self.query_podcasts(search_term, item_limit=80)
+                matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
                     results_pane, matching_rows, columns_count=6,
@@ -1363,11 +1399,11 @@ class BBCSoundsGUI(tk.Tk):
                                       "Choose your favourite genres and episode length to unlock tailored recommendations.")
             self.create_button(page, "Set up your preferences  →", self.show_preferences, primary=True).pack(anchor="w", pady=7)
             self.render_section_title(page, "Explore the catalogue while you decide")
-            self.render_podcast_grid(page, self.query_podcasts(item_limit=8), show_play=True)
+            self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
             return
         self.create_label(page, f"YOUR GENRES   {genres_val.replace(',', '  ·  ')}     /     {length_val} episodes",
                           10, ORANGE_HL, "bold").pack(anchor="w", pady=(0, 12))
-        rec_results = self.get_custom_recommendations(40)
+        rec_results = self.get_custom_recommendations(40, shuffle=True)
         if rec_results:
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
         else:
@@ -1438,6 +1474,8 @@ class BBCSoundsGUI(tk.Tk):
             details_pane.pack(fill="both", expand=True, padx=13, pady=12)
             self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=180).pack(anchor="w")
             self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
+            self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR).pack(anchor="w", pady=(3, 6))
+            self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
             self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG).pack(
                 anchor="w", pady=(5, 10)
             )
@@ -1554,6 +1592,9 @@ class BBCSoundsGUI(tk.Tk):
             self.create_label(
                 highlight_details, f"{top_programme[4] or 0} plays  ·  {top_programme[2]}", 10, TEXT_GRAY,
             ).pack(anchor="w", pady=(5, 0))
+            self.create_label(
+                highlight_details, self.podcast_average_text(top_programme[0]), 9, GOLD_STAR,
+            ).pack(anchor="w", pady=(4, 0))
             self.create_button(
                 highlight_card, "▶  Listen again", lambda: self.listen(top_programme[0]),
                 primary=True, compact=True,
@@ -1661,6 +1702,9 @@ class BBCSoundsGUI(tk.Tk):
             self.create_label(details_box, podcast_rec[1], 30, TEXT_WHITE, "bold", wraplength=490).pack(anchor="w", pady=(8, 6))
             length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
             self.create_label(details_box, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY).pack(anchor="w")
+            self.create_label(details_box, self.podcast_average_text(podcast_id), 11, GOLD_STAR).pack(
+                anchor="w", pady=(5, 0),
+            )
 
             play_row = tk.Frame(details_box, bg=DARK_BG)
             play_row.pack(anchor="w", pady=(25, 12))
