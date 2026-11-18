@@ -376,9 +376,15 @@ class BBCSoundsGUI(tk.Tk):
         return header_bar
 
     def render_page_title(self, container, main_heading, sub_heading=""):
-        self.create_label(container, main_heading, 25, TEXT_WHITE, "bold").pack(anchor="w", pady=(4, 3))
+        self.create_label(
+            container, main_heading, 25, TEXT_WHITE, "bold",
+            anchor="center", justify="center",
+        ).pack(fill="x", pady=(4, 3))
         if sub_heading:
-            self.create_label(container, sub_heading, 11, TEXT_GRAY).pack(anchor="w", pady=(0, 12))
+            self.create_label(
+                container, sub_heading, 11, TEXT_GRAY,
+                anchor="center", justify="center",
+            ).pack(fill="x", pady=(0, 16))
 
     def render_decorative_panel(self, container, filename, idx, bounds, width_px, height_px, label_txt=""):
         frame_box = tk.Frame(container, bg=PALETTE_SWATCHES[idx % len(PALETTE_SWATCHES)], width=width_px, height=height_px)
@@ -533,7 +539,10 @@ class BBCSoundsGUI(tk.Tk):
         )
         return avatar
 
-    def render_podcast_card(self, parent_widget, podcast_data, compact=False, show_play_btn=False, show_remove_btn=False):
+    def render_podcast_card(
+        self, parent_widget, podcast_data, compact=False,
+        show_play_btn=False, show_remove_btn=False, rating_value=None,
+    ):
         pid, title, category, length_mins = podcast_data[:4]
         card_frame = self.create_card_frame(parent_widget)
         meta_info = str(category or "Programme")
@@ -567,16 +576,25 @@ class BBCSoundsGUI(tk.Tk):
         details_pane.pack(fill="both", expand=True, padx=12, pady=11)
         self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=170).pack(anchor="w")
         self.create_label(details_pane, meta_info, 9, TEXT_GRAY).pack(anchor="w", pady=(4, 10))
+        if rating_value is not None:
+            self.create_star_rating_bar(details_pane, rating_value, star_size=14, background_col=CARD_BG).pack(
+                anchor="w", pady=(0, 9)
+            )
         button_strip = tk.Frame(details_pane, bg=CARD_BG)
         button_strip.pack(fill="x", side="bottom")
         self.create_button(button_strip, "Details", lambda target_id=pid: self.show_detail(target_id), compact=True).pack(side="left")
+        if show_remove_btn:
+            self.create_button(
+                button_strip, "Remove", lambda target_id=pid: self.remove_from_history(target_id), compact=True
+            ).pack(side="left", padx=(6, 0))
         if show_play_btn:
             self.create_button(button_strip, "▶", lambda target_id=pid: self.listen(target_id), primary=True, compact=True).pack(side="right")
         return card_frame
 
     def render_podcast_grid(
         self, parent_widget, items_list, columns_count=6,
-        show_play=False, max_count=8, single_row=False,
+        show_play=False, show_remove=False, max_count=8, single_row=False,
+        rating_index=None,
     ):
         if not items_list:
             self.render_empty_message(parent_widget, "No programmes to show yet", "Try another search, or explore all programmes.")
@@ -584,7 +602,10 @@ class BBCSoundsGUI(tk.Tk):
         grid_container = tk.Frame(parent_widget, bg=parent_widget.cget("bg"))
         grid_container.pack(fill="x")
 
-        next_index = 0
+        displayed_items = items_list[:max_count]
+        end_message = self.create_label(
+            grid_container, "No more results", 10, "#777b83", anchor="center",
+        )
         rendered_cards = []
         current_columns = [0]
 
@@ -612,15 +633,28 @@ class BBCSoundsGUI(tk.Tk):
                     sticky="nsew", padx=5, pady=5,
                 )
 
+            item_count = len(rendered_cards)
+            final_row, used_columns = divmod(item_count, responsive_columns)
+            if item_count == len(items_list) and used_columns and (not single_row or final_row == 0):
+                end_message.grid(
+                    row=final_row, column=used_columns,
+                    columnspan=responsive_columns - used_columns,
+                    sticky="nsew", padx=5, pady=5,
+                )
+            else:
+                end_message.grid_remove()
+
         def render_card(podcast):
-            nonlocal next_index
-            next_index += 1
-            card = self.render_podcast_card(grid_container, podcast, show_play_btn=show_play)
+            rating_value = podcast[rating_index] if rating_index is not None and len(podcast) > rating_index else None
+            card = self.render_podcast_card(
+                grid_container, podcast, show_play_btn=show_play,
+                show_remove_btn=show_remove, rating_value=rating_value,
+            )
             rendered_cards.append(card)
             reflow_cards()
 
         grid_container.bind("<Configure>", reflow_cards)
-        self.render_in_batches(items_list[:max_count], render_card)
+        self.render_in_batches(displayed_items, render_card)
 
     def render_empty_message(self, parent_widget, heading, subtitle):
         box_pane = self.create_card_frame(parent_widget)
@@ -995,9 +1029,9 @@ class BBCSoundsGUI(tk.Tk):
             try:
                 matching_rows = self.query_podcasts(self.search_text.get(), item_limit=80)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
-                self.render_in_batches(
-                    matching_rows,
-                    lambda pod: self.render_podcast_card(results_pane, pod, compact=True, show_play_btn=True),
+                self.render_podcast_grid(
+                    results_pane, matching_rows, columns_count=6,
+                    show_play=True, max_count=80,
                 )
             except sqlite3.Error as err:
                 self.show_db_error("Search failed", err)
@@ -1098,7 +1132,7 @@ class BBCSoundsGUI(tk.Tk):
                           10, ORANGE_HL, "bold").pack(anchor="w", pady=(0, 12))
         rec_results = self.get_custom_recommendations(40)
         if rec_results:
-            self.render_podcast_grid(page, rec_results, columns_count=4, show_play=True, max_count=40)
+            self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
         else:
             self.render_empty_message(page, "No exact matches yet", "Try another genre or episode length to see more programmes.")
             self.create_button(page, "Edit preferences", self.show_preferences, compact=True).pack(anchor="w", pady=8)
@@ -1111,9 +1145,9 @@ class BBCSoundsGUI(tk.Tk):
             self.render_empty_message(page, "No favourites saved yet", "Open any programme and tap the heart to keep it here.")
             self.create_button(page, "Find a programme", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
             return
-        self.render_in_batches(
-            fav_rows,
-            lambda pod: self.render_podcast_card(page, pod, compact=True, show_play_btn=True),
+        self.render_podcast_grid(
+            page, fav_rows, columns_count=6,
+            show_play=True, max_count=len(fav_rows),
         )
 
     def show_history(self):
@@ -1128,11 +1162,9 @@ class BBCSoundsGUI(tk.Tk):
         control_bar.pack(fill="x", pady=(0, 7))
         self.create_label(control_bar, f"{len(history_rows)} programmes", 10, TEXT_GRAY).pack(side="left")
         self.create_button(control_bar, "Clear history", self.clear_history, compact=True).pack(side="right")
-        self.render_in_batches(
-            history_rows,
-            lambda pod: self.render_podcast_card(
-                page, pod, compact=True, show_play_btn=True, show_remove_btn=True
-            ),
+        self.render_podcast_grid(
+            page, history_rows, columns_count=6,
+            show_play=True, show_remove=True, max_count=len(history_rows),
         )
 
     def show_ratings(self):
@@ -1255,27 +1287,42 @@ class BBCSoundsGUI(tk.Tk):
             stats_grid.grid_columnconfigure(idx, weight=1, uniform="report")
             box_item = self.create_card_frame(stats_grid)
             box_item.grid(row=0, column=idx, sticky="ew", padx=5)
-            self.create_label(box_item, metric_val, 21, ORANGE_ACCENT, "bold").pack(anchor="w", padx=16, pady=(13, 2))
-            self.create_label(box_item, metric_title, 9, TEXT_GRAY).pack(anchor="w", padx=16, pady=(0, 13))
+            self.create_label(box_item, metric_val, 21, ORANGE_ACCENT, "bold", anchor="center").pack(
+                fill="x", padx=16, pady=(13, 2)
+            )
+            self.create_label(box_item, metric_title, 9, TEXT_GRAY, anchor="center").pack(
+                fill="x", padx=16, pady=(0, 13)
+            )
 
         self.render_section_title(page, "Your listening highlights")
         if top_programme:
             highlight_card = self.create_card_frame(page)
             highlight_card.pack(fill="x", pady=5)
-            self.create_label(highlight_card, "MOST PLAYED", 8, ORANGE_ACCENT, "bold").pack(anchor="w", padx=16, pady=(14, 4))
-            self.create_label(highlight_card, top_programme[1], 15, TEXT_WHITE, "bold").pack(anchor="w", padx=16)
-            self.create_label(highlight_card, f"{top_programme[4] or 0} plays  ·  {top_programme[2]}", 10, TEXT_GRAY).pack(
-                anchor="w", padx=16, pady=(4, 14)
+            highlight_cover = self.generate_podcast_cover(
+                highlight_card, top_programme[0], top_programme[1], top_programme[2], 145, 112,
             )
+            highlight_cover.pack(side="left", padx=12, pady=12)
+            highlight_details = tk.Frame(highlight_card, bg=CARD_BG)
+            highlight_details.pack(side="left", fill="both", expand=True, pady=16)
+            self.create_label(highlight_details, "MOST PLAYED", 8, ORANGE_ACCENT, "bold").pack(anchor="w", pady=(0, 5))
+            self.create_label(highlight_details, top_programme[1], 16, TEXT_WHITE, "bold").pack(anchor="w")
+            self.create_label(
+                highlight_details, f"{top_programme[4] or 0} plays  ·  {top_programme[2]}", 10, TEXT_GRAY,
+            ).pack(anchor="w", pady=(5, 0))
+            self.create_button(
+                highlight_card, "▶  Listen again", lambda: self.listen(top_programme[0]),
+                primary=True, compact=True,
+            ).pack(side="right", padx=18)
         else:
             self.render_empty_message(page, "No listening data yet", "Play a programme to start your personal report.")
 
         if rating_rows:
             self.render_section_title(page, "Your rated programmes")
-            def render_report_rating(row):
-                self.render_podcast_card(page, (row[0], row[1], row[2], None), compact=True)
-                self.create_label(page, "Your rating: " + "★" * int(row[3]), 9, GOLD_STAR).pack(anchor="e", pady=(0, 4))
-            self.render_in_batches(rating_rows, render_report_rating)
+            report_programmes = [(row[0], row[1], row[2], None, row[3]) for row in rating_rows]
+            self.render_podcast_grid(
+                page, report_programmes, columns_count=6,
+                max_count=len(report_programmes), rating_index=4,
+            )
 
     def show_profile(self):
         page = self.build_shell("Profile & survey")
@@ -1305,15 +1352,24 @@ class BBCSoundsGUI(tk.Tk):
         self.render_section_title(page, "Listening preferences", "Survey status: " + ("complete" if survey_done else "not completed"))
         pref_card = self.create_card_frame(page)
         pref_card.pack(fill="x", pady=5)
-        self.create_label(pref_card, "Favourite genres", 10, TEXT_GRAY).pack(anchor="w", padx=16, pady=(13, 3))
-        self.create_label(pref_card, genres_str.replace(",", "  ·  ") if genres_str else "None selected", 13, TEXT_WHITE, "bold").pack(
-            anchor="w", padx=16
-        )
-        self.create_label(pref_card, "Preferred episode length", 10, TEXT_GRAY).pack(anchor="w", padx=16, pady=(12, 3))
-        self.create_label(pref_card, length_str, 13, TEXT_WHITE, "bold").pack(anchor="w", padx=16, pady=(0, 14))
-        self.create_button(page, "Edit survey answers", self.show_preferences, primary=True).pack(anchor="w", pady=8)
+        pref_card.grid_columnconfigure(0, weight=1, uniform="profile-preference")
+        pref_card.grid_columnconfigure(1, weight=1, uniform="profile-preference")
+        genres_panel = tk.Frame(pref_card, bg=CARD_BG)
+        genres_panel.grid(row=0, column=0, sticky="nsew", padx=(18, 12), pady=17)
+        length_panel = tk.Frame(pref_card, bg=CARD_BG)
+        length_panel.grid(row=0, column=1, sticky="nsew", padx=(12, 18), pady=17)
+        self.create_label(genres_panel, "FAVOURITE GENRES", 9, TEXT_GRAY, "bold").pack(anchor="center")
+        self.create_label(
+            genres_panel, genres_str.replace(",", "  ·  ") if genres_str else "None selected",
+            13, TEXT_WHITE, "bold", anchor="center", justify="center", wraplength=480,
+        ).pack(fill="x", pady=(6, 0))
+        self.create_label(length_panel, "PREFERRED EPISODE LENGTH", 9, TEXT_GRAY, "bold").pack(anchor="center")
+        self.create_label(length_panel, length_str, 13, TEXT_WHITE, "bold", anchor="center").pack(fill="x", pady=(6, 0))
+        profile_actions = tk.Frame(page, bg=DARK_BG)
+        profile_actions.pack(pady=8)
+        self.create_button(profile_actions, "Edit survey answers", self.show_preferences, primary=True).pack(side="left")
         if survey_done:
-            self.create_button(page, "Reset survey", self.reset_survey, compact=True).pack(anchor="w", pady=3)
+            self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
 
     def show_detail(self, podcast_id):
         try:
@@ -1544,10 +1600,9 @@ class BBCSoundsGUI(tk.Tk):
         grid_frame = tk.Frame(page, bg=DARK_BG)
         grid_frame.pack(fill="x")
         self.genre_elements = {}
+        genre_tiles = []
         for idx, g_name in enumerate(GENRE_LIST):
             tile = tk.Frame(grid_frame, bg=CARD_BG, highlightthickness=1, highlightbackground=BORDER_LINE, cursor="hand2")
-            tile.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=5, pady=5)
-            grid_frame.grid_columnconfigure(idx % 4, weight=1, uniform="genre-options")
             art_cnv = self.create_genre_circle(tile, g_name, idx, 54, CARD_BG)
             art_cnv.pack(pady=(9, 3))
             check_lbl = self.create_label(tile, g_name, 9, TEXT_WHITE, "bold", anchor="center", bg=CARD_BG)
@@ -1555,6 +1610,31 @@ class BBCSoundsGUI(tk.Tk):
             for sub_widget in (tile, *tile.winfo_children()):
                 sub_widget.bind("<Button-1>", lambda _e, name_val=g_name: self.toggle_genre_selection(name_val, counter_label))
             self.genre_elements[g_name] = (tile, check_lbl, art_cnv)
+            genre_tiles.append(tile)
+
+        current_genre_columns = [0]
+
+        def reflow_genre_tiles(_event=None):
+            available_width = grid_frame.winfo_width()
+            if available_width <= 1:
+                available_width = max(1, self.winfo_width() - 110)
+            column_count = max(3, min(6, available_width // 245))
+            if column_count == current_genre_columns[0] and _event is not None:
+                return
+            current_genre_columns[0] = column_count
+            for column_idx in range(6):
+                grid_frame.grid_columnconfigure(
+                    column_idx, weight=1 if column_idx < column_count else 0,
+                    uniform="genre-options" if column_idx < column_count else "",
+                )
+            for tile_idx, tile_widget in enumerate(genre_tiles):
+                tile_widget.grid(
+                    row=tile_idx // column_count, column=tile_idx % column_count,
+                    sticky="nsew", padx=5, pady=5,
+                )
+
+        grid_frame.bind("<Configure>", reflow_genre_tiles)
+        reflow_genre_tiles()
 
         self.update_genre_tile_styles(counter_label)
         self.render_section_title(page, "Episode length", "Pick the average episode length you enjoy most.")
@@ -1563,11 +1643,11 @@ class BBCSoundsGUI(tk.Tk):
         self.length_buttons = {}
         for choice_val in ("Short", "Medium", "Long"):
             btn = self.create_button(length_row, choice_val + " episodes", lambda val=choice_val: self.set_length_preference(val), compact=False)
-            btn.pack(side="left", padx=(0, 8))
+            btn.pack(side="left", fill="x", expand=True, padx=5)
             self.length_buttons[choice_val] = btn
         self.update_length_button_styles()
         footer_pane = tk.Frame(page, bg=DARK_BG)
-        footer_pane.pack(fill="x", pady=(15, 18))
+        footer_pane.pack(pady=(15, 18))
         self.create_button(footer_pane, "Save preferences", self.save_user_preferences, primary=True).pack(side="left")
         self.create_button(footer_pane, "Cancel", self.show_home, compact=True).pack(side="left", padx=9)
 
