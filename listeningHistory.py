@@ -1,6 +1,8 @@
 import sqlite3
 import time
 
+from last_listened import order_listening_history
+
 
 def clear():
     import main as app
@@ -19,11 +21,13 @@ def view_listening_history(username, view_podcast_details):
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT podcasts.Title, listening_history.TimesListened FROM podcasts JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID WHERE listening_history.ListenerID = ?",
+        "SELECT podcasts.Title, listening_history.TimesListened, podcasts.PodcastID "
+        "FROM podcasts JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID "
+        "WHERE listening_history.ListenerID = ?",
         (username,),
     )
 
-    results = cursor.fetchall()
+    results = order_listening_history(conn, username, cursor.fetchall(), 2, 1)
 
     if results:
         print("Your listening history:")
