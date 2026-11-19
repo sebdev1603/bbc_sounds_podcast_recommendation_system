@@ -1777,7 +1777,8 @@ class BBCSoundsGUI(tk.Tk):
 
         self._active_detail_podcast = None
         self._bottom_bar_info = None
-        self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
+        if active_tab_title != "Programme details":
+            self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
         area_frame.pack(fill="both", expand=True)
         canvas_pane = tk.Canvas(
@@ -1827,16 +1828,22 @@ class BBCSoundsGUI(tk.Tk):
         canvas._leaving_page = True
         self.cancel_pending_render()
 
-        if (
-            current == "Programme details"
-            and self._active_detail_podcast is not None
-            and self._bottom_bar_info is not None
-            and self._bottom_bar_info[2] == self._active_detail_podcast[0]
-            and self._bottom_bar_info[0].winfo_exists()
-            and self._bottom_bar_info[1].winfo_exists()
-        ):
-            self.shrink_detail_to_bottom_bar(destination)
-            return
+        if current == "Programme details" and self._active_detail_podcast is not None:
+            recent = None
+            try:
+                with self.get_db_connection() as conn:
+                    recent = get_last_listened(conn, self.current_user)
+            except sqlite3.Error:
+                recent = None
+            if (
+                recent is not None
+                and recent[0] == self._active_detail_podcast[0]
+                and recent[0] != self._dismissed_last_listened
+            ):
+                self.shrink_detail_to_bottom_bar(
+                    destination, self._active_detail_podcast[1], self._active_detail_podcast[2],
+                )
+                return
 
         def open_next_page():
             self._tab_transition_direction = direction
@@ -2006,28 +2013,22 @@ class BBCSoundsGUI(tk.Tk):
 
         draw_expand()
 
-    def shrink_detail_to_bottom_bar(self, destination):
-        shell, footer, _podcast_id, title, category = self._bottom_bar_info
-        if getattr(shell, "_expanding_bar", False):
-            return
-        shell._expanding_bar = True
-
+    def shrink_detail_to_bottom_bar(self, destination, title, category):
         canvas, _window = self._page_transition_target
         area_frame = canvas.master
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
         start_x = area_frame.winfo_rootx() - self.winfo_rootx()
         start_y = area_frame.winfo_rooty() - self.winfo_rooty()
         start_w = max(1, area_frame.winfo_width())
-        start_h = max(1, (footer.winfo_rooty() + footer.winfo_height()) - area_frame.winfo_rooty())
+        start_h = max(1, win_h - start_y)
 
-        target_x = footer.winfo_rootx() - self.winfo_rootx()
-        target_y = footer.winfo_rooty() - self.winfo_rooty()
-        target_w = max(1, footer.winfo_width())
-        target_h = max(1, footer.winfo_height())
-
-        if start_w <= 1 or start_h <= 1 or target_w <= 1 or target_h <= 1:
+        if start_w <= 1 or start_h <= 1:
             self._tab_transition_direction = None
             destination()
             return
+
+        target_box = [18, max(start_y, win_h - 90), max(1, win_w - 36), 80]
 
         self._tab_transition_direction = None
         destination()
@@ -2060,6 +2061,14 @@ class BBCSoundsGUI(tk.Tk):
         def draw_shrink():
             if not shrinker.winfo_exists() or not self.winfo_exists():
                 return
+            if self._bottom_bar_info is not None:
+                dest_footer = self._bottom_bar_info[1]
+                if dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
+                    target_box[0] = dest_footer.winfo_rootx() - self.winfo_rootx()
+                    target_box[1] = dest_footer.winfo_rooty() - self.winfo_rooty()
+                    target_box[2] = dest_footer.winfo_width()
+                    target_box[3] = dest_footer.winfo_height()
+            target_x, target_y, target_w, target_h = target_box
             progress = min(1.0, (monotonic() - started) / duration)
             eased = 1.0 - (1.0 - progress) ** 3
             cur_x = round(start_x + (target_x - start_x) * eased)
