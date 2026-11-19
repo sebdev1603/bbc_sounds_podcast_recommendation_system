@@ -409,29 +409,71 @@ class BBCSoundsGUI(tk.Tk):
             return
         if self._resize_after_id is not None:
             self.after_cancel(self._resize_after_id)
-        self._resize_after_id = self.after(120, self.apply_interface_scaling)
+        self._resize_after_id = self.after(60, self.apply_interface_scaling)
 
-    def apply_interface_scaling(self):
-        """Scale point-based UI elements to suit the current window dimensions."""
+    def apply_interface_scaling(self, force=False):
+        """Scale UI fonts, buttons, and wrap widths immediately when the window resizes."""
         self._resize_after_id = None
-        width_factor = self.winfo_width() / 1320
-        height_factor = self.winfo_height() / 850
+        if not self.winfo_exists():
+            return
+        win_w = self.winfo_width()
+        win_h = self.winfo_height()
+        if win_w <= 1 or win_h <= 1:
+            return
+        width_factor = win_w / 1320
+        height_factor = win_h / 850
         new_scale_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
-        if abs(new_scale_factor - self._ui_scale_factor) < 0.035:
+        if not force and abs(new_scale_factor - self._ui_scale_factor) < 0.025:
             return
         self._ui_scale_factor = new_scale_factor
-        self.tk.call("tk", "scaling", self._base_tk_scaling * new_scale_factor)
-        pending_widgets = list(self.winfo_children())
+        self._scale_widget_tree(self, new_scale_factor)
+
+    def _scale_widget_tree(self, root_widget, scale_factor):
+        pending_widgets = list(root_widget.winfo_children())
         while pending_widgets:
             widget = pending_widgets.pop()
+            if getattr(widget, "_skip_auto_scale", False):
+                continue
             pending_widgets.extend(widget.winfo_children())
             try:
-                font_spec = widget.cget("font")
-                if font_spec:
-                    widget.configure(font=font_spec)
-                    if hasattr(widget, "_rounded_colours"):
-                        self.style_rounded_button(widget, *widget._rounded_colours)
-            except tk.TclError:
+                base_font = getattr(widget, "_base_font", None)
+                if base_font is None:
+                    raw_font = widget.cget("font")
+                    if raw_font:
+                        actual = tkfont.Font(root=self, font=raw_font).actual()
+                        size_val = int(actual["size"])
+                        if size_val > 0:
+                            styles = []
+                            if actual.get("weight") == "bold":
+                                styles.append("bold")
+                            if actual.get("slant") == "italic":
+                                styles.append("italic")
+                            base_font = (actual["family"], size_val, tuple(styles))
+                            widget._base_font = base_font
+                if base_font is not None:
+                    family, base_size, styles = base_font
+                    scaled_size = max(7, round(base_size * scale_factor))
+                    scaled_font = (family, scaled_size, *styles)
+                    if getattr(widget, "_applied_scaled_font", None) != scaled_font:
+                        widget._applied_scaled_font = scaled_font
+                        widget.configure(font=scaled_font)
+                        if hasattr(widget, "_rounded_colours"):
+                            self.style_rounded_button(widget, *widget._rounded_colours)
+            except (tk.TclError, ValueError, TypeError):
+                pass
+            try:
+                base_wrap = getattr(widget, "_base_wraplength", None)
+                if base_wrap is None:
+                    raw_wrap = int(widget.cget("wraplength"))
+                    if raw_wrap > 0:
+                        base_wrap = raw_wrap
+                        widget._base_wraplength = base_wrap
+                if base_wrap is not None:
+                    scaled_wrap = max(60, round(base_wrap * scale_factor))
+                    if getattr(widget, "_applied_wraplength", None) != scaled_wrap:
+                        widget._applied_wraplength = scaled_wrap
+                        widget.configure(wraplength=scaled_wrap)
+            except (tk.TclError, ValueError, TypeError):
                 pass
 
     @contextmanager
@@ -1229,6 +1271,8 @@ class BBCSoundsGUI(tk.Tk):
                 break
         if self._render_queue:
             self._pending_render_id = self.after(8, self._render_next_batch)
+        elif abs(self._ui_scale_factor - 1.0) >= 0.025:
+            self._scale_widget_tree(self, self._ui_scale_factor)
 
     def cancel_pending_render(self):
         if self._pending_render_id is not None:
@@ -1349,6 +1393,7 @@ class BBCSoundsGUI(tk.Tk):
 
         disc_canvas.bind("<Configure>", queue_record_paint)
         disc_canvas.bind("<Destroy>", cancel_record_jobs)
+        self.after_idle(lambda: self.apply_interface_scaling(force=True))
 
     def expand_login_button_to_home(self, login_button):
         self.cancel_button_hover(login_button)
@@ -1764,6 +1809,7 @@ class BBCSoundsGUI(tk.Tk):
         )
         if self._tab_transition_direction is not None:
             self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
+        self.after_idle(lambda: self.apply_interface_scaling(force=True))
         return content_pane
 
     def transition_to(self, destination, tab=None, *, direction=None):
@@ -2709,6 +2755,7 @@ class BBCSoundsGUI(tk.Tk):
 
             # Centered content column framed by top and bottom rules, matching 5.svg.
             detail_column = tk.Frame(page, bg=DARK_BG)
+            detail_column._skip_auto_scale = True
             detail_column.pack(fill="x", padx=56)
 
             top_rule = tk.Frame(detail_column, bg="#575756", height=2)
@@ -2872,7 +2919,7 @@ class BBCSoundsGUI(tk.Tk):
                     return
                 last_layout["cover"] = cover_size
                 play_size = round(max(74, min(124, 82 * scale)))
-                font_scale = scale / max(0.84, self._ui_scale_factor)
+                font_scale = scale
 
                 for child in cover_holder.winfo_children():
                     child.destroy()
