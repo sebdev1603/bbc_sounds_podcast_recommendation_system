@@ -640,9 +640,11 @@ class BBCSoundsGUI(tk.Tk):
             self.create_label(details_pane, title, 12, TEXT_WHITE, "bold").pack(anchor="w")
             self.create_label(details_pane, meta_info, 10, TEXT_GRAY).pack(anchor="w", pady=(5, 0))
             self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w")
-            self.create_button(details_pane, "View details", lambda target_id=pid: self.show_detail(target_id), compact=True).pack(
-                anchor="w", pady=(9, 0)
-            )
+            self.create_button(
+                details_pane, "View details",
+                lambda target_id=pid: self.transition_to(lambda: self.show_detail(target_id), "Programme details", direction=1),
+                compact=True,
+            ).pack(anchor="w", pady=(9, 0))
             if show_play_btn:
                 self.create_button(card_frame, "▶  Listen", lambda target_id=pid: self.listen(target_id), primary=True, compact=True).pack(
                     side="right", padx=12
@@ -667,7 +669,11 @@ class BBCSoundsGUI(tk.Tk):
             )
         button_strip = tk.Frame(details_pane, bg=CARD_BG)
         button_strip.pack(fill="x", side="bottom")
-        self.create_button(button_strip, "Details", lambda target_id=pid: self.show_detail(target_id), compact=True).pack(side="left")
+        self.create_button(
+            button_strip, "Details",
+            lambda target_id=pid: self.transition_to(lambda: self.show_detail(target_id), "Programme details", direction=1),
+            compact=True,
+        ).pack(side="left")
         if show_remove_btn:
             self.create_button(
                 button_strip, "Remove", lambda target_id=pid: self.remove_from_history(target_id), compact=True
@@ -1072,14 +1078,18 @@ class BBCSoundsGUI(tk.Tk):
             self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
         return content_pane
 
-    def transition_to(self, destination, tab):
+    def transition_to(self, destination, tab=None, *, direction=None):
         canvas, window = self._page_transition_target
         if getattr(canvas, "_leaving_page", False):
             return
         current = self._active_nav_tab
-        if tab == current:
+        if tab is not None and tab == current and direction is None:
             return
-        direction = 1 if current not in self._tab_order or self._tab_order.index(tab) > self._tab_order.index(current) else -1
+        if direction is None:
+            if current in self._tab_order and tab in self._tab_order:
+                direction = 1 if self._tab_order.index(tab) > self._tab_order.index(current) else -1
+            else:
+                direction = 1
         canvas._leaving_page = True
         self.cancel_pending_render()
 
@@ -1090,29 +1100,16 @@ class BBCSoundsGUI(tk.Tk):
             finally:
                 self._tab_transition_direction = None
 
-        if current == "Genres":
-            self.wipe_genres(canvas, direction, entering=False, on_complete=open_next_page)
-        else:
-            self.slide_page(canvas, window, -direction * canvas.winfo_width(), 210, open_next_page)
+        self.slide_page(canvas, window, -direction * canvas.winfo_width(), 210, open_next_page)
 
     def animate_page_entry(self, canvas, canvas_window, direction):
         canvas.itemconfigure(canvas_window, state="hidden")
-        canvas._entering_page = True
-
-        def finish_entry():
-            canvas._entering_page = False
-            canvas.event_generate("<<PageEntryComplete>>")
 
         def reveal_page():
             if not canvas.winfo_exists():
                 return
-            if self._active_nav_tab == "Genres":
-                canvas.coords(canvas_window, 0, 0)
-                self.wipe_genres(canvas, direction, entering=True, on_complete=finish_entry)
-                canvas.itemconfigure(canvas_window, state="normal")
-                return
             canvas.itemconfigure(canvas_window, state="normal")
-            self.slide_page(canvas, canvas_window, 0, 285, finish_entry)
+            self.slide_page(canvas, canvas_window, 0, 285)
 
         def start_entry(event):
             canvas.unbind("<Configure>", configure_binding)
@@ -1121,36 +1118,6 @@ class BBCSoundsGUI(tk.Tk):
             canvas.after_idle(reveal_page)
 
         configure_binding = canvas.bind("<Configure>", start_entry, add="+")
-
-    def wipe_genres(self, canvas, direction, entering, on_complete):
-        """Reveal stationary Tk buttons using a single opaque overlay."""
-        previous_overlay = getattr(canvas, "_genre_overlay", None)
-        if previous_overlay is not None and previous_overlay.winfo_exists():
-            previous_overlay.destroy()
-        overlay = tk.Frame(canvas.master, bg=DARK_BG, bd=0, highlightthickness=0)
-        canvas._genre_overlay = overlay
-        # Cover only the content viewport, leaving the scrollbar and chrome available.
-        duration = 0.240 if entering else 0.180
-        started = monotonic()
-
-        def draw_frame():
-            if not overlay.winfo_exists() or not canvas.winfo_exists():
-                return
-            progress = min(1.0, (monotonic() - started) / duration)
-            covered = (1 - progress) ** 2 if entering else progress ** 2
-            width = round(canvas.winfo_width() * covered)
-            align_right = direction < 0 if entering else direction > 0
-            x = canvas.winfo_x() + (canvas.winfo_width() - width if align_right else 0)
-            if width:
-                overlay.place(x=x, y=canvas.winfo_y(), width=width, height=canvas.winfo_height())
-                overlay.lift()
-            if progress < 1:
-                self.after(15, draw_frame)
-            else:
-                overlay.destroy()
-                on_complete()
-
-        draw_frame()
 
     def slide_page(self, canvas, canvas_window, end_x, duration_ms, on_complete=None):
         previous_frame = getattr(canvas, "_slide_frame", None)
@@ -1221,10 +1188,13 @@ class BBCSoundsGUI(tk.Tk):
             subtitle += f"  ·  {self.podcast_average_text(podcast_id)}"
         subtitle_label = self.create_label(details, subtitle, 9, TEXT_GRAY, cursor="hand2")
         subtitle_label.pack(fill="x")
+        open_detail = lambda _event=None: self.transition_to(
+            lambda: self.show_detail(podcast_id), "Programme details", direction=1,
+        )
         for widget in (row, cover, details, title_label, subtitle_label):
-            widget.bind("<Button-1>", lambda _event: self.show_detail(podcast_id))
-        details.bind("<Return>", lambda _event: self.show_detail(podcast_id))
-        details.bind("<space>", lambda _event: self.show_detail(podcast_id))
+            widget.bind("<Button-1>", open_detail)
+        details.bind("<Return>", open_detail)
+        details.bind("<space>", open_detail)
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
@@ -1374,9 +1344,11 @@ class BBCSoundsGUI(tk.Tk):
             self.create_label(report_strip, "See your plays, most-listened programme and average rating.", 10, TEXT_GRAY).pack(
                 side="left", pady=14
             )
-            self.create_button(report_strip, "Generate listening report", self.show_report, primary=True, compact=True).pack(
-                side="right", padx=12, pady=8
-            )
+            self.create_button(
+                report_strip, "Generate listening report",
+                lambda: self.transition_to(self.show_report, "Report"),
+                primary=True, compact=True,
+            ).pack(side="right", padx=12, pady=8)
 
             genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "").replace(",", " · ")
             length_str = self.get_row_field(listener_info, "LengthPreference", "") or ""
@@ -1389,14 +1361,20 @@ class BBCSoundsGUI(tk.Tk):
             if genres_str:
                 hint_msg = "Picked for " + genres_str + (" · " + length_str + " episodes" if length_str else "")
             self.create_label(banner_text, hint_msg, 10, TEXT_GRAY, wraplength=520).pack(anchor="w", pady=(5, 13))
-            self.create_button(banner_text, "Explore programmes  →", self.show_search, primary=True, compact=True).pack(anchor="w")
+            self.create_button(
+                banner_text, "Explore programmes  →",
+                lambda: self.transition_to(self.show_search, "Genres"),
+                primary=True, compact=True,
+            ).pack(anchor="w")
             promo_art = self.render_decorative_panel(banner_card, "1.svg", 0, (150, 138), 155, 138)
             promo_art.pack(side="right", padx=12, pady=10)
 
             rec_list = self.get_custom_recommendations(8)
             if rec_list:
-                self.render_section_title(page, "Made for you", "A match for your favourite genres and episode length.",
-                                          "See all", self.show_recommendations)
+                self.render_section_title(
+                    page, "Made for you", "A match for your favourite genres and episode length.",
+                    "See all", lambda: self.transition_to(self.show_recommendations, "For you"),
+                )
                 self.render_podcast_grid(
                     page, rec_list, columns_count=6, show_play=True,
                     max_count=8, single_row=True,
@@ -1408,13 +1386,17 @@ class BBCSoundsGUI(tk.Tk):
                 self.create_label(survey_prompt, "Tell us what you like", 14, TEXT_WHITE, "bold").pack(anchor="w", padx=17, pady=(15, 4))
                 self.create_label(survey_prompt, "Choose a few genres and your preferred episode length to get tailored picks.",
                                   10, TEXT_GRAY).pack(anchor="w", padx=17, pady=(0, 12))
-                self.create_button(survey_prompt, "Choose your genres  →", self.show_preferences, primary=True, compact=True).pack(
-                    anchor="w", padx=17, pady=(0, 15)
-                )
+                self.create_button(
+                    survey_prompt, "Choose your genres  →",
+                    lambda: self.transition_to(self.show_preferences, "Profile"),
+                    primary=True, compact=True,
+                ).pack(anchor="w", padx=17, pady=(0, 15))
 
             if history_rows:
-                self.render_section_title(page, "Pick up where you left off", "Your most played programmes.",
-                                          "Listening history", self.show_history)
+                self.render_section_title(
+                    page, "Pick up where you left off", "Your most played programmes.",
+                    "Listening history", lambda: self.transition_to(self.show_history, "History"),
+                )
                 self.render_podcast_grid(
                     page, history_rows, columns_count=6, show_play=True,
                     max_count=8, single_row=True,
@@ -1437,8 +1419,6 @@ class BBCSoundsGUI(tk.Tk):
 
         def perform_search_action(_event=None):
             nonlocal last_search
-            if getattr(page.master, "_entering_page", False):
-                return
             self.update_search_prompt()
             search_term = self.search_text.get().strip()
             if search_term == last_search:
@@ -1532,10 +1512,7 @@ class BBCSoundsGUI(tk.Tk):
 
         self.render_section_title(page, "Programmes")
         results_pane.pack(fill="both", expand=True)
-        if getattr(page.master, "_entering_page", False):
-            page.master.bind("<<PageEntryComplete>>", perform_search_action)
-        else:
-            perform_search_action()
+        perform_search_action()
 
     def show_recommendations(self):
         page = self.build_shell("For you")
@@ -1546,7 +1523,10 @@ class BBCSoundsGUI(tk.Tk):
         if not genres_val or not length_val:
             self.render_empty_message(page, "Your listening profile is ready for a few details",
                                       "Choose your favourite genres and episode length to unlock tailored recommendations.")
-            self.create_button(page, "Set up your preferences  →", self.show_preferences, primary=True).pack(anchor="w", pady=7)
+            self.create_button(
+                page, "Set up your preferences  →",
+                lambda: self.transition_to(self.show_preferences, "Profile"), primary=True,
+            ).pack(anchor="w", pady=7)
             self.render_section_title(page, "Explore the catalogue while you decide")
             self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
             return
@@ -1557,7 +1537,10 @@ class BBCSoundsGUI(tk.Tk):
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
         else:
             self.render_empty_message(page, "No exact matches yet", "Try another genre or episode length to see more programmes.")
-            self.create_button(page, "Edit preferences", self.show_preferences, compact=True).pack(anchor="w", pady=8)
+            self.create_button(
+                page, "Edit preferences",
+                lambda: self.transition_to(self.show_preferences, "Profile"), compact=True,
+            ).pack(anchor="w", pady=8)
 
     def show_favourites(self):
         page = self.build_shell("Favourites")
@@ -1565,7 +1548,10 @@ class BBCSoundsGUI(tk.Tk):
         fav_rows = self.fetch_user_favourites()
         if not fav_rows:
             self.render_empty_message(page, "No favourites saved yet", "Open any programme and tap the heart to keep it here.")
-            self.create_button(page, "Find a programme", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
+            self.create_button(
+                page, "Find a programme",
+                lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
+            ).pack(anchor="w", pady=6)
             return
         self.render_podcast_grid(
             page, fav_rows, columns_count=6,
@@ -1578,7 +1564,10 @@ class BBCSoundsGUI(tk.Tk):
         history_rows = self.fetch_user_history()
         if not history_rows:
             self.render_empty_message(page, "Your history is empty", "Play a programme and it will appear here.")
-            self.create_button(page, "Explore programmes", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
+            self.create_button(
+                page, "Explore programmes",
+                lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
+            ).pack(anchor="w", pady=6)
             return
         control_bar = tk.Frame(page, bg=DARK_BG)
         control_bar.pack(fill="x", pady=(0, 7))
@@ -1595,7 +1584,10 @@ class BBCSoundsGUI(tk.Tk):
         rating_rows = self.fetch_user_ratings()
         if not rating_rows:
             self.render_empty_message(page, "No ratings yet", "Listen to a programme, then add a rating from its details page.")
-            self.create_button(page, "Explore programmes", self.show_search, primary=True, compact=True).pack(anchor="w", pady=6)
+            self.create_button(
+                page, "Explore programmes",
+                lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
+            ).pack(anchor="w", pady=6)
             return
 
         summary_bar = self.create_card_frame(page, bg="#1d1e22")
@@ -1663,7 +1655,11 @@ class BBCSoundsGUI(tk.Tk):
                 )
                 genre_wrapper.grid_columnconfigure(idx % 4, weight=1, uniform="genres")
             self.render_section_title(page, "Episode length", str(self.get_row_field(listener_info, "LengthPreference", "Not selected") or "Not selected"))
-            self.create_button(page, "Edit preferences", self.show_preferences, primary=True, compact=True).pack(anchor="w", pady=7)
+            self.create_button(
+                page, "Edit preferences",
+                lambda: self.transition_to(self.show_preferences, "Profile", direction=1),
+                primary=True, compact=True,
+            ).pack(anchor="w", pady=7)
             self.render_section_title(page, "Programmes in your genres")
             if user_genres:
                 placeholders = ",".join("?" for _ in user_genres)
@@ -1675,7 +1671,10 @@ class BBCSoundsGUI(tk.Tk):
                 self.render_podcast_grid(page, matched_items, show_play=True, max_count=12)
         else:
             self.render_empty_message(page, "No favourite genres selected", "Choose up to five genres to shape your recommendations.")
-            self.create_button(page, "Choose genres", self.show_preferences, primary=True).pack(anchor="w", pady=6)
+            self.create_button(
+                page, "Choose genres",
+                lambda: self.transition_to(self.show_preferences, "Profile", direction=1), primary=True,
+            ).pack(anchor="w", pady=6)
 
     def show_report(self):
         page = self.build_shell("Listening report")
@@ -1805,7 +1804,10 @@ class BBCSoundsGUI(tk.Tk):
         self.create_label(length_panel, length_str, 13, TEXT_WHITE, "bold", anchor="center").pack(fill="x", pady=(6, 0))
         profile_actions = tk.Frame(page, bg=DARK_BG)
         profile_actions.pack(pady=8)
-        self.create_button(profile_actions, "Edit survey answers", self.show_preferences, primary=True).pack(side="left")
+        self.create_button(
+            profile_actions, "Edit survey answers",
+            lambda: self.transition_to(self.show_preferences, "Profile", direction=1), primary=True,
+        ).pack(side="left")
         if survey_done:
             self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
 
@@ -1825,7 +1827,10 @@ class BBCSoundsGUI(tk.Tk):
             page = self.build_shell("Programme details")
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 14))
-            self.create_button(back_row, "←  Back to discover", self.show_search, compact=True).pack(side="left")
+            self.create_button(
+                back_row, "←  Back to discover",
+                lambda: self.transition_to(self.show_search, "Genres", direction=-1), compact=True,
+            ).pack(side="left")
             self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
 
             hero_box = tk.Frame(page, bg=DARK_BG)
@@ -1872,18 +1877,28 @@ class BBCSoundsGUI(tk.Tk):
 
             tk.Frame(page, bg=TEXT_GRAY, height=1).pack(fill="x", pady=(18, 18))
 
-            if history_record:
-                sub_card = self.create_card_frame(page, bg="#1d1e22")
-                sub_card.pack(fill="x", pady=(20, 8))
-                self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold").pack(anchor="w", padx=16, pady=(12, 5))
-                play_count = history_record[0] or 0
-                given_rating = history_record[1]
-                summary_text = f"{play_count} plays" + (f"  ·  your rating: {'★' * int(given_rating)}" if given_rating else "")
-                self.create_label(sub_card, summary_text, 11, TEXT_WHITE).pack(anchor="w", padx=16, pady=(0, 8))
+            sub_card = self.create_card_frame(page, bg="#1d1e22")
+            sub_card.pack(fill="x", pady=(20, 8))
+            self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold").pack(anchor="w", padx=16, pady=(12, 5))
+            play_count = (history_record[0] or 0) if history_record else 0
+            given_rating = history_record[1] if history_record else None
+            if play_count:
+                summary_text = f"{play_count} {'play' if play_count == 1 else 'plays'}"
                 if given_rating:
-                    self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
-                        anchor="w", padx=16, pady=(0, 14)
-                    )
+                    summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
+                summary_color = TEXT_WHITE
+            else:
+                summary_text = "You haven't listened to this podcast yet."
+                if given_rating:
+                    summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
+                summary_color = TEXT_GRAY
+            self.create_label(sub_card, summary_text, 11, summary_color).pack(
+                anchor="w", padx=16, pady=(0, 8 if given_rating else 14)
+            )
+            if given_rating:
+                self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
+                    anchor="w", padx=16, pady=(0, 14)
+                )
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
@@ -2092,7 +2107,10 @@ class BBCSoundsGUI(tk.Tk):
         footer_pane = tk.Frame(page, bg=DARK_BG)
         footer_pane.pack(pady=(15, 18))
         self.create_button(footer_pane, "Save preferences", self.save_user_preferences, primary=True).pack(side="left")
-        self.create_button(footer_pane, "Cancel", self.show_home, compact=True).pack(side="left", padx=9)
+        self.create_button(
+            footer_pane, "Cancel",
+            lambda: self.transition_to(self.show_home, "Home"), compact=True,
+        ).pack(side="left", padx=9)
 
     def toggle_genre_selection(self, genre_name, counter_lbl):
         if genre_name in self.active_genres:
@@ -2143,7 +2161,7 @@ class BBCSoundsGUI(tk.Tk):
                     "WHERE ListenerID = ?",
                     (",".join(self.active_genres), self.active_length, self.current_user),
                 )
-            self.show_recommendations()
+            self.transition_to(self.show_recommendations, "For you")
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your preferences", err)
 
