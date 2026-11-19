@@ -1530,8 +1530,30 @@ class BBCSoundsGUI(tk.Tk):
             self.render_section_title(page, "Explore the catalogue while you decide")
             self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
             return
-        self.create_label(page, f"YOUR GENRES   {genres_val.replace(',', '  ·  ')}     /     {length_val} episodes",
-                          10, ORANGE_HL, "bold").pack(anchor="w", pady=(0, 12))
+        prefs_bar = tk.Frame(page, bg=DARK_BG)
+        prefs_bar.pack(fill="x", pady=(0, 12))
+        prefs_bar.grid_columnconfigure(0, weight=2, uniform="for-you-prefs")
+        prefs_bar.grid_columnconfigure(1, weight=1, uniform="for-you-prefs")
+
+        genres_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        genres_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.create_label(genres_card, "YOUR GENRES", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
+        formatted_genres = "  ·  ".join(g.strip() for g in str(genres_val).split(",") if g.strip())
+        self.create_label(genres_card, formatted_genres, 11, ORANGE_HL, "bold", wraplength=560).pack(
+            anchor="w", padx=16, pady=(0, 12)
+        )
+
+        length_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        length_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.create_label(length_card, "EPISODE LENGTH", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
+        length_range = DURATION_RANGES.get(length_val)
+        length_caption = (
+            f"{length_val} episodes ({length_range[0]}–{length_range[1]} min)"
+            if length_range else f"{length_val} episodes"
+        )
+        self.create_label(length_card, length_caption, 11, ORANGE_HL, "bold").pack(
+            anchor="w", padx=16, pady=(0, 12)
+        )
         rec_results = self.get_custom_recommendations(40, shuffle=True)
         if rec_results:
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
@@ -1826,60 +1848,82 @@ class BBCSoundsGUI(tk.Tk):
 
             page = self.build_shell("Programme details")
             back_row = tk.Frame(page, bg=DARK_BG)
-            back_row.pack(fill="x", pady=(2, 14))
+            back_row.pack(fill="x", pady=(2, 12))
             self.create_button(
                 back_row, "←  Back to discover",
                 lambda: self.transition_to(self.show_search, "Genres", direction=-1), compact=True,
             ).pack(side="left")
             self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
 
-            hero_box = tk.Frame(page, bg=DARK_BG)
-            hero_box.pack(fill="x", pady=(0, 8))
+            # Centered content column framed by top and bottom rules, matching 5.svg.
+            detail_column = tk.Frame(page, bg=DARK_BG)
+            detail_column.pack(fill="x", padx=56)
+
+            top_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            top_rule.pack(fill="x", pady=(4, 34))
+
+            hero_box = tk.Frame(detail_column, bg=DARK_BG)
+            hero_box.pack(anchor="center", pady=(0, 34))
+
             cover_panel = self.create_card_frame(hero_box, bg="#272727")
-            cover_panel.pack(side="left", padx=(0, 28))
-            cover_art = self.generate_podcast_cover(cover_panel, podcast_id, podcast_rec[1], podcast_rec[2], 275, 275)
-            cover_art.pack(padx=10, pady=10)
+            cover_panel.pack(side="left", anchor="n", padx=(0, 38))
+            cover_holder = tk.Frame(cover_panel, bg="#272727")
+            cover_holder.pack(padx=10, pady=10)
 
-            actions_box = tk.Frame(hero_box, bg=DARK_BG, width=195)
-            actions_box.pack(side="right", fill="y", padx=(24, 0), pady=20)
-            actions_box.pack_propagate(False)
-            self.create_label(actions_box, "PROGRAMME ACTIONS", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 10))
-            fav_text = "♥  Remove from favourites" if self.check_if_favourited(podcast_id) else "♡  Save to favourites"
-            for action_text, action_func in [
-                (fav_text, lambda: self.toggle_favourite(podcast_id)),
-                ("★  Rate this programme", lambda: self.rate_programme(podcast_id)),
-            ]:
-                action_label = self.create_label(actions_box, action_text, 10, TEXT_WHITE, "bold", cursor="hand2")
-                action_label.pack(anchor="w", pady=6)
-                action_label.bind("<Button-1>", lambda _event, callback=action_func: callback())
+            right_pane = tk.Frame(hero_box, bg=DARK_BG)
+            right_pane.pack(side="left", anchor="n", pady=(4, 0))
 
-            details_box = tk.Frame(hero_box, bg=DARK_BG)
-            details_box.pack(side="left", fill="both", expand=True, pady=10)
-            self.create_label(details_box, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold").pack(anchor="w")
-            self.create_label(details_box, podcast_rec[1], 30, TEXT_WHITE, "bold", wraplength=490).pack(anchor="w", pady=(8, 6))
+            category_label = self.create_label(right_pane, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold")
+            category_label.pack(anchor="w")
+            title_label = self.create_label(right_pane, podcast_rec[1], 28, TEXT_WHITE, "bold", wraplength=520)
+            title_label.pack(anchor="w", pady=(6, 6))
             length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
-            self.create_label(details_box, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY).pack(anchor="w")
-            self.create_label(details_box, self.podcast_average_text(podcast_id), 11, GOLD_STAR).pack(
-                anchor="w", pady=(5, 0),
-            )
+            meta_label = self.create_label(right_pane, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY)
+            meta_label.pack(anchor="w")
+            avg_label = self.create_label(right_pane, self.podcast_average_text(podcast_id), 11, GOLD_STAR)
+            avg_label.pack(anchor="w", pady=(5, 0))
 
-            play_row = tk.Frame(details_box, bg=DARK_BG)
-            play_row.pack(anchor="w", pady=(25, 12))
-            play_canvas = tk.Canvas(play_row, width=74, height=74, bg=DARK_BG, highlightthickness=0, cursor="hand2")
+            controls_row = tk.Frame(right_pane, bg=DARK_BG)
+            controls_row.pack(anchor="w", pady=(26, 0))
+
+            play_canvas = tk.Canvas(controls_row, width=76, height=76, bg=DARK_BG, highlightthickness=0, cursor="hand2")
             play_canvas.pack(side="left", padx=(0, 14))
-            play_canvas.create_oval(3, 3, 71, 71, fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2)
-            play_canvas.create_polygon(31, 22, 31, 52, 56, 37, fill=TEXT_WHITE, outline="")
             play_canvas.bind("<Button-1>", lambda _event: self.listen(podcast_id))
 
-            play_copy = tk.Frame(play_row, bg=DARK_BG)
-            play_copy.pack(side="left", pady=10)
-            self.create_label(play_copy, "Listen now", 14, TEXT_WHITE, "bold").pack(anchor="w")
+            listen_label = self.create_label(controls_row, "Listen now", 13, TEXT_WHITE, "bold", cursor="hand2")
+            listen_label.pack(side="left", padx=(0, 22))
+            listen_label.bind("<Button-1>", lambda _event: self.listen(podcast_id))
 
-            tk.Frame(page, bg=TEXT_GRAY, height=1).pack(fill="x", pady=(18, 18))
+            v_divider = tk.Frame(controls_row, bg="#575756", width=2, height=62)
+            v_divider.pack(side="left", padx=(0, 22))
 
-            sub_card = self.create_card_frame(page, bg="#1d1e22")
-            sub_card.pack(fill="x", pady=(20, 8))
-            self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold").pack(anchor="w", padx=16, pady=(12, 5))
+            actions_box = tk.Frame(controls_row, bg=DARK_BG)
+            actions_box.pack(side="left")
+            is_fav = self.check_if_favourited(podcast_id)
+            action_items = [
+                ("♥" if is_fav else "♡", "Remove from favourites" if is_fav else "Save to favourites",
+                 ORANGE_ACCENT if is_fav else TEXT_WHITE, lambda: self.toggle_favourite(podcast_id)),
+                ("★", "Rate this programme", GOLD_STAR, lambda: self.rate_programme(podcast_id)),
+            ]
+            action_widgets = []
+            for icon_char, action_text, icon_color, action_func in action_items:
+                action_row = tk.Frame(actions_box, bg=DARK_BG, cursor="hand2")
+                action_row.pack(anchor="w", pady=5)
+                icon_lbl = self.create_label(action_row, icon_char, 13, icon_color, "bold", cursor="hand2")
+                icon_lbl.pack(side="left", padx=(0, 10))
+                text_lbl = self.create_label(action_row, action_text, 11, TEXT_WHITE, "bold", cursor="hand2")
+                text_lbl.pack(side="left")
+                action_widgets.append((action_row, icon_lbl, text_lbl))
+                for widget in (action_row, icon_lbl, text_lbl):
+                    widget.bind("<Button-1>", lambda _event, callback=action_func: callback())
+
+            bottom_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            bottom_rule.pack(fill="x", pady=(0, 22))
+
+            sub_card = self.create_card_frame(detail_column, bg="#1d1e22")
+            sub_card.pack(fill="x", padx=28, pady=(0, 8))
+            listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
+            listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
             play_count = (history_record[0] or 0) if history_record else 0
             given_rating = history_record[1] if history_record else None
             if play_count:
@@ -1892,13 +1936,78 @@ class BBCSoundsGUI(tk.Tk):
                 if given_rating:
                     summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
                 summary_color = TEXT_GRAY
-            self.create_label(sub_card, summary_text, 11, summary_color).pack(
-                anchor="w", padx=16, pady=(0, 8 if given_rating else 14)
-            )
+            summary_label = self.create_label(sub_card, summary_text, 11, summary_color)
+            summary_label.pack(anchor="w", padx=18, pady=(0, 8 if given_rating else 14))
             if given_rating:
                 self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
-                    anchor="w", padx=16, pady=(0, 14)
+                    anchor="w", padx=18, pady=(0, 14)
                 )
+
+            last_layout = {"cover": 0}
+            resize_job = [None]
+
+            def apply_detail_scale():
+                resize_job[0] = None
+                if not detail_column.winfo_exists():
+                    return
+                win_w = max(1024, self.winfo_width())
+                win_h = max(700, self.winfo_height())
+                scale = max(0.92, min(1.75, min(win_w / 1180, win_h / 760)))
+                cover_size = round(max(248, min(420, 285 * scale)))
+                if abs(cover_size - last_layout["cover"]) < 6:
+                    return
+                last_layout["cover"] = cover_size
+                play_size = round(max(74, min(124, 82 * scale)))
+                font_scale = scale / max(0.84, self._ui_scale_factor)
+
+                for child in cover_holder.winfo_children():
+                    child.destroy()
+                cover_art = self.generate_podcast_cover(
+                    cover_holder, podcast_id, podcast_rec[1], podcast_rec[2], cover_size, cover_size,
+                )
+                cover_art.pack()
+
+                play_canvas.configure(width=play_size, height=play_size)
+                play_canvas.delete("all")
+                play_canvas.create_oval(2, 2, play_size - 2, play_size - 2, fill=ORANGE_ACCENT, outline="")
+                play_canvas.create_polygon(
+                    round(play_size * 0.39), round(play_size * 0.26),
+                    round(play_size * 0.39), round(play_size * 0.74),
+                    round(play_size * 0.76), round(play_size * 0.50),
+                    fill="#000000", outline="",
+                )
+
+                v_divider.configure(height=round(play_size * 0.82))
+                cover_panel.pack_configure(padx=(0, round(38 * scale)))
+                top_rule.pack_configure(pady=(4, round(30 * scale)))
+                hero_box.pack_configure(pady=(0, round(30 * scale)))
+                controls_row.pack_configure(pady=(round(26 * scale), 0))
+                play_canvas.pack_configure(padx=(0, round(14 * scale)))
+                listen_label.pack_configure(padx=(0, round(22 * scale)))
+                v_divider.pack_configure(padx=(0, round(22 * scale)))
+
+                category_label.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale)), "bold"))
+                title_label.configure(
+                    font=(DEFAULT_FONT, max(24, round(29 * font_scale)), "bold"),
+                    wraplength=round(max(400, min(720, 500 * scale))),
+                )
+                meta_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                avg_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
+                listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                for action_row, icon_lbl, text_lbl in action_widgets:
+                    action_row.pack_configure(pady=round(5 * scale))
+                    icon_lbl.configure(font=(DEFAULT_FONT, max(13, round(15 * font_scale)), "bold"))
+                    text_lbl.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale)), "bold"))
+
+            def schedule_detail_scale(_event=None):
+                if resize_job[0] is not None:
+                    self.after_cancel(resize_job[0])
+                resize_job[0] = self.after(60, apply_detail_scale)
+
+            detail_column.bind("<Configure>", schedule_detail_scale)
+            apply_detail_scale()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
