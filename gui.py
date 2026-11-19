@@ -1,7 +1,9 @@
 from collections import OrderedDict
 from contextlib import contextmanager
+import ctypes
 import math
 import random
+import sys
 from time import monotonic
 import sqlite3
 import tkinter as tk
@@ -139,7 +141,45 @@ class BBCSoundsGUI(tk.Tk):
         self._bottom_bar_info = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
+        self.set_windows_titlebar_colour(DARK_BG)
         self.show_login()
+
+    def set_windows_titlebar_colour(self, bg_hex=DARK_BG, text_hex=TEXT_WHITE):
+        if sys.platform != "win32":
+            return
+        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex):
+            return
+        try:
+            hwnd = getattr(self, "_win_hwnd", None)
+            if not hwnd:
+                self.update_idletasks()
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+                self._win_hwnd = hwnd
+            dwmapi = ctypes.windll.dwmapi
+
+            def to_colorref(hex_colour):
+                r = int(hex_colour[1:3], 16)
+                g = int(hex_colour[3:5], 16)
+                b = int(hex_colour[5:7], 16)
+                return r | (g << 8) | (b << 16)
+
+            for attr, value in (
+                (20, 1),
+                (19, 1),
+                (35, to_colorref(bg_hex)),
+                (36, to_colorref(text_hex)),
+                (34, to_colorref(bg_hex)),
+            ):
+                val = ctypes.c_int(value)
+                dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd),
+                    ctypes.c_int(attr),
+                    ctypes.byref(val),
+                    ctypes.sizeof(val),
+                )
+            self._titlebar_colour = (bg_hex, text_hex)
+        except Exception:
+            pass
 
     def schedule_interface_scaling(self, event):
         if event.widget is not self:
@@ -486,21 +526,51 @@ class BBCSoundsGUI(tk.Tk):
         return RoundedPanel(container, kwargs.pop("bg", CARD_BG), **kwargs)
 
     def draw_app_logo(self, container, scaling=1):
-        row_frame = tk.Frame(container, bg=container.cget("bg"))
-        for char in "BBC":
-            tk.Label(
-                row_frame,
-                text=char,
-                font=(DEFAULT_FONT, int(11 * scaling), "bold"),
-                fg=DARK_BG,
-                bg=TEXT_WHITE,
-                padx=int(4 * scaling),
-                pady=int(1 * scaling),
-            ).pack(side="left", padx=(0, 2))
-        self.create_label(row_frame, "SOUNDS", int(13 * scaling), TEXT_WHITE, "bold").pack(
-            side="left", padx=(6, 0)
+        bg_col = container.cget("bg")
+        tile = max(26, round(28 * scaling))
+        gap = max(4, round(5 * scaling))
+        word_gap = max(9, round(10 * scaling))
+        tile_font = ("Arial", -round(tile * 0.92), "bold")
+        sounds_font = ("Arial", -round(tile * 0.96), "bold")
+        sounds_metrics = tkfont.Font(root=self, font=sounds_font)
+
+        tiles_w = tile * 3 + gap * 2
+        sounds_w = sounds_metrics.measure("SOUNDS")
+        canvas_w = tiles_w + word_gap + sounds_w + 2
+        canvas_h = max(tile, sounds_metrics.metrics("linespace"))
+        y0 = round((canvas_h - tile) / 2)
+        y1 = y0 + tile
+        center_y = (y0 + y1) / 2
+
+        logo_canvas = tk.Canvas(
+            container,
+            width=canvas_w,
+            height=canvas_h,
+            bg=bg_col,
+            bd=0,
+            highlightthickness=0,
         )
-        return row_frame
+        for idx, char in enumerate("BBC"):
+            x0 = idx * (tile + gap)
+            x1 = x0 + tile
+            logo_canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="")
+            logo_canvas.create_text(
+                (x0 + x1) / 2,
+                center_y,
+                text=char,
+                fill="#000000",
+                font=tile_font,
+                anchor="center",
+            )
+        logo_canvas.create_text(
+            tiles_w + word_gap,
+            center_y,
+            text="SOUNDS",
+            fill=ORANGE_ACCENT,
+            font=sounds_font,
+            anchor="w",
+        )
+        return logo_canvas
 
     def render_section_title(self, container, heading, description=None, button_label=None, action_func=None):
         header_bar = tk.Frame(container, bg=container.cget("bg"))
@@ -955,6 +1025,7 @@ class BBCSoundsGUI(tk.Tk):
         for child_widget in self.winfo_children():
             child_widget.destroy()
         self.configure(bg=DARK_BG)
+        self.set_windows_titlebar_colour(DARK_BG)
 
         main_box = tk.Frame(self, bg=DARK_BG)
         main_box.pack(fill="both", expand=True, padx=58, pady=38)
@@ -1387,6 +1458,7 @@ class BBCSoundsGUI(tk.Tk):
         for widget in self.winfo_children():
             widget.destroy()
         self.configure(bg=DARK_BG)
+        self.set_windows_titlebar_colour("#080808")
         shell_box = tk.Frame(self, bg=DARK_BG)
         shell_box.pack(fill="both", expand=True)
 
@@ -1847,7 +1919,7 @@ class BBCSoundsGUI(tk.Tk):
             listener_info = self.get_listener_data()
             name_str = self.get_row_field(listener_info, "Username", None) or self.get_row_field(listener_info, "Name", None)
             first_name = str(name_str or "there").split()[0]
-            self.render_page_title(page, f"Good to have you back, {first_name}",
+            self.render_page_title(page, f"Good to have you back!!!!!!!! so many keys o algo",
                                    "Settle in and find something worth listening to.")
 
             favourite_ids = [
