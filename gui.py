@@ -994,6 +994,8 @@ class BBCSoundsGUI(tk.Tk):
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         def handle_login(_event=None):
+            if getattr(login_button, "_expanding_login", False):
+                return
             username_input = id_var.get().strip()
             if not username_input:
                 status_label.config(text="Enter your listener ID to continue.")
@@ -1009,13 +1011,17 @@ class BBCSoundsGUI(tk.Tk):
                     if not found_record["CompleteSurvey"]:
                         self.active_genres = []
                         self.active_length = "Medium"
-                    self.show_home()
+                    login_button._expanding_login = True
+                    text_entry.configure(state="disabled")
+                    cancel_record_jobs()
+                    self.expand_login_button_to_home(login_button)
                 else:
                     status_label.config(text="We couldn't find that listener ID. Check it and try again.")
             except sqlite3.Error as err:
                 status_label.config(text="Couldn't open the project database: " + str(err))
 
-        self.create_button(login_panel, "Continue  →", handle_login, primary=True).pack(anchor="w", padx=20, pady=(5, 20))
+        login_button = self.create_button(login_panel, "Continue  →", handle_login, primary=True)
+        login_button.pack(anchor="w", padx=20, pady=(5, 20))
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
@@ -1047,6 +1053,135 @@ class BBCSoundsGUI(tk.Tk):
 
         disc_canvas.bind("<Configure>", queue_record_paint)
         disc_canvas.bind("<Destroy>", cancel_record_jobs)
+
+    def expand_login_button_to_home(self, login_button):
+        self.cancel_button_hover(login_button)
+        face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
+        hover_t = getattr(login_button, "_hover_step", 0) / 5.0
+        hover_eased = 1.0 - (1.0 - hover_t) ** 2
+        start_colour = blend_colour(face, hover, hover_eased)
+        start_inset = round(2 * (1.0 - hover_eased))
+        button_bg = login_button.cget("bg")
+        button_font = login_button.cget("font")
+
+        start_x = login_button.winfo_rootx() - self.winfo_rootx() + start_inset
+        start_y = login_button.winfo_rooty() - self.winfo_rooty() + start_inset
+        start_w = max(1, login_button.winfo_width() - start_inset * 2)
+        start_h = max(1, login_button.winfo_height() - start_inset * 2)
+        target_w = max(1, self.winfo_width())
+        target_h = max(1, self.winfo_height())
+
+        if start_w <= 1 or start_h <= 1:
+            self.show_home()
+            return
+
+        start_radius = min(10, start_h // 2, start_w // 2)
+        expander = tk.Canvas(self, bg=button_bg, bd=0, highlightthickness=0)
+        text_item = expander.create_text(
+            start_w / 2, start_h / 2, text="Continue  →",
+            fill=TEXT_WHITE, font=button_font,
+        )
+
+        def draw_rounded_fill(w, h, radius, fill_colour):
+            expander.delete("pill")
+            r = min(radius, w // 2, h // 2)
+            if r <= 1:
+                expander.create_rectangle(0, 0, w, h, fill=fill_colour, outline="", tags="pill")
+            else:
+                d = r * 2
+                expander.create_rectangle(r, 0, w - r, h, fill=fill_colour, outline="", tags="pill")
+                expander.create_rectangle(0, r, w, h - r, fill=fill_colour, outline="", tags="pill")
+                expander.create_oval(0, 0, d, d, fill=fill_colour, outline="", tags="pill")
+                expander.create_oval(w - d, 0, w, d, fill=fill_colour, outline="", tags="pill")
+                expander.create_oval(0, h - d, d, h, fill=fill_colour, outline="", tags="pill")
+                expander.create_oval(w - d, h - d, w, h, fill=fill_colour, outline="", tags="pill")
+            expander.tag_raise(text_item)
+
+        def reveal_home():
+            if not self.winfo_exists():
+                return
+            win_w = max(1, self.winfo_width())
+            win_h = max(1, self.winfo_height())
+            self.show_home()
+            if not self.winfo_exists():
+                return
+
+            curtain = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
+            accent = tk.Frame(curtain, bg=ORANGE_ACCENT, height=3)
+            accent.pack(side="bottom", fill="x")
+            curtain.place(x=0, y=0, width=win_w, height=win_h)
+            curtain.lift()
+
+            reveal_duration = 0.260
+            reveal_started = monotonic()
+
+            def draw_reveal():
+                if not curtain.winfo_exists() or not self.winfo_exists():
+                    return
+                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
+                eased = 1.0 - (1.0 - progress) ** 3
+                cur_y = round(-win_h * eased)
+                if progress > 0.70:
+                    fade = (progress - 0.70) / 0.30
+                    accent.configure(bg=blend_colour(ORANGE_ACCENT, DARK_BG, fade))
+                curtain.place(x=0, y=cur_y, width=win_w, height=win_h)
+                curtain.lift()
+                if progress < 1.0:
+                    self.after(12, draw_reveal)
+                else:
+                    curtain.destroy()
+
+            self.after(12, draw_reveal)
+
+        expand_duration = 0.340
+        expand_started = monotonic()
+
+        def draw_expand():
+            if not expander.winfo_exists() or not self.winfo_exists():
+                return
+            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
+            if progress < 0.5:
+                eased = 4.0 * (progress ** 3)
+            else:
+                eased = 1.0 - ((-2.0 * progress + 2.0) ** 3) / 2.0
+
+            cur_x = round(start_x * (1.0 - eased))
+            cur_y = round(start_y * (1.0 - eased))
+            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_r = round(start_radius * max(0.0, 1.0 - progress / 0.35))
+
+            if progress < 0.45:
+                cur_bg = blend_colour(start_colour, ORANGE_ACCENT, progress / 0.45)
+            else:
+                t = (progress - 0.45) / 0.55
+                smooth_t = t * t * (3.0 - 2.0 * t)
+                cur_bg = blend_colour(ORANGE_ACCENT, DARK_BG, smooth_t)
+
+            if cur_r <= 1:
+                expander.configure(bg=cur_bg)
+            draw_rounded_fill(cur_w, cur_h, cur_r, cur_bg)
+
+            if progress < 0.42:
+                text_fade = progress / 0.42
+                expander.coords(text_item, cur_w / 2, cur_h / 2)
+                expander.itemconfigure(
+                    text_item,
+                    state="normal",
+                    fill=blend_colour(TEXT_WHITE, cur_bg, text_fade),
+                )
+            else:
+                expander.itemconfigure(text_item, state="hidden")
+
+            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            tk.Misc.lift(expander)
+
+            if progress < 1.0:
+                self.after(12, draw_expand)
+            else:
+                reveal_home()
+
+        draw_expand()
 
     def paint_vinyl_record(self, event):
         canvas_obj = event.widget
@@ -1505,7 +1640,7 @@ class BBCSoundsGUI(tk.Tk):
             preview_cat.configure(bg=cur_bg)
             preview_title.configure(bg=cur_bg)
             expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            expander.lift()
+            tk.Misc.lift(expander)
             if progress < 1.0:
                 self.after(15, draw_expand)
             else:
