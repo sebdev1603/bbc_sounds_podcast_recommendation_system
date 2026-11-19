@@ -935,16 +935,26 @@ class BBCSoundsGUI(tk.Tk):
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
-        right_side = tk.Frame(content_split, bg=SIDEBAR_BG, width=380)
-        right_side.pack(side="right", fill="y", padx=(10, 0))
-        right_side.pack_propagate(False)
-        disc_canvas = tk.Canvas(right_side, bg=right_side.cget("bg"), highlightthickness=0)
+        right_side = tk.Frame(content_split, bg=DARK_BG, width=460)
+        right_side.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        disc_canvas = tk.Canvas(right_side, bg=DARK_BG, highlightthickness=0)
         disc_canvas.pack(fill="both", expand=True)
+
+        def cancel_record_jobs(_event=None):
+            for attr in ("_paint_job", "_spin_job"):
+                job = getattr(disc_canvas, attr, None)
+                if job is not None:
+                    try:
+                        self.after_cancel(job)
+                    except tk.TclError:
+                        pass
+                    setattr(disc_canvas, attr, None)
+
         def queue_record_paint(event):
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
-            disc_canvas._paint_job = self.after(100, paint_record, event)
+            disc_canvas._paint_job = self.after(80, paint_record, event)
 
         def paint_record(event):
             disc_canvas._paint_job = None
@@ -952,38 +962,198 @@ class BBCSoundsGUI(tk.Tk):
                 self.paint_vinyl_record(event)
 
         disc_canvas.bind("<Configure>", queue_record_paint)
+        disc_canvas.bind("<Destroy>", cancel_record_jobs)
 
-    @staticmethod
-    def paint_vinyl_record(event):
+    def paint_vinyl_record(self, event):
         canvas_obj = event.widget
-        canvas_obj.delete("all")
-        disc_size = min(event.width, event.height) * 0.68
-        center_x, center_y = event.width * 0.5, event.height * 0.48
-        for offset, stroke_color, line_width in [(0, "#f7f7f7", 2), (17, "#4b4b4b", 2), (35, "#2c2c2c", 2),
-                                                 (54, "#454545", 2), (73, "#2a2a2a", 2), (96, "#151515", 30)]:
-            radius = disc_size / 2 - offset
-            if radius > 5:
-                canvas_obj.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, outline=stroke_color, width=line_width)
-        canvas_obj.create_oval(center_x - 48, center_y - 48, center_x + 48, center_y + 48, fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2)
-        canvas_obj.create_oval(center_x - 11, center_y - 11, center_x + 11, center_y + 11, fill="#111111", outline=TEXT_WHITE, width=2)
-        canvas_obj.create_text(center_x, center_y - 25, text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, 13, "bold"))
-        canvas_obj.create_text(center_x, center_y - 4, text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, 10, "bold"))
-        canvas_obj.create_text(center_x, center_y + 21, text="DISCOVER", fill=TEXT_WHITE, font=(DEFAULT_FONT, 7, "bold"))
+        prev_spin = getattr(canvas_obj, "_spin_job", None)
+        if prev_spin is not None:
+            try:
+                self.after_cancel(prev_spin)
+            except tk.TclError:
+                pass
+            canvas_obj._spin_job = None
 
-        ring_string = "STREAM · SHARE · BBC SOUND · LISTEN · DISCOVER · "
-        outer_radius = disc_size / 2 + 20
-        for i, char in enumerate(ring_string):
-            deg = math.radians(i * (360 / len(ring_string)) - 90)
-            px = center_x + outer_radius * math.cos(deg)
-            py = center_y + outer_radius * math.sin(deg)
-            canvas_obj.create_text(
-                px, py, text=char, fill=TEXT_WHITE, font=(DEFAULT_FONT, 8, "bold"),
-                angle=-math.degrees(deg) - 90,
+        canvas_obj.delete("all")
+        w, h = max(240, event.width), max(240, event.height)
+        unit = min(w, h)
+        # Position toward the top-right, matching 1.svg's hero composition.
+        center_x = w * 0.52
+        center_y = max(unit * 0.48, min(h * 0.45, unit * 0.50))
+        outer_r = unit * 0.43
+        mid_r = outer_r * 0.82
+        inner_r = outer_r * 0.65
+        vinyl_r = outer_r * 0.50
+
+        # 1. Three concentric rotating circles of text (matching 1.svg).
+        ring_text = "LISTEN · DISCOVER · STREAM · SHARE · BBC SOUND · "
+        ring_specs = [
+            (outer_r, "#d2d5db", max(11, round(unit * 0.032)), 0.45),
+            (mid_r, TEXT_WHITE, max(10, round(unit * 0.028)), -0.60),
+            (inner_r, ORANGE_ACCENT, max(9, round(unit * 0.023)), 0.80),
+        ]
+        ring_items = []
+        for radius, colour, font_size, speed in ring_specs:
+            step = 360.0 / len(ring_text)
+            for idx, char in enumerate(ring_text):
+                base_deg = idx * step
+                rad = math.radians(base_deg - 90)
+                item_id = canvas_obj.create_text(
+                    center_x + radius * math.cos(rad),
+                    center_y + radius * math.sin(rad),
+                    text=char, fill=colour, font=("Arial Black", font_size, "bold"),
+                    angle=(-base_deg) % 360,
+                )
+                ring_items.append((item_id, base_deg, radius, speed))
+
+        # 2. Rotating Vinyl CD / Record in the centre.
+        canvas_obj.create_oval(
+            center_x - vinyl_r, center_y - vinyl_r,
+            center_x + vinyl_r, center_y + vinyl_r,
+            fill="#111215", outline="#2e3138", width=2,
+        )
+        # Rotating specular sheen wedges so the vinyl visibly spins 360 degrees.
+        sheen_1 = canvas_obj.create_arc(
+            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+            start=25, extent=38, fill="#24272e", outline="", style="pieslice",
+        )
+        sheen_2 = canvas_obj.create_arc(
+            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+            start=205, extent=38, fill="#24272e", outline="", style="pieslice",
+        )
+        glint_1 = canvas_obj.create_arc(
+            center_x - vinyl_r * 0.84, center_y - vinyl_r * 0.84,
+            center_x + vinyl_r * 0.84, center_y + vinyl_r * 0.84,
+            start=35, extent=18, outline="#555a66", width=2, style="arc",
+        )
+        glint_2 = canvas_obj.create_arc(
+            center_x - vinyl_r * 0.68, center_y - vinyl_r * 0.68,
+            center_x + vinyl_r * 0.68, center_y + vinyl_r * 0.68,
+            start=215, extent=20, outline="#4a4f5a", width=2, style="arc",
+        )
+        for frac, stroke in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34")):
+            gr = vinyl_r * frac
+            canvas_obj.create_oval(center_x - gr, center_y - gr, center_x + gr, center_y + gr, outline=stroke, width=1)
+
+        label_r = vinyl_r * 0.36
+        canvas_obj.create_oval(
+            center_x - label_r, center_y - label_r,
+            center_x + label_r, center_y + label_r,
+            fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2,
+        )
+        label_dot_r = label_r * 0.68
+        label_marker = canvas_obj.create_oval(
+            center_x - 3, center_y - label_dot_r - 3,
+            center_x + 3, center_y - label_dot_r + 3,
+            fill="#111111", outline="",
+        )
+        label_top = canvas_obj.create_text(
+            center_x, center_y - label_r * 0.45,
+            text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, max(7, round(label_r * 0.28)), "bold"),
+        )
+        label_bottom = canvas_obj.create_text(
+            center_x, center_y + label_r * 0.48,
+            text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, max(6, round(label_r * 0.20)), "bold"),
+        )
+        spindle_r = max(5, vinyl_r * 0.08)
+        canvas_obj.create_oval(
+            center_x - spindle_r, center_y - spindle_r,
+            center_x + spindle_r, center_y + spindle_r,
+            fill="#111111", outline=TEXT_WHITE, width=2,
+        )
+
+        # 3. Turntable tonearm resting on the top-right of the spinning vinyl (as in 1.svg).
+        pivot_x = center_x + vinyl_r * 1.06
+        pivot_y = center_y - vinyl_r * 0.92
+        base_r = max(14, vinyl_r * 0.20)
+        canvas_obj.create_oval(
+            pivot_x - base_r, pivot_y - base_r,
+            pivot_x + base_r, pivot_y + base_r,
+            fill="#2b2e35", outline="#7c808b", width=2,
+        )
+        canvas_obj.create_oval(
+            pivot_x - base_r * 0.55, pivot_y - base_r * 0.55,
+            pivot_x + base_r * 0.55, pivot_y + base_r * 0.55,
+            fill="#565b66", outline="#c7cbd4", width=1,
+        )
+        # Counterweight behind pivot.
+        cw_x = pivot_x + base_r * 0.55
+        cw_y = pivot_y - base_r * 0.72
+        canvas_obj.create_line(pivot_x, pivot_y, cw_x, cw_y, fill="#aeb3bd", width=max(5, round(vinyl_r * 0.06)), capstyle="round")
+        # Curved metallic tonearm extending onto the vinyl groove.
+        elbow_x = pivot_x - vinyl_r * 0.10
+        elbow_y = pivot_y + vinyl_r * 0.74
+        tip_x = center_x + vinyl_r * 0.60
+        tip_y = center_y + vinyl_r * 0.18
+        canvas_obj.create_line(
+            pivot_x, pivot_y, elbow_x, elbow_y, tip_x, tip_y,
+            fill="#c6cad2", width=max(4, round(vinyl_r * 0.045)), smooth=True, capstyle="round",
+        )
+        # Headshell / cartridge resting on the vinyl.
+        head_x = tip_x - vinyl_r * 0.09
+        head_y = tip_y + vinyl_r * 0.08
+        canvas_obj.create_line(
+            tip_x, tip_y, head_x, head_y,
+            fill="#1f2126", width=max(8, round(vinyl_r * 0.09)), capstyle="butt",
+        )
+        canvas_obj.create_oval(
+            head_x - 3, head_y - 3, head_x + 3, head_y + 3,
+            fill=ORANGE_ACCENT, outline="",
+        )
+
+        # Continuous 360-degree rotation loop for vinyl CD and all 3 text circles.
+        state = {"tick": getattr(canvas_obj, "_spin_tick", 0.0)}
+
+        def animate_spin():
+            if not canvas_obj.winfo_exists():
+                return
+            state["tick"] = (state["tick"] + 1.0) % 36000.0
+            canvas_obj._spin_tick = state["tick"]
+            t = state["tick"]
+
+            # Rotate all 3 concentric text circles 360 degrees.
+            for item_id, base_deg, radius, speed in ring_items:
+                deg = (base_deg + t * speed) % 360.0
+                rad = math.radians(deg - 90.0)
+                canvas_obj.coords(
+                    item_id,
+                    center_x + radius * math.cos(rad),
+                    center_y + radius * math.sin(rad),
+                )
+                canvas_obj.itemconfigure(item_id, angle=(-deg) % 360.0)
+
+            # Rotate vinyl CD specular sheen, glints, and center label 360 degrees.
+            vinyl_deg = (t * 2.2) % 360.0
+            canvas_obj.itemconfigure(sheen_1, start=(25.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(sheen_2, start=(205.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(glint_1, start=(35.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(glint_2, start=(215.0 - vinyl_deg) % 360.0)
+
+            v_rad = math.radians(vinyl_deg - 90.0)
+            mx = center_x + label_dot_r * math.cos(v_rad)
+            my = center_y + label_dot_r * math.sin(v_rad)
+            canvas_obj.coords(label_marker, mx - 3, my - 3, mx + 3, my + 3)
+
+            top_rad = math.radians(vinyl_deg - 90.0)
+            bot_rad = math.radians(vinyl_deg + 90.0)
+            canvas_obj.coords(
+                label_top,
+                center_x + label_r * 0.45 * math.cos(top_rad),
+                center_y + label_r * 0.45 * math.sin(top_rad),
             )
-        canvas_obj.create_line(center_x + disc_size * 0.32, center_y - disc_size * 0.36, center_x + disc_size * 0.1, center_y - disc_size * 0.05,
-                               fill="#bfc2c8", width=5)
-        canvas_obj.create_oval(center_x + disc_size * 0.27, center_y - disc_size * 0.42, center_x + disc_size * 0.38, center_y - disc_size * 0.31,
-                               fill="#737780", outline=TEXT_WHITE, width=1)
+            canvas_obj.itemconfigure(label_top, angle=(-vinyl_deg) % 360.0)
+            canvas_obj.coords(
+                label_bottom,
+                center_x + label_r * 0.48 * math.cos(bot_rad),
+                center_y + label_r * 0.48 * math.sin(bot_rad),
+            )
+            canvas_obj.itemconfigure(label_bottom, angle=(180.0 - vinyl_deg) % 360.0)
+
+            canvas_obj._spin_job = self.after(33, animate_spin)
+
+        animate_spin()
 
     def build_shell(self, active_tab_title):
         self.cancel_pending_render()
