@@ -45,9 +45,9 @@ GENRE_TILE_DETAILS = {
     "Technology": ("#285d8b", ">_", "Digital culture, inventions and the future"),
     "Science": ("#23705b", "Σ", "Discoveries, nature and how things work"),
     "Business": ("#6f5d24", "£", "Money, markets, careers and entrepreneurship"),
-    "Gaming": ("#394a91", "+", "Games, creators and player culture"),
+    "Gaming": ("#394a91", "♧", "Games, creators and player culture"),
     "Entertainment": ("#9a3e67", "★", "Film, television, music and celebrity stories"),
-    "Sport": ("#39713b", "●", "Matches, athletes and expert sporting analysis"),
+    "Sport": ("#39713b", "⚽", "Matches, athletes and expert sporting analysis"),
     "Health": ("#8a4b35", "♥", "Wellbeing, medicine and healthier living"),
 }
 GENRE_CIRCLE_COLOURS = [
