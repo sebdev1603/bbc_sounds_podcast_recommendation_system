@@ -383,35 +383,98 @@ class BBCSoundsGUI(tk.Tk):
             **kwargs,
         )
         button._rounded_padding = (24, 12) if compact else (32, 16)
+        button._hover_job = None
+        button._hover_step = 0
+        button._hover_target = 0
         self.style_rounded_button(button, face, ORANGE_HL if primary else BORDER_LINE)
-        button.bind("<Enter>", lambda _e: button.configure(image=button._hover_image))
-        button.bind("<Leave>", lambda _e: button.configure(image=button._normal_image))
+        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 5))
+        button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
+        button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
         return button
 
+    def cancel_button_hover(self, button):
+        job = getattr(button, "_hover_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+            button._hover_job = None
+
+    def animate_button_hover(self, button, target_step):
+        if not button.winfo_exists():
+            return
+        if target_step > 0 and str(button.cget("state")) == "disabled":
+            return
+        button._hover_target = target_step
+        if getattr(button, "_hover_job", None) is not None:
+            return
+
+        def step_frame():
+            button._hover_job = None
+            if not button.winfo_exists():
+                return
+            current = getattr(button, "_hover_step", 0)
+            target = getattr(button, "_hover_target", 0)
+            if current == target:
+                return
+            current += 1 if target > current else -1
+            button._hover_step = current
+            self._apply_button_hover_frame(button, current)
+            if current != target:
+                button._hover_job = self.after(18, step_frame)
+
+        step_frame()
+
+    def _apply_button_hover_frame(self, button, step):
+        face, hover = button._rounded_colours
+        width, height = button._hover_size
+        base_fg = button._hover_base_fg
+        t = step / 5.0
+        eased = 1.0 - (1.0 - t) ** 2
+        colour = blend_colour(face, hover, eased)
+        inset = round(2 * (1.0 - eased))
+        image = self.rounded_button_image(width, height, colour, inset=inset)
+        button._current_image = image
+        config = {"image": image}
+        if isinstance(base_fg, str) and base_fg.startswith("#") and len(base_fg) == 7:
+            config["fg"] = blend_colour(base_fg, TEXT_WHITE, eased)
+        button.configure(**config)
+
     def style_rounded_button(self, button, face, hover):
+        self.cancel_button_hover(button)
         button._rounded_colours = (face, hover)
+        if getattr(button, "_hover_step", 0) == 0 or not hasattr(button, "_hover_base_fg"):
+            button._hover_base_fg = button.cget("fg")
+        button._hover_step = 0
+        button._hover_target = 0
         metrics = tkfont.Font(root=self, font=button.cget("font"))
         pad_x, pad_y = button._rounded_padding
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
-        button._normal_image = self.rounded_button_image(width, height, face)
-        button._hover_image = self.rounded_button_image(width, height, hover)
+        button._hover_size = (width, height)
+        button._normal_image = self.rounded_button_image(width, height, face, inset=2)
+        button._hover_image = self.rounded_button_image(width, height, hover, inset=0)
         button.configure(image=button._normal_image)
 
-    def rounded_button_image(self, width, height, colour):
-        key = (width, height, colour)
+    def rounded_button_image(self, width, height, colour, inset=2):
+        key = (width, height, colour, inset)
         if key not in self.button_images:
-            image = tk.PhotoImage(master=self, width=width, height=height)
-            radius = min(10, height // 2, width // 2)
-            image.put(colour, to=(0, radius, width, height - radius))
+            canvas_w, canvas_h = width + 4, height + 4
+            image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
+            left, top = inset, inset
+            right, bottom = canvas_w - inset, canvas_h - inset
+            pill_w, pill_h = right - left, bottom - top
+            radius = min(10, pill_h // 2, pill_w // 2)
+            image.put(colour, to=(left, top + radius, right, bottom - radius))
             for y in range(radius):
-                inset = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
-                if inset * 2 < width:
-                    image.put(colour, to=(inset, y, width - inset, y + 1))
-                    image.put(colour, to=(inset, height-y-1, width-inset, height-y))
+                dx = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
+                if left + dx < right - dx:
+                    image.put(colour, to=(left + dx, top + y, right - dx, top + y + 1))
+                    image.put(colour, to=(left + dx, bottom - y - 1, right - dx, bottom - y))
             self.button_images[key] = image
-            if len(self.button_images) > 128:
+            if len(self.button_images) > 512:
                 self.button_images.popitem(last=False)
         self.button_images.move_to_end(key)
         return self.button_images[key]
@@ -2421,9 +2484,9 @@ class BBCSoundsGUI(tk.Tk):
     def update_length_button_styles(self):
         for val_key, button_obj in getattr(self, "length_buttons", {}).items():
             active_flag = val_key == self.active_length
-            button_obj.configure(
-                fg=TEXT_WHITE if active_flag else TEXT_LIGHT
-            )
+            fg_colour = TEXT_WHITE if active_flag else TEXT_LIGHT
+            button_obj._hover_base_fg = fg_colour
+            button_obj.configure(fg=fg_colour)
             self.style_rounded_button(
                 button_obj, ORANGE_ACCENT if active_flag else INPUT_BG,
                 ORANGE_HL if active_flag else BORDER_LINE,
