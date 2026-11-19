@@ -84,6 +84,7 @@ class RoundedPanel(tk.Frame):
         super().__init__(parent, bg=parent.cget("bg"), **kwargs)
         self.surface = surface
         self.border = border
+        self._inset = 0
         self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), bd=0, highlightthickness=0)
         self.backdrop.place(relwidth=1, relheight=1)
         self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=surface, outline=border)
@@ -92,13 +93,24 @@ class RoundedPanel(tk.Frame):
     def cget(self, key):
         return self.surface if key in ("bg", "background") else super().cget(key)
 
-    def draw_surface(self, event):
-        w, h = event.width - 1, event.height - 1
-        r = min(12, w / 2, h / 2)
+    def _redraw_shape(self, width, height):
+        m = 1 + self._inset
+        w = max(m + 2, width - 1 - self._inset)
+        h = max(m + 2, height - 1 - self._inset)
+        r = min(12, (w - m) / 2, (h - m) / 2)
         self.backdrop.coords(
-            self.shape, r, 1, w-r, 1, w, 1, w, r, w, h-r, w, h,
-            w-r, h, r, h, 1, h, 1, h-r, 1, r, 1, 1,
+            self.shape, r + m, m, w - r, m, w, m, w, r + m, w, h - r, w, h,
+            w - r, h, r + m, h, m, h, m, h - r, m, r + m, m, m,
         )
+
+    def draw_surface(self, event):
+        self._redraw_shape(event.width, event.height)
+
+    def set_inset(self, inset):
+        self._inset = inset
+        bw, bh = self.backdrop.winfo_width(), self.backdrop.winfo_height()
+        if bw > 2 and bh > 2:
+            self._redraw_shape(bw, bh)
 
     def set_surface(self, surface, border):
         self.surface = surface
@@ -2374,6 +2386,7 @@ class BBCSoundsGUI(tk.Tk):
                     ),
                 )
                 category_card = self.create_card_frame(category_row, bg=tile_colour, cursor="hand2")
+                category_card._inset = 2
                 category_card.grid(
                     row=idx // columns_count, column=idx % columns_count,
                     sticky="nsew", padx=5, pady=5,
@@ -2405,20 +2418,232 @@ class BBCSoundsGUI(tk.Tk):
                 )
                 action_label.pack(fill="x", padx=15, pady=(0, 14))
 
-                open_genre = lambda _event=None, name=category_name: (
-                    self.search_text.set(name), perform_search_action()
-                )
-                for clickable_widget in (
+                hover_colour = blend_colour(tile_colour, "#ffffff", 0.16)
+                card_state = {"step": 0, "target": 0, "job": None}
+                card_widgets = (
                     category_card, category_card.backdrop, accent_line, card_header, icon_label,
                     title_label, description_label, action_label,
+                )
+
+                def cancel_card_hover(state=card_state):
+                    if state["job"] is not None:
+                        try:
+                            self.after_cancel(state["job"])
+                        except tk.TclError:
+                            pass
+                        state["job"] = None
+
+                def apply_card_hover(
+                    step,
+                    card=category_card,
+                    base_col=tile_colour,
+                    hi_col=hover_colour,
+                    hdr=card_header,
+                    ico=icon_label,
+                    ttl=title_label,
+                    dsc=description_label,
+                    act=action_label,
                 ):
+                    if not card.winfo_exists():
+                        return
+                    t = step / 5.0
+                    eased = 1.0 - (1.0 - t) ** 2
+                    cur_bg = blend_colour(base_col, hi_col, eased)
+                    cur_border = blend_colour(BORDER_LINE, ORANGE_HL, eased)
+                    cur_ico_bg = blend_colour("#17181b", ORANGE_ACCENT, eased)
+                    cur_act_fg = blend_colour("#ffffff", GOLD_STAR, eased)
+                    card.set_inset(round(2 * (1.0 - eased)))
+                    card.set_surface(cur_bg, cur_border)
+                    hdr.configure(bg=cur_bg)
+                    ttl.configure(bg=cur_bg)
+                    dsc.configure(bg=cur_bg)
+                    act.configure(bg=cur_bg, fg=cur_act_fg)
+                    ico.configure(bg=cur_ico_bg)
+
+                def animate_card_hover(target, state=card_state, card=category_card, apply_fn=apply_card_hover):
+                    if not card.winfo_exists():
+                        return
+                    state["target"] = target
+                    if state["job"] is not None:
+                        return
+
+                    def step_card():
+                        state["job"] = None
+                        if not card.winfo_exists():
+                            return
+                        cur = state["step"]
+                        tgt = state["target"]
+                        if cur == tgt:
+                            return
+                        cur += 1 if tgt > cur else -1
+                        state["step"] = cur
+                        apply_fn(cur)
+                        if cur != tgt:
+                            state["job"] = self.after(18, step_card)
+
+                    step_card()
+
+                def on_card_leave(_event=None, card=category_card, anim_fn=animate_card_hover):
+                    if not card.winfo_exists():
+                        return
+                    hovered = self.winfo_containing(*self.winfo_pointerxy())
+                    node = hovered
+                    while node is not None:
+                        if node is card:
+                            return
+                        node = node.master
+                    anim_fn(0)
+
+                def open_genre(
+                    _event=None,
+                    card=category_card,
+                    name=category_name,
+                    icon=tile_icon,
+                    desc=tile_description,
+                    base_col=tile_colour,
+                    hi_col=hover_colour,
+                    state=card_state,
+                    cancel_fn=cancel_card_hover,
+                ):
+                    cancel_fn()
+                    t = state["step"] / 5.0
+                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
+                    self.expand_genre_in_tab(
+                        card, name, icon, desc, start_col,
+                        lambda: (self.search_text.set(name), perform_search_action()),
+                        programmes_heading, page,
+                    )
+
+                for clickable_widget in card_widgets:
+                    clickable_widget.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(5))
+                    clickable_widget.bind("<Leave>", on_card_leave)
                     clickable_widget.bind("<Button-1>", open_genre)
+                category_card.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load categories", err)
 
-        self.render_section_title(page, "Programmes")
+        programmes_heading = self.render_section_title(page, "Programmes")
         results_pane.pack(fill="both", expand=True)
         perform_search_action()
+
+    def expand_genre_in_tab(self, card, genre_name, genre_icon, genre_desc, start_col, apply_filter, heading_widget, page):
+        canvas_pane, _window = self._page_transition_target
+        area_frame = canvas_pane.master
+        if getattr(area_frame, "_expanding_genre", False) or not area_frame.winfo_exists() or not card.winfo_exists():
+            return
+        area_frame._expanding_genre = True
+
+        start_x = card.winfo_rootx() - area_frame.winfo_rootx()
+        start_y = card.winfo_rooty() - area_frame.winfo_rooty()
+        start_w = max(1, card.winfo_width())
+        start_h = max(1, card.winfo_height())
+        target_w = max(1, area_frame.winfo_width())
+        target_h = max(1, area_frame.winfo_height())
+
+        if target_w <= 1 or target_h <= 1:
+            area_frame._expanding_genre = False
+            apply_filter()
+            return
+
+        expander = tk.Frame(area_frame, bg=start_col, bd=0, highlightthickness=0)
+        accent_top = tk.Frame(expander, bg=ORANGE_HL, height=3)
+        accent_top.pack(fill="x")
+        preview_box = tk.Frame(expander, bg=start_col)
+        preview_box.place(relx=0.5, rely=0.5, anchor="center")
+        icon_badge = tk.Label(
+            preview_box, text=genre_icon, width=3, height=1,
+            font=(DEFAULT_FONT, 18, "bold"), bg=ORANGE_ACCENT, fg=TEXT_WHITE,
+        )
+        icon_badge.pack(pady=(0, 8))
+        title_lbl = self.create_label(
+            preview_box, genre_name.upper(), 24, TEXT_WHITE, "bold",
+            anchor="center", bg=start_col,
+        )
+        title_lbl.pack()
+        desc_lbl = self.create_label(
+            preview_box, genre_desc, 11, "#f0f0f0",
+            anchor="center", justify="center", bg=start_col,
+        )
+        desc_lbl.pack(pady=(6, 0))
+
+        expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
+        tk.Misc.lift(expander)
+
+        expand_duration = 0.240
+        expand_started = monotonic()
+
+        def start_reveal():
+            if not expander.winfo_exists() or not area_frame.winfo_exists():
+                return
+            apply_filter()
+            if canvas_pane.winfo_exists() and heading_widget.winfo_exists() and page.winfo_exists():
+                self.update_idletasks()
+                region = canvas_pane.cget("scrollregion")
+                if region:
+                    total_h = int(float(region.split()[3]))
+                    if total_h > 0:
+                        offset = heading_widget.winfo_rooty() - page.winfo_rooty()
+                        canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
+            tk.Misc.lift(expander)
+
+            reveal_duration = 0.200
+            reveal_started = monotonic()
+
+            def draw_reveal():
+                if not expander.winfo_exists() or not area_frame.winfo_exists():
+                    return
+                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
+                eased = 1.0 - (1.0 - progress) ** 3
+                cur_y = round(-target_h * eased)
+                expander.place(x=0, y=cur_y, width=target_w, height=target_h)
+                tk.Misc.lift(expander)
+                if progress < 1.0:
+                    self.after(12, draw_reveal)
+                else:
+                    expander.destroy()
+                    area_frame._expanding_genre = False
+
+            self.after(12, draw_reveal)
+
+        def draw_expand():
+            if not expander.winfo_exists() or not area_frame.winfo_exists():
+                return
+            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
+            eased = 1.0 - (1.0 - progress) ** 3
+            cur_x = round(start_x * (1.0 - eased))
+            cur_y = round(start_y * (1.0 - eased))
+            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+
+            if progress > 0.45:
+                fade = (progress - 0.45) / 0.55
+                cur_bg = blend_colour(start_col, DARK_BG, fade)
+                cur_title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
+                cur_desc_fg = blend_colour("#f0f0f0", cur_bg, fade)
+                cur_ico_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
+                cur_ico_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
+            else:
+                cur_bg = start_col
+                cur_title_fg = TEXT_WHITE
+                cur_desc_fg = "#f0f0f0"
+                cur_ico_bg = ORANGE_ACCENT
+                cur_ico_fg = TEXT_WHITE
+
+            expander.configure(bg=cur_bg)
+            preview_box.configure(bg=cur_bg)
+            title_lbl.configure(bg=cur_bg, fg=cur_title_fg)
+            desc_lbl.configure(bg=cur_bg, fg=cur_desc_fg)
+            icon_badge.configure(bg=cur_ico_bg, fg=cur_ico_fg)
+
+            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            tk.Misc.lift(expander)
+
+            if progress < 1.0:
+                self.after(12, draw_expand)
+            else:
+                start_reveal()
+
+        draw_expand()
 
     def show_recommendations(self):
         page = self.build_shell("For you")
