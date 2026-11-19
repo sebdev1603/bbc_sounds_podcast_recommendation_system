@@ -550,7 +550,10 @@ class BBCSoundsGUI(tk.Tk):
             )
         return frame_box
 
-    def generate_podcast_cover(self, container, pid, title_text, category_text, width_px, height_px):
+    def generate_podcast_cover(
+        self, container, pid, title_text, category_text, width_px, height_px,
+        corner_radius=0, backdrop=None,
+    ):
         fallback_colours = ("#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c")
         try:
             design_index = int(pid)
@@ -562,10 +565,14 @@ class BBCSoundsGUI(tk.Tk):
         colour = genre[0] if genre else fallback_colours[design_index % len(fallback_colours)]
         icon = genre[1] if genre else category[:1].upper()
         pattern = design_index % 3
-        key = (colour, pattern, width_px, height_px)
+        bg_colour = backdrop if (corner_radius > 0 and backdrop) else colour
+        key = (colour, pattern, width_px, height_px, corner_radius, bg_colour)
         image = self.cover_images.get(key)
         if image is None:
-            image = self.make_cover_image(colour, pattern, width_px, height_px)
+            image = self.make_cover_image(
+                colour, pattern, width_px, height_px,
+                corner_radius=corner_radius, backdrop=bg_colour if corner_radius > 0 else None,
+            )
             self.cover_images[key] = image
             if len(self.cover_images) > 128:
                 self.cover_images.popitem(last=False)
@@ -574,17 +581,19 @@ class BBCSoundsGUI(tk.Tk):
         cover = tk.Label(
             container, image=image, compound="center", text=icon,
             font=(DEFAULT_FONT, max(11, min(width_px, height_px) // 6), "bold"),
-            bg=colour, fg=TEXT_WHITE, cursor="hand2", bd=0, highlightthickness=0,
+            bg=bg_colour, fg=TEXT_WHITE, cursor="hand2", bd=0, highlightthickness=0,
         )
         cover.image = image
         return cover
 
-    def make_cover_image(self, colour, pattern, width, height):
+    def make_cover_image(self, colour, pattern, width, height, corner_radius=0, backdrop=None):
         """Rasterize a reusable cover background with no extra dependencies."""
         base = bytes.fromhex(colour[1:])
         light = bytes.fromhex(blend_colour(colour, "#ffffff", 0.20)[1:])
         dark = bytes.fromhex(blend_colour(colour, "#000000", 0.55)[1:])
         rim = bytes.fromhex(blend_colour(colour, "#ffffff", 0.55)[1:])
+        bg_bytes = bytes.fromhex(backdrop[1:]) if (corner_radius > 0 and backdrop and backdrop.startswith("#")) else None
+        corner_r = min(corner_radius, width // 2, height // 2) if bg_bytes else 0
         stripe_width = max(5, width // 9)
         stripes = (light * stripe_width + base * stripe_width) * (width // (2 * stripe_width) + 2)
         centre_x, centre_y = width // 2, height // 2
@@ -605,6 +614,18 @@ class BBCSoundsGUI(tk.Tk):
                     span = math.isqrt(ring_radius ** 2 - dy ** 2)
                     left, right = centre_x - span, centre_x + span + 1
                     row[left * 3:right * 3] = ring_colour * (right - left)
+            if corner_r > 0:
+                if y < corner_r:
+                    dy_c = corner_r - y
+                elif y >= height - corner_r:
+                    dy_c = y - (height - corner_r - 1)
+                else:
+                    dy_c = 0
+                if dy_c > 0:
+                    inset = corner_r - math.isqrt(max(0, corner_r ** 2 - dy_c ** 2))
+                    if inset > 0:
+                        row[0:inset * 3] = bg_bytes * inset
+                        row[(width - inset) * 3:width * 3] = bg_bytes * inset
             pixels.extend(row)
         return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
 
@@ -2098,10 +2119,8 @@ class BBCSoundsGUI(tk.Tk):
             hero_box = tk.Frame(detail_column, bg=DARK_BG)
             hero_box.pack(anchor="center", pady=(0, 34))
 
-            cover_panel = self.create_card_frame(hero_box, bg="#272727")
-            cover_panel.pack(side="left", anchor="n", padx=(0, 38))
-            cover_holder = tk.Frame(cover_panel, bg="#272727")
-            cover_holder.pack(padx=10, pady=10)
+            cover_holder = tk.Frame(hero_box, bg=DARK_BG)
+            cover_holder.pack(side="left", anchor="n", padx=(0, 38))
 
             right_pane = tk.Frame(hero_box, bg=DARK_BG)
             right_pane.pack(side="left", anchor="n", pady=(4, 0))
@@ -2127,28 +2146,92 @@ class BBCSoundsGUI(tk.Tk):
             listen_label.pack(side="left", padx=(0, 22))
             listen_label.bind("<Button-1>", lambda _event: self.listen(podcast_id))
 
+            play_state = {"size": 76, "step": 0, "target": 0, "job": None}
+
+            def draw_play_button():
+                if not play_canvas.winfo_exists():
+                    return
+                size = play_state["size"]
+                t = play_state["step"] / 5.0
+                eased = 1.0 - (1.0 - t) ** 2
+                inset = 4.0 - 3.0 * eased
+                colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, eased)
+                play_canvas.delete("all")
+                play_canvas.create_oval(inset, inset, size - inset, size - inset, fill=colour, outline="")
+                tri_scale = 1.0 + 0.06 * eased
+                cx, cy = size * 0.50, size * 0.50
+                pts = [
+                    (size * 0.39, size * 0.26),
+                    (size * 0.39, size * 0.74),
+                    (size * 0.76, size * 0.50),
+                ]
+                scaled_pts = []
+                for px, py in pts:
+                    scaled_pts.extend((cx + (px - cx) * tri_scale, cy + (py - cy) * tri_scale))
+                play_canvas.create_polygon(*scaled_pts, fill="#000000", outline="")
+                if listen_label.winfo_exists():
+                    listen_label.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, eased))
+
+            def animate_play_hover(target):
+                play_state["target"] = target
+                if play_state["job"] is not None:
+                    return
+
+                def step_play():
+                    play_state["job"] = None
+                    if not play_canvas.winfo_exists():
+                        return
+                    if play_state["step"] == play_state["target"]:
+                        return
+                    play_state["step"] += 1 if play_state["target"] > play_state["step"] else -1
+                    draw_play_button()
+                    if play_state["step"] != play_state["target"]:
+                        play_state["job"] = self.after(18, step_play)
+
+                step_play()
+
+            def cancel_play_hover(_event=None):
+                if play_state["job"] is not None:
+                    try:
+                        self.after_cancel(play_state["job"])
+                    except tk.TclError:
+                        pass
+                    play_state["job"] = None
+
+            for play_widget in (play_canvas, listen_label):
+                play_widget.bind("<Enter>", lambda _e: animate_play_hover(5))
+                play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
+            play_canvas.bind("<Destroy>", cancel_play_hover)
+
             v_divider = tk.Frame(controls_row, bg="#575756", width=2, height=62)
             v_divider.pack(side="left", padx=(0, 22))
 
             actions_box = tk.Frame(controls_row, bg=DARK_BG)
             actions_box.pack(side="left")
             is_fav = self.check_if_favourited(podcast_id)
-            action_items = [
-                ("♥" if is_fav else "♡", "Remove from favourites" if is_fav else "Save to favourites",
-                 ORANGE_ACCENT if is_fav else TEXT_WHITE, lambda: self.toggle_favourite(podcast_id)),
-                ("★", "Rate this programme", GOLD_STAR, lambda: self.rate_programme(podcast_id)),
+            fav_button = self.create_button(
+                actions_box,
+                "♥  Remove from favourites" if is_fav else "♡  Save to favourites",
+                lambda: self.toggle_favourite(podcast_id),
+                primary=is_fav,
+                compact=True,
+                face=ORANGE_ACCENT if is_fav else "#23262d",
+                fg=TEXT_WHITE,
+            )
+            fav_button.pack(anchor="w", pady=(0, 8))
+            rate_button = self.create_button(
+                actions_box,
+                "★  Rate this programme",
+                lambda: self.rate_programme(podcast_id),
+                compact=True,
+                face="#23262d",
+                fg=TEXT_WHITE,
+            )
+            rate_button.pack(anchor="w")
+            action_buttons = [
+                (fav_button, ORANGE_ACCENT if is_fav else "#23262d", ORANGE_HL if is_fav else BORDER_LINE),
+                (rate_button, "#23262d", BORDER_LINE),
             ]
-            action_widgets = []
-            for icon_char, action_text, icon_color, action_func in action_items:
-                action_row = tk.Frame(actions_box, bg=DARK_BG, cursor="hand2")
-                action_row.pack(anchor="w", pady=5)
-                icon_lbl = self.create_label(action_row, icon_char, 13, icon_color, "bold", cursor="hand2")
-                icon_lbl.pack(side="left", padx=(0, 10))
-                text_lbl = self.create_label(action_row, action_text, 11, TEXT_WHITE, "bold", cursor="hand2")
-                text_lbl.pack(side="left")
-                action_widgets.append((action_row, icon_lbl, text_lbl))
-                for widget in (action_row, icon_lbl, text_lbl):
-                    widget.bind("<Button-1>", lambda _event, callback=action_func: callback())
 
             bottom_rule = tk.Frame(detail_column, bg="#575756", height=2)
             bottom_rule.pack(fill="x", pady=(0, 22))
@@ -2196,22 +2279,18 @@ class BBCSoundsGUI(tk.Tk):
                 for child in cover_holder.winfo_children():
                     child.destroy()
                 cover_art = self.generate_podcast_cover(
-                    cover_holder, podcast_id, podcast_rec[1], podcast_rec[2], cover_size, cover_size,
+                    cover_holder, podcast_id, podcast_rec[1], podcast_rec[2],
+                    cover_size, cover_size,
+                    corner_radius=round(cover_size * 0.09), backdrop=DARK_BG,
                 )
                 cover_art.pack()
 
+                play_state["size"] = play_size
                 play_canvas.configure(width=play_size, height=play_size)
-                play_canvas.delete("all")
-                play_canvas.create_oval(2, 2, play_size - 2, play_size - 2, fill=ORANGE_ACCENT, outline="")
-                play_canvas.create_polygon(
-                    round(play_size * 0.39), round(play_size * 0.26),
-                    round(play_size * 0.39), round(play_size * 0.74),
-                    round(play_size * 0.76), round(play_size * 0.50),
-                    fill="#000000", outline="",
-                )
+                draw_play_button()
 
-                v_divider.configure(height=round(play_size * 0.82))
-                cover_panel.pack_configure(padx=(0, round(38 * scale)))
+                v_divider.configure(height=round(play_size * 0.86))
+                cover_holder.pack_configure(padx=(0, round(38 * scale)))
                 top_rule.pack_configure(pady=(4, round(30 * scale)))
                 hero_box.pack_configure(pady=(0, round(30 * scale)))
                 controls_row.pack_configure(pady=(round(26 * scale), 0))
@@ -2229,10 +2308,12 @@ class BBCSoundsGUI(tk.Tk):
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
                 summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
-                for action_row, icon_lbl, text_lbl in action_widgets:
-                    action_row.pack_configure(pady=round(5 * scale))
-                    icon_lbl.configure(font=(DEFAULT_FONT, max(13, round(15 * font_scale)), "bold"))
-                    text_lbl.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale)), "bold"))
+                action_font_size = max(10, round(11 * font_scale))
+                fav_button.pack_configure(pady=(0, round(8 * scale)))
+                for btn, face_col, hover_col in action_buttons:
+                    btn._rounded_padding = (round(28 * scale), round(14 * scale))
+                    btn.configure(font=(DEFAULT_FONT, action_font_size, "bold"))
+                    self.style_rounded_button(btn, face_col, hover_col)
 
             def schedule_detail_scale(_event=None):
                 if resize_job[0] is not None:
