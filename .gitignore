@@ -20,3 +20,6 @@ __pycache__/tkinter.cpython-315.pyc
 __pycache__/last_listened.cpython-313.pyc
 .venv
 __pycache__/last_listened.cpython-312.pyc
+bbc_sounds_program.spec
+dist
+build
