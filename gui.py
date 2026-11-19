@@ -1,3 +1,4 @@
+# BBC Sounds Podcast Recommendation System — Desktop GUI built with Tkinter and SQLite.
 from collections import OrderedDict, deque
 from contextlib import contextmanager
 import ctypes
@@ -14,6 +15,7 @@ from tkinter import font as tkfont
 
 from last_listened import get_last_listened, order_listening_history, record_last_listened
 
+# Workspace paths and shared dark-theme palette / typography constants.
 ROOT_PATH = Path(__file__).resolve().parent
 DATABASE_PATH = ROOT_PATH / "database.db"
 CANVA_DIR = ROOT_PATH / "canva design"
@@ -63,16 +65,18 @@ GENRE_CIRCLE_COLOURS = [
 
 
 def format_user_id(uid):
+    """Convert numeric listener ID strings to integers to match SQLite column types."""
     cleaned_id = str(uid).strip()
     return int(cleaned_id) if cleaned_id.isdigit() else cleaned_id
 
 
 def sanitize_column_name(col):
+    """Quote a SQLite identifier safely for dynamic ORDER BY clauses."""
     return '"' + str(col).replace('"', '""') + '"'
 
 
 def blend_colour(hex_colour, target_colour, amount):
-    """Blend two #RRGGBB colours for generated programme artwork."""
+    """Blend two #RRGGBB colours linearly by amount (0.0 -> source, 1.0 -> target)."""
     source = tuple(int(hex_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
     target = tuple(int(target_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
     mixed = tuple(round(start + (end - start) * amount) for start, end in zip(source, target))
@@ -80,6 +84,7 @@ def blend_colour(hex_colour, target_colour, amount):
 
 
 class RoundedPanel(tk.Frame):
+    """Frame backed by a smooth rounded-rectangle Canvas polygon with optional hover inset."""
     def __init__(self, parent, surface, border=BORDER_LINE, **kwargs):
         super().__init__(parent, bg=parent.cget("bg"), **kwargs)
         self.surface = surface
@@ -118,7 +123,9 @@ class RoundedPanel(tk.Frame):
 
 
 class BBCSoundsGUI(tk.Tk):
+    """Main Tkinter application window managing navigation, animations, and SQLite data."""
     def __init__(self):
+        # Assign a custom Windows AppUserModelID so the taskbar uses the app icon instead of python.exe.
         if sys.platform == "win32":
             try:
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("bbc.sounds.podcast.recommender")
@@ -162,7 +169,12 @@ class BBCSoundsGUI(tk.Tk):
         self.set_windows_titlebar_colour(DARK_BG)
         self.show_login()
 
+    # ------------------------------------------------------------------
+    # Window icon, native Windows titlebar styling, and live UI scaling
+    # ------------------------------------------------------------------
+
     def set_window_icon(self):
+        """Find the BBC Sounds logo image in the project folder and apply it as the window icon."""
         search_dirs = [ROOT_PATH]
         for sub in ("assets", "images", "img", "icons", "canva design"):
             candidate_dir = ROOT_PATH / sub
@@ -380,6 +392,7 @@ class BBCSoundsGUI(tk.Tk):
         return False
 
     def set_windows_titlebar_colour(self, bg_hex=DARK_BG, text_hex=TEXT_WHITE):
+        """Apply Windows DWM dark mode and custom caption/text/border colours to the titlebar."""
         if sys.platform != "win32":
             return
         if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex):
@@ -488,8 +501,13 @@ class BBCSoundsGUI(tk.Tk):
             except (tk.TclError, ValueError, TypeError):
                 pass
 
+    # ------------------------------------------------------------------
+    # SQLite connection and data query helpers
+    # ------------------------------------------------------------------
+
     @contextmanager
     def get_db_connection(self):
+        """Open a SQLite connection with Row access, auto-committing or rolling back on exit."""
         conn = sqlite3.connect(str(DATABASE_PATH), timeout=8)
         conn.row_factory = sqlite3.Row
         try:
@@ -667,8 +685,13 @@ class BBCSoundsGUI(tk.Tk):
         except tk.TclError:
             return None
 
+    # ------------------------------------------------------------------
+    # Reusable UI components: labels, animated rounded buttons, logo, artwork
+    # ------------------------------------------------------------------
+
     @staticmethod
     def create_label(container, text_val, text_size=12, text_color=TEXT_WHITE, font_weight="normal", **kwargs):
+        """Create a styled Tk label inheriting its container's background by default."""
         return tk.Label(
             container,
             text=text_val,
@@ -681,6 +704,7 @@ class BBCSoundsGUI(tk.Tk):
         )
 
     def create_button(self, container, text_val, command_func, primary=False, compact=False, **kwargs):
+        """Create a rounded pill button with smooth 5-frame hover colour and scale animation."""
         font_spec = kwargs.pop("font", (DEFAULT_FONT, 10 if compact else 11, "bold" if primary else "normal"))
         face = kwargs.pop("face", ORANGE_ACCENT if primary else INPUT_BG)
         foreground = kwargs.pop("fg", TEXT_WHITE if primary else TEXT_LIGHT)
@@ -803,6 +827,7 @@ class BBCSoundsGUI(tk.Tk):
         return RoundedPanel(container, kwargs.pop("bg", CARD_BG), **kwargs)
 
     def draw_app_logo(self, container, scaling=1):
+        """Render the sharp-square BBC logo paired with orange SOUNDS on one DPI-safe canvas."""
         bg_col = container.cget("bg")
         tile = max(26, round(28 * scaling))
         gap = max(4, round(5 * scaling))
@@ -1292,7 +1317,12 @@ class BBCSoundsGUI(tk.Tk):
             self._pending_render_id = None
         self._render_queue.clear()
 
+    # ------------------------------------------------------------------
+    # Login screen, button-to-home expansion, and rotating vinyl visual
+    # ------------------------------------------------------------------
+
     def show_login(self, error_message=""):
+        """Render the sign-in screen with listener ID authentication and spinning vinyl art."""
         self.cancel_pending_render()
         self._dismissed_last_listened = None
         if self._search_after_id is not None:
@@ -1408,6 +1438,7 @@ class BBCSoundsGUI(tk.Tk):
         self.after_idle(lambda: self.apply_interface_scaling(force=True))
 
     def expand_login_button_to_home(self, login_button):
+        """Expand the rounded Continue button to fill the window, then lift a curtain to reveal Home."""
         self.cancel_button_hover(login_button)
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
         hover_t = getattr(login_button, "_hover_step", 0) / 5.0
@@ -1537,6 +1568,7 @@ class BBCSoundsGUI(tk.Tk):
         draw_expand()
 
     def paint_vinyl_record(self, event):
+        """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
         canvas_obj = event.widget
         prev_spin = getattr(canvas_obj, "_spin_job", None)
         if prev_spin is not None:
@@ -1727,7 +1759,12 @@ class BBCSoundsGUI(tk.Tk):
 
         animate_spin()
 
+    # ------------------------------------------------------------------
+    # Main app shell, tab slide transitions, and expandable bottom mini-bar
+    # ------------------------------------------------------------------
+
     def build_shell(self, active_tab_title):
+        """Construct the persistent top navigation bar, search box, optional mini-bar, and scroll area."""
         self.cancel_pending_render()
         self._podcast_averages = None
         if self._search_after_id is not None:
@@ -1826,6 +1863,7 @@ class BBCSoundsGUI(tk.Tk):
         return content_pane
 
     def transition_to(self, destination, tab=None, *, direction=None):
+        """Animate out of the current page (sliding or shrinking to the mini-bar) and open destination."""
         canvas, window = self._page_transition_target
         if getattr(canvas, "_leaving_page", False):
             return
@@ -1910,6 +1948,7 @@ class BBCSoundsGUI(tk.Tk):
         draw_frame()
 
     def add_last_listened_prompt(self, shell, show_average=True):
+        """Attach the clickable bottom mini-bar for the user's most recently played podcast."""
         if self.current_user is None:
             return
         try:
@@ -1964,6 +2003,7 @@ class BBCSoundsGUI(tk.Tk):
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
+        """Expand the bottom mini-bar smoothly upward to open the podcast detail page."""
         if getattr(shell, "_expanding_bar", False):
             return
         canvas, _window = self._page_transition_target
@@ -2026,6 +2066,7 @@ class BBCSoundsGUI(tk.Tk):
         draw_expand()
 
     def shrink_detail_to_bottom_bar(self, destination, title, category):
+        """Shrink the podcast detail view down into the destination tab's bottom mini-bar."""
         canvas, _window = self._page_transition_target
         area_frame = canvas.master
         win_w = max(1, self.winfo_width())
@@ -2203,7 +2244,12 @@ class BBCSoundsGUI(tk.Tk):
             self._search_entry.focus_set()
             self._search_entry.icursor(tk.END)
 
+    # ------------------------------------------------------------------
+    # Application pages (Home, Genres, For you, Favourites, History, Ratings, Report, Profile, Detail)
+    # ------------------------------------------------------------------
+
     def show_home(self):
+        """Render the Home dashboard with stats, report shortcut, recommendations, and recent history."""
         try:
             page = self.build_shell("Home")
             listener_info = self.get_listener_data()
@@ -2329,6 +2375,7 @@ class BBCSoundsGUI(tk.Tk):
             self.show_db_error("Couldn't load BBC Sounds", err)
 
     def show_search(self):
+        """Render the Genres & Search tab with animated genre cards and live-filtered programmes."""
         page = self.build_shell("Genres")
         self.render_page_title(page, "Browse genres", "Choose a genre below, or use the search bar above.")
 
@@ -2646,6 +2693,7 @@ class BBCSoundsGUI(tk.Tk):
         draw_expand()
 
     def show_recommendations(self):
+        """Render the 'For you' recommendations tab based on saved genre and length preferences."""
         page = self.build_shell("For you")
         listener_info = self.get_listener_data()
         genres_val = self.get_row_field(listener_info, "FavoriteGenres", "") or ""
@@ -2965,6 +3013,7 @@ class BBCSoundsGUI(tk.Tk):
             self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
 
     def show_detail(self, podcast_id):
+        """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
             if not podcast_rec:
@@ -3204,7 +3253,12 @@ class BBCSoundsGUI(tk.Tk):
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
+    # ------------------------------------------------------------------
+    # Playback, rating, favourite, and preference-survey actions
+    # ------------------------------------------------------------------
+
     def listen(self, podcast_id):
+        """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
         try:
             with self.get_db_connection() as conn:
                 existing_entry = conn.execute(

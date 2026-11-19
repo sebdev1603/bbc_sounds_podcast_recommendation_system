@@ -1,11 +1,14 @@
+# CLI module for collecting, resetting, and checking a listener's onboarding preference survey.
 import sqlite3
 import time
 
+# Deferred import avoids a circular dependency with main.py.
 def clear():
     import main as app
     app.clear()
 
 def survey(username):
+    """Run the interactive survey to choose up to 5 favourite genres and preferred episode length."""
     user_id = int(username) if str(username).isdigit() else username
 
     clear()
@@ -19,6 +22,7 @@ def survey(username):
     favorite_genres = []
     i = 0
 
+    # Loop until the user selects up to 5 genres or submits an empty line with >= 1 selected.
     while True:
         clear()
         print("***BBC SOUNDS SURVEY***")
@@ -52,6 +56,7 @@ def survey(username):
             print("You must enter at least one genre.")
             continue
 
+        # Reject numeric input and verify the typed genre exists in valid_genres.
         if any(character.isdigit() for character in question1):
             print("Please do not include numbers.")
             continue
@@ -64,6 +69,7 @@ def survey(username):
             clear()
             continue
 
+        # Entering an already-selected genre toggles it off.
         if matched_genre in favorite_genres:
             clear()
             print("Remove", matched_genre, "from your list of favorite genres.")
@@ -79,8 +85,10 @@ def survey(username):
             print("\nYou have entered the maximum amount of favourite genres (5).")
             break
         
+    # Store selected genres as a comma-separated string.
     question1 = ",".join(favorite_genres)
 
+    # Prompt and validate preferred episode length (Short, Medium, or Long).
     question2 = input("\nWhat length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
     while any(character.isdigit() for character in question2):
         print("Please do not include numbers.")
@@ -93,6 +101,7 @@ def survey(username):
             print("Please do not include numbers.")
             question2 = input("What length of episodes do you prefer? (Short/Medium/Long): ").strip().capitalize()
 
+    # Save the completed survey responses to the listeners table.
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -109,6 +118,7 @@ def survey(username):
     time.sleep(1)
 
 def delete_survey(username):
+    """Reset the listener's survey completion flag and clear their saved preferences."""
     user_id = int(username) if str(username).isdigit() else username
 
     conn = sqlite3.connect("database.db")
@@ -127,6 +137,7 @@ def delete_survey(username):
     time.sleep(1)
 
 def is_survey_complete(username):
+    """Return True if the listener has already completed the preference survey."""
     user_id = int(username) if str(username).isdigit() else username
 
     conn = sqlite3.connect("database.db")
