@@ -935,16 +935,26 @@ class BBCSoundsGUI(tk.Tk):
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
-        right_side = tk.Frame(content_split, bg=SIDEBAR_BG, width=380)
-        right_side.pack(side="right", fill="y", padx=(10, 0))
-        right_side.pack_propagate(False)
-        disc_canvas = tk.Canvas(right_side, bg=right_side.cget("bg"), highlightthickness=0)
+        right_side = tk.Frame(content_split, bg=DARK_BG, width=460)
+        right_side.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        disc_canvas = tk.Canvas(right_side, bg=DARK_BG, highlightthickness=0)
         disc_canvas.pack(fill="both", expand=True)
+
+        def cancel_record_jobs(_event=None):
+            for attr in ("_paint_job", "_spin_job"):
+                job = getattr(disc_canvas, attr, None)
+                if job is not None:
+                    try:
+                        self.after_cancel(job)
+                    except tk.TclError:
+                        pass
+                    setattr(disc_canvas, attr, None)
+
         def queue_record_paint(event):
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
-            disc_canvas._paint_job = self.after(100, paint_record, event)
+            disc_canvas._paint_job = self.after(80, paint_record, event)
 
         def paint_record(event):
             disc_canvas._paint_job = None
@@ -952,38 +962,198 @@ class BBCSoundsGUI(tk.Tk):
                 self.paint_vinyl_record(event)
 
         disc_canvas.bind("<Configure>", queue_record_paint)
+        disc_canvas.bind("<Destroy>", cancel_record_jobs)
 
-    @staticmethod
-    def paint_vinyl_record(event):
+    def paint_vinyl_record(self, event):
         canvas_obj = event.widget
-        canvas_obj.delete("all")
-        disc_size = min(event.width, event.height) * 0.68
-        center_x, center_y = event.width * 0.5, event.height * 0.48
-        for offset, stroke_color, line_width in [(0, "#f7f7f7", 2), (17, "#4b4b4b", 2), (35, "#2c2c2c", 2),
-                                                 (54, "#454545", 2), (73, "#2a2a2a", 2), (96, "#151515", 30)]:
-            radius = disc_size / 2 - offset
-            if radius > 5:
-                canvas_obj.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, outline=stroke_color, width=line_width)
-        canvas_obj.create_oval(center_x - 48, center_y - 48, center_x + 48, center_y + 48, fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2)
-        canvas_obj.create_oval(center_x - 11, center_y - 11, center_x + 11, center_y + 11, fill="#111111", outline=TEXT_WHITE, width=2)
-        canvas_obj.create_text(center_x, center_y - 25, text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, 13, "bold"))
-        canvas_obj.create_text(center_x, center_y - 4, text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, 10, "bold"))
-        canvas_obj.create_text(center_x, center_y + 21, text="DISCOVER", fill=TEXT_WHITE, font=(DEFAULT_FONT, 7, "bold"))
+        prev_spin = getattr(canvas_obj, "_spin_job", None)
+        if prev_spin is not None:
+            try:
+                self.after_cancel(prev_spin)
+            except tk.TclError:
+                pass
+            canvas_obj._spin_job = None
 
-        ring_string = "STREAM · SHARE · BBC SOUND · LISTEN · DISCOVER · "
-        outer_radius = disc_size / 2 + 20
-        for i, char in enumerate(ring_string):
-            deg = math.radians(i * (360 / len(ring_string)) - 90)
-            px = center_x + outer_radius * math.cos(deg)
-            py = center_y + outer_radius * math.sin(deg)
-            canvas_obj.create_text(
-                px, py, text=char, fill=TEXT_WHITE, font=(DEFAULT_FONT, 8, "bold"),
-                angle=-math.degrees(deg) - 90,
+        canvas_obj.delete("all")
+        w, h = max(240, event.width), max(240, event.height)
+        unit = min(w, h)
+        # Position toward the top-right, matching 1.svg's hero composition.
+        center_x = w * 0.52
+        center_y = max(unit * 0.48, min(h * 0.45, unit * 0.50))
+        outer_r = unit * 0.43
+        mid_r = outer_r * 0.82
+        inner_r = outer_r * 0.65
+        vinyl_r = outer_r * 0.50
+
+        # 1. Three concentric rotating circles of text (matching 1.svg).
+        ring_text = "LISTEN · DISCOVER · STREAM · SHARE · BBC SOUND · "
+        ring_specs = [
+            (outer_r, "#d2d5db", max(11, round(unit * 0.032)), 0.45),
+            (mid_r, TEXT_WHITE, max(10, round(unit * 0.028)), -0.60),
+            (inner_r, ORANGE_ACCENT, max(9, round(unit * 0.023)), 0.80),
+        ]
+        ring_items = []
+        for radius, colour, font_size, speed in ring_specs:
+            step = 360.0 / len(ring_text)
+            for idx, char in enumerate(ring_text):
+                base_deg = idx * step
+                rad = math.radians(base_deg - 90)
+                item_id = canvas_obj.create_text(
+                    center_x + radius * math.cos(rad),
+                    center_y + radius * math.sin(rad),
+                    text=char, fill=colour, font=("Arial Black", font_size, "bold"),
+                    angle=(-base_deg) % 360,
+                )
+                ring_items.append((item_id, base_deg, radius, speed))
+
+        # 2. Rotating Vinyl CD / Record in the centre.
+        canvas_obj.create_oval(
+            center_x - vinyl_r, center_y - vinyl_r,
+            center_x + vinyl_r, center_y + vinyl_r,
+            fill="#111215", outline="#2e3138", width=2,
+        )
+        # Rotating specular sheen wedges so the vinyl visibly spins 360 degrees.
+        sheen_1 = canvas_obj.create_arc(
+            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+            start=25, extent=38, fill="#24272e", outline="", style="pieslice",
+        )
+        sheen_2 = canvas_obj.create_arc(
+            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+            start=205, extent=38, fill="#24272e", outline="", style="pieslice",
+        )
+        glint_1 = canvas_obj.create_arc(
+            center_x - vinyl_r * 0.84, center_y - vinyl_r * 0.84,
+            center_x + vinyl_r * 0.84, center_y + vinyl_r * 0.84,
+            start=35, extent=18, outline="#555a66", width=2, style="arc",
+        )
+        glint_2 = canvas_obj.create_arc(
+            center_x - vinyl_r * 0.68, center_y - vinyl_r * 0.68,
+            center_x + vinyl_r * 0.68, center_y + vinyl_r * 0.68,
+            start=215, extent=20, outline="#4a4f5a", width=2, style="arc",
+        )
+        for frac, stroke in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34")):
+            gr = vinyl_r * frac
+            canvas_obj.create_oval(center_x - gr, center_y - gr, center_x + gr, center_y + gr, outline=stroke, width=1)
+
+        label_r = vinyl_r * 0.36
+        canvas_obj.create_oval(
+            center_x - label_r, center_y - label_r,
+            center_x + label_r, center_y + label_r,
+            fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2,
+        )
+        label_dot_r = label_r * 0.68
+        label_marker = canvas_obj.create_oval(
+            center_x - 3, center_y - label_dot_r - 3,
+            center_x + 3, center_y - label_dot_r + 3,
+            fill="#111111", outline="",
+        )
+        label_top = canvas_obj.create_text(
+            center_x, center_y - label_r * 0.45,
+            text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, max(7, round(label_r * 0.28)), "bold"),
+        )
+        label_bottom = canvas_obj.create_text(
+            center_x, center_y + label_r * 0.48,
+            text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, max(6, round(label_r * 0.20)), "bold"),
+        )
+        spindle_r = max(5, vinyl_r * 0.08)
+        canvas_obj.create_oval(
+            center_x - spindle_r, center_y - spindle_r,
+            center_x + spindle_r, center_y + spindle_r,
+            fill="#111111", outline=TEXT_WHITE, width=2,
+        )
+
+        # 3. Turntable tonearm resting on the top-right of the spinning vinyl (as in 1.svg).
+        pivot_x = center_x + vinyl_r * 1.06
+        pivot_y = center_y - vinyl_r * 0.92
+        base_r = max(14, vinyl_r * 0.20)
+        canvas_obj.create_oval(
+            pivot_x - base_r, pivot_y - base_r,
+            pivot_x + base_r, pivot_y + base_r,
+            fill="#2b2e35", outline="#7c808b", width=2,
+        )
+        canvas_obj.create_oval(
+            pivot_x - base_r * 0.55, pivot_y - base_r * 0.55,
+            pivot_x + base_r * 0.55, pivot_y + base_r * 0.55,
+            fill="#565b66", outline="#c7cbd4", width=1,
+        )
+        # Counterweight behind pivot.
+        cw_x = pivot_x + base_r * 0.55
+        cw_y = pivot_y - base_r * 0.72
+        canvas_obj.create_line(pivot_x, pivot_y, cw_x, cw_y, fill="#aeb3bd", width=max(5, round(vinyl_r * 0.06)), capstyle="round")
+        # Curved metallic tonearm extending onto the vinyl groove.
+        elbow_x = pivot_x - vinyl_r * 0.10
+        elbow_y = pivot_y + vinyl_r * 0.74
+        tip_x = center_x + vinyl_r * 0.60
+        tip_y = center_y + vinyl_r * 0.18
+        canvas_obj.create_line(
+            pivot_x, pivot_y, elbow_x, elbow_y, tip_x, tip_y,
+            fill="#c6cad2", width=max(4, round(vinyl_r * 0.045)), smooth=True, capstyle="round",
+        )
+        # Headshell / cartridge resting on the vinyl.
+        head_x = tip_x - vinyl_r * 0.09
+        head_y = tip_y + vinyl_r * 0.08
+        canvas_obj.create_line(
+            tip_x, tip_y, head_x, head_y,
+            fill="#1f2126", width=max(8, round(vinyl_r * 0.09)), capstyle="butt",
+        )
+        canvas_obj.create_oval(
+            head_x - 3, head_y - 3, head_x + 3, head_y + 3,
+            fill=ORANGE_ACCENT, outline="",
+        )
+
+        # Continuous 360-degree rotation loop for vinyl CD and all 3 text circles.
+        state = {"tick": getattr(canvas_obj, "_spin_tick", 0.0)}
+
+        def animate_spin():
+            if not canvas_obj.winfo_exists():
+                return
+            state["tick"] = (state["tick"] + 1.0) % 36000.0
+            canvas_obj._spin_tick = state["tick"]
+            t = state["tick"]
+
+            # Rotate all 3 concentric text circles 360 degrees.
+            for item_id, base_deg, radius, speed in ring_items:
+                deg = (base_deg + t * speed) % 360.0
+                rad = math.radians(deg - 90.0)
+                canvas_obj.coords(
+                    item_id,
+                    center_x + radius * math.cos(rad),
+                    center_y + radius * math.sin(rad),
+                )
+                canvas_obj.itemconfigure(item_id, angle=(-deg) % 360.0)
+
+            # Rotate vinyl CD specular sheen, glints, and center label 360 degrees.
+            vinyl_deg = (t * 2.2) % 360.0
+            canvas_obj.itemconfigure(sheen_1, start=(25.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(sheen_2, start=(205.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(glint_1, start=(35.0 - vinyl_deg) % 360.0)
+            canvas_obj.itemconfigure(glint_2, start=(215.0 - vinyl_deg) % 360.0)
+
+            v_rad = math.radians(vinyl_deg - 90.0)
+            mx = center_x + label_dot_r * math.cos(v_rad)
+            my = center_y + label_dot_r * math.sin(v_rad)
+            canvas_obj.coords(label_marker, mx - 3, my - 3, mx + 3, my + 3)
+
+            top_rad = math.radians(vinyl_deg - 90.0)
+            bot_rad = math.radians(vinyl_deg + 90.0)
+            canvas_obj.coords(
+                label_top,
+                center_x + label_r * 0.45 * math.cos(top_rad),
+                center_y + label_r * 0.45 * math.sin(top_rad),
             )
-        canvas_obj.create_line(center_x + disc_size * 0.32, center_y - disc_size * 0.36, center_x + disc_size * 0.1, center_y - disc_size * 0.05,
-                               fill="#bfc2c8", width=5)
-        canvas_obj.create_oval(center_x + disc_size * 0.27, center_y - disc_size * 0.42, center_x + disc_size * 0.38, center_y - disc_size * 0.31,
-                               fill="#737780", outline=TEXT_WHITE, width=1)
+            canvas_obj.itemconfigure(label_top, angle=(-vinyl_deg) % 360.0)
+            canvas_obj.coords(
+                label_bottom,
+                center_x + label_r * 0.48 * math.cos(bot_rad),
+                center_y + label_r * 0.48 * math.sin(bot_rad),
+            )
+            canvas_obj.itemconfigure(label_bottom, angle=(180.0 - vinyl_deg) % 360.0)
+
+            canvas_obj._spin_job = self.after(33, animate_spin)
+
+        animate_spin()
 
     def build_shell(self, active_tab_title):
         self.cancel_pending_render()
@@ -1530,8 +1700,30 @@ class BBCSoundsGUI(tk.Tk):
             self.render_section_title(page, "Explore the catalogue while you decide")
             self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
             return
-        self.create_label(page, f"YOUR GENRES   {genres_val.replace(',', '  ·  ')}     /     {length_val} episodes",
-                          10, ORANGE_HL, "bold").pack(anchor="w", pady=(0, 12))
+        prefs_bar = tk.Frame(page, bg=DARK_BG)
+        prefs_bar.pack(fill="x", pady=(0, 12))
+        prefs_bar.grid_columnconfigure(0, weight=2, uniform="for-you-prefs")
+        prefs_bar.grid_columnconfigure(1, weight=1, uniform="for-you-prefs")
+
+        genres_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        genres_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.create_label(genres_card, "YOUR GENRES", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
+        formatted_genres = "  ·  ".join(g.strip() for g in str(genres_val).split(",") if g.strip())
+        self.create_label(genres_card, formatted_genres, 11, ORANGE_HL, "bold", wraplength=560).pack(
+            anchor="w", padx=16, pady=(0, 12)
+        )
+
+        length_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        length_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.create_label(length_card, "EPISODE LENGTH", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
+        length_range = DURATION_RANGES.get(length_val)
+        length_caption = (
+            f"{length_val} episodes ({length_range[0]}–{length_range[1]} min)"
+            if length_range else f"{length_val} episodes"
+        )
+        self.create_label(length_card, length_caption, 11, ORANGE_HL, "bold").pack(
+            anchor="w", padx=16, pady=(0, 12)
+        )
         rec_results = self.get_custom_recommendations(40, shuffle=True)
         if rec_results:
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
@@ -1826,60 +2018,82 @@ class BBCSoundsGUI(tk.Tk):
 
             page = self.build_shell("Programme details")
             back_row = tk.Frame(page, bg=DARK_BG)
-            back_row.pack(fill="x", pady=(2, 14))
+            back_row.pack(fill="x", pady=(2, 12))
             self.create_button(
                 back_row, "←  Back to discover",
                 lambda: self.transition_to(self.show_search, "Genres", direction=-1), compact=True,
             ).pack(side="left")
             self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
 
-            hero_box = tk.Frame(page, bg=DARK_BG)
-            hero_box.pack(fill="x", pady=(0, 8))
+            # Centered content column framed by top and bottom rules, matching 5.svg.
+            detail_column = tk.Frame(page, bg=DARK_BG)
+            detail_column.pack(fill="x", padx=56)
+
+            top_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            top_rule.pack(fill="x", pady=(4, 34))
+
+            hero_box = tk.Frame(detail_column, bg=DARK_BG)
+            hero_box.pack(anchor="center", pady=(0, 34))
+
             cover_panel = self.create_card_frame(hero_box, bg="#272727")
-            cover_panel.pack(side="left", padx=(0, 28))
-            cover_art = self.generate_podcast_cover(cover_panel, podcast_id, podcast_rec[1], podcast_rec[2], 275, 275)
-            cover_art.pack(padx=10, pady=10)
+            cover_panel.pack(side="left", anchor="n", padx=(0, 38))
+            cover_holder = tk.Frame(cover_panel, bg="#272727")
+            cover_holder.pack(padx=10, pady=10)
 
-            actions_box = tk.Frame(hero_box, bg=DARK_BG, width=195)
-            actions_box.pack(side="right", fill="y", padx=(24, 0), pady=20)
-            actions_box.pack_propagate(False)
-            self.create_label(actions_box, "PROGRAMME ACTIONS", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 10))
-            fav_text = "♥  Remove from favourites" if self.check_if_favourited(podcast_id) else "♡  Save to favourites"
-            for action_text, action_func in [
-                (fav_text, lambda: self.toggle_favourite(podcast_id)),
-                ("★  Rate this programme", lambda: self.rate_programme(podcast_id)),
-            ]:
-                action_label = self.create_label(actions_box, action_text, 10, TEXT_WHITE, "bold", cursor="hand2")
-                action_label.pack(anchor="w", pady=6)
-                action_label.bind("<Button-1>", lambda _event, callback=action_func: callback())
+            right_pane = tk.Frame(hero_box, bg=DARK_BG)
+            right_pane.pack(side="left", anchor="n", pady=(4, 0))
 
-            details_box = tk.Frame(hero_box, bg=DARK_BG)
-            details_box.pack(side="left", fill="both", expand=True, pady=10)
-            self.create_label(details_box, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold").pack(anchor="w")
-            self.create_label(details_box, podcast_rec[1], 30, TEXT_WHITE, "bold", wraplength=490).pack(anchor="w", pady=(8, 6))
+            category_label = self.create_label(right_pane, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold")
+            category_label.pack(anchor="w")
+            title_label = self.create_label(right_pane, podcast_rec[1], 28, TEXT_WHITE, "bold", wraplength=520)
+            title_label.pack(anchor="w", pady=(6, 6))
             length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
-            self.create_label(details_box, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY).pack(anchor="w")
-            self.create_label(details_box, self.podcast_average_text(podcast_id), 11, GOLD_STAR).pack(
-                anchor="w", pady=(5, 0),
-            )
+            meta_label = self.create_label(right_pane, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY)
+            meta_label.pack(anchor="w")
+            avg_label = self.create_label(right_pane, self.podcast_average_text(podcast_id), 11, GOLD_STAR)
+            avg_label.pack(anchor="w", pady=(5, 0))
 
-            play_row = tk.Frame(details_box, bg=DARK_BG)
-            play_row.pack(anchor="w", pady=(25, 12))
-            play_canvas = tk.Canvas(play_row, width=74, height=74, bg=DARK_BG, highlightthickness=0, cursor="hand2")
+            controls_row = tk.Frame(right_pane, bg=DARK_BG)
+            controls_row.pack(anchor="w", pady=(26, 0))
+
+            play_canvas = tk.Canvas(controls_row, width=76, height=76, bg=DARK_BG, highlightthickness=0, cursor="hand2")
             play_canvas.pack(side="left", padx=(0, 14))
-            play_canvas.create_oval(3, 3, 71, 71, fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2)
-            play_canvas.create_polygon(31, 22, 31, 52, 56, 37, fill=TEXT_WHITE, outline="")
             play_canvas.bind("<Button-1>", lambda _event: self.listen(podcast_id))
 
-            play_copy = tk.Frame(play_row, bg=DARK_BG)
-            play_copy.pack(side="left", pady=10)
-            self.create_label(play_copy, "Listen now", 14, TEXT_WHITE, "bold").pack(anchor="w")
+            listen_label = self.create_label(controls_row, "Listen now", 13, TEXT_WHITE, "bold", cursor="hand2")
+            listen_label.pack(side="left", padx=(0, 22))
+            listen_label.bind("<Button-1>", lambda _event: self.listen(podcast_id))
 
-            tk.Frame(page, bg=TEXT_GRAY, height=1).pack(fill="x", pady=(18, 18))
+            v_divider = tk.Frame(controls_row, bg="#575756", width=2, height=62)
+            v_divider.pack(side="left", padx=(0, 22))
 
-            sub_card = self.create_card_frame(page, bg="#1d1e22")
-            sub_card.pack(fill="x", pady=(20, 8))
-            self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold").pack(anchor="w", padx=16, pady=(12, 5))
+            actions_box = tk.Frame(controls_row, bg=DARK_BG)
+            actions_box.pack(side="left")
+            is_fav = self.check_if_favourited(podcast_id)
+            action_items = [
+                ("♥" if is_fav else "♡", "Remove from favourites" if is_fav else "Save to favourites",
+                 ORANGE_ACCENT if is_fav else TEXT_WHITE, lambda: self.toggle_favourite(podcast_id)),
+                ("★", "Rate this programme", GOLD_STAR, lambda: self.rate_programme(podcast_id)),
+            ]
+            action_widgets = []
+            for icon_char, action_text, icon_color, action_func in action_items:
+                action_row = tk.Frame(actions_box, bg=DARK_BG, cursor="hand2")
+                action_row.pack(anchor="w", pady=5)
+                icon_lbl = self.create_label(action_row, icon_char, 13, icon_color, "bold", cursor="hand2")
+                icon_lbl.pack(side="left", padx=(0, 10))
+                text_lbl = self.create_label(action_row, action_text, 11, TEXT_WHITE, "bold", cursor="hand2")
+                text_lbl.pack(side="left")
+                action_widgets.append((action_row, icon_lbl, text_lbl))
+                for widget in (action_row, icon_lbl, text_lbl):
+                    widget.bind("<Button-1>", lambda _event, callback=action_func: callback())
+
+            bottom_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            bottom_rule.pack(fill="x", pady=(0, 22))
+
+            sub_card = self.create_card_frame(detail_column, bg="#1d1e22")
+            sub_card.pack(fill="x", padx=28, pady=(0, 8))
+            listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
+            listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
             play_count = (history_record[0] or 0) if history_record else 0
             given_rating = history_record[1] if history_record else None
             if play_count:
@@ -1892,13 +2106,78 @@ class BBCSoundsGUI(tk.Tk):
                 if given_rating:
                     summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
                 summary_color = TEXT_GRAY
-            self.create_label(sub_card, summary_text, 11, summary_color).pack(
-                anchor="w", padx=16, pady=(0, 8 if given_rating else 14)
-            )
+            summary_label = self.create_label(sub_card, summary_text, 11, summary_color)
+            summary_label.pack(anchor="w", padx=18, pady=(0, 8 if given_rating else 14))
             if given_rating:
                 self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
-                    anchor="w", padx=16, pady=(0, 14)
+                    anchor="w", padx=18, pady=(0, 14)
                 )
+
+            last_layout = {"cover": 0}
+            resize_job = [None]
+
+            def apply_detail_scale():
+                resize_job[0] = None
+                if not detail_column.winfo_exists():
+                    return
+                win_w = max(1024, self.winfo_width())
+                win_h = max(700, self.winfo_height())
+                scale = max(0.92, min(1.75, min(win_w / 1180, win_h / 760)))
+                cover_size = round(max(248, min(420, 285 * scale)))
+                if abs(cover_size - last_layout["cover"]) < 6:
+                    return
+                last_layout["cover"] = cover_size
+                play_size = round(max(74, min(124, 82 * scale)))
+                font_scale = scale / max(0.84, self._ui_scale_factor)
+
+                for child in cover_holder.winfo_children():
+                    child.destroy()
+                cover_art = self.generate_podcast_cover(
+                    cover_holder, podcast_id, podcast_rec[1], podcast_rec[2], cover_size, cover_size,
+                )
+                cover_art.pack()
+
+                play_canvas.configure(width=play_size, height=play_size)
+                play_canvas.delete("all")
+                play_canvas.create_oval(2, 2, play_size - 2, play_size - 2, fill=ORANGE_ACCENT, outline="")
+                play_canvas.create_polygon(
+                    round(play_size * 0.39), round(play_size * 0.26),
+                    round(play_size * 0.39), round(play_size * 0.74),
+                    round(play_size * 0.76), round(play_size * 0.50),
+                    fill="#000000", outline="",
+                )
+
+                v_divider.configure(height=round(play_size * 0.82))
+                cover_panel.pack_configure(padx=(0, round(38 * scale)))
+                top_rule.pack_configure(pady=(4, round(30 * scale)))
+                hero_box.pack_configure(pady=(0, round(30 * scale)))
+                controls_row.pack_configure(pady=(round(26 * scale), 0))
+                play_canvas.pack_configure(padx=(0, round(14 * scale)))
+                listen_label.pack_configure(padx=(0, round(22 * scale)))
+                v_divider.pack_configure(padx=(0, round(22 * scale)))
+
+                category_label.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale)), "bold"))
+                title_label.configure(
+                    font=(DEFAULT_FONT, max(24, round(29 * font_scale)), "bold"),
+                    wraplength=round(max(400, min(720, 500 * scale))),
+                )
+                meta_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                avg_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
+                listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                for action_row, icon_lbl, text_lbl in action_widgets:
+                    action_row.pack_configure(pady=round(5 * scale))
+                    icon_lbl.configure(font=(DEFAULT_FONT, max(13, round(15 * font_scale)), "bold"))
+                    text_lbl.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale)), "bold"))
+
+            def schedule_detail_scale(_event=None):
+                if resize_job[0] is not None:
+                    self.after_cancel(resize_job[0])
+                resize_job[0] = self.after(60, apply_detail_scale)
+
+            detail_column.bind("<Configure>", schedule_detail_scale)
+            apply_detail_scale()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
