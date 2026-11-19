@@ -3169,23 +3169,63 @@ class BBCSoundsGUI(tk.Tk):
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
             play_count = (history_record[0] or 0) if history_record else 0
-            given_rating = history_record[1] if history_record else None
+            given_rating = int(history_record[1]) if (history_record and history_record[1] is not None) else 0
             if play_count:
                 summary_text = f"{play_count} {'play' if play_count == 1 else 'plays'}"
-                if given_rating:
-                    summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
                 summary_color = TEXT_WHITE
             else:
                 summary_text = "You haven't listened to this podcast yet."
-                if given_rating:
-                    summary_text += f"  ·  your rating: {'★' * int(given_rating)}"
                 summary_color = TEXT_GRAY
             summary_label = self.create_label(sub_card, summary_text, 11, summary_color)
-            summary_label.pack(anchor="w", padx=18, pady=(0, 8 if given_rating else 14))
-            if given_rating:
-                self.create_star_rating_bar(sub_card, given_rating, star_size=18, background_col="#1d1e22").pack(
-                    anchor="w", padx=18, pady=(0, 14)
-                )
+            summary_label.pack(anchor="w", padx=18, pady=(0, 8))
+
+            # Read-only 5-star polygon display aligned with the personal rating label.
+            rating_row = tk.Frame(sub_card, bg="#1d1e22")
+            rating_row.pack(anchor="w", padx=18, pady=(0, 14))
+            rating_caption = self.create_label(
+                rating_row,
+                "Your rating:",
+                10, TEXT_GRAY, "bold", bg="#1d1e22",
+            )
+            rating_caption.pack(side="left", padx=(0, 10))
+
+            star_state = {"size": 22, "gap": 4, "score": given_rating}
+            star_canvas = tk.Canvas(
+                rating_row,
+                width=5 * star_state["size"] + 4 * star_state["gap"],
+                height=star_state["size"],
+                bg="#1d1e22",
+                bd=0,
+                highlightthickness=0,
+            )
+            star_canvas.pack(side="left", pady=(1, 0))
+
+            def draw_inline_stars():
+                if not star_canvas.winfo_exists():
+                    return
+                active = star_state["score"]
+                size = star_state["size"]
+                gap = star_state["gap"]
+                total_w = 5 * size + 4 * gap
+                star_canvas.configure(width=total_w, height=size)
+                star_canvas.delete("all")
+                r_out = size * 0.46
+                r_in = size * 0.20
+                cy = size / 2
+                for star_idx in range(1, 6):
+                    cx = (star_idx - 1) * (size + gap) + size / 2
+                    pts = []
+                    for pt_i in range(10):
+                        ang = math.radians(-90 + pt_i * 36)
+                        rad = r_out if pt_i % 2 == 0 else r_in
+                        pts.extend((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+                    star_canvas.create_polygon(
+                        pts,
+                        fill=GOLD_STAR if star_idx <= active else "#444851",
+                        outline="",
+                    )
+
+            draw_inline_stars()
 
             last_layout = {"cover": 0}
             resize_job = [None]
@@ -3236,6 +3276,10 @@ class BBCSoundsGUI(tk.Tk):
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
                 summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                rating_caption.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "bold"))
+                star_state["size"] = max(20, round(22 * font_scale))
+                star_state["gap"] = max(3, round(4 * font_scale))
+                draw_inline_stars()
                 action_font_size = max(10, round(11 * font_scale))
                 fav_button.pack_configure(pady=(0, round(8 * scale)))
                 for btn, face_col, hover_col in action_buttons:
@@ -3282,7 +3326,33 @@ class BBCSoundsGUI(tk.Tk):
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
 
+    def save_programme_rating(self, podcast_id, new_score, callback_func=None):
+        """Persist a 1-5 rating for the active listener and refresh the current view."""
+        try:
+            with self.get_db_connection() as conn:
+                prior_record = conn.execute(
+                    "SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
+                    (self.current_user, podcast_id),
+                ).fetchone()
+                if prior_record:
+                    conn.execute(
+                        "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
+                        (new_score, self.current_user, podcast_id),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened, RatingGiven) "
+                        "VALUES (?, ?, 0, ?)", (podcast_id, self.current_user, new_score),
+                    )
+            if callback_func:
+                callback_func()
+            else:
+                self.show_detail(podcast_id)
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save your rating", err)
+
     def rate_programme(self, podcast_id, callback_func=None):
+        """Open a dark interactive 5-star picker dialog to rate or update a programme's score."""
         try:
             with self.get_db_connection() as conn:
                 prior_record = conn.execute(
@@ -3296,33 +3366,78 @@ class BBCSoundsGUI(tk.Tk):
                     parent=self,
                 )
                 return
-            if prior_record[1] is None:
-                dialog_title = "Rate this programme"
-                dialog_prompt = "Choose a score from 1 to 5."
-                default_score = 5
-            else:
-                dialog_title = "Update your rating"
-                dialog_prompt = f"Your current score is {prior_record[1]}. Enter a new score (1–5)."
-                default_score = int(prior_record[1])
-            new_score = simpledialog.askinteger(dialog_title, dialog_prompt, parent=self, minvalue=1, maxvalue=5, initialvalue=default_score)
-            if new_score is None:
-                return
-            with self.get_db_connection() as conn:
-                if prior_record:
-                    conn.execute(
-                        "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
-                        (new_score, self.current_user, podcast_id),
+
+            initial_score = int(prior_record[1]) if prior_record[1] is not None else 5
+            dialog_title = "Rate this programme" if prior_record[1] is None else "Update your rating"
+
+            dialog = tk.Toplevel(self)
+            dialog.title(dialog_title)
+            dialog.configure(bg=DARK_BG)
+            dialog.resizable(False, False)
+            dialog.transient(self)
+            dialog.grab_set()
+
+            if sys.platform == "win32":
+                try:
+                    dialog.update_idletasks()
+                    dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
+                    val = ctypes.c_int(1)
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        ctypes.c_void_p(dlg_hwnd), ctypes.c_int(20), ctypes.byref(val), ctypes.sizeof(val),
                     )
-                else:
-                    conn.execute(
-                        "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened, RatingGiven) "
-                        "VALUES (?, ?, 0, ?)", (podcast_id, self.current_user, new_score),
-                    )
-            messagebox.showinfo("Rating saved", "Thanks for rating this programme.", parent=self)
-            if callback_func:
-                callback_func()
-            else:
-                self.show_detail(podcast_id)
+                except Exception:
+                    pass
+
+            body = tk.Frame(dialog, bg=DARK_BG, padx=28, pady=22)
+            body.pack(fill="both", expand=True)
+            self.create_label(body, dialog_title, 15, TEXT_WHITE, "bold", anchor="center").pack()
+            self.create_label(body, "Select a star rating from 1 to 5.", 10, TEXT_GRAY, anchor="center").pack(pady=(4, 14))
+
+            selected = {"score": initial_score}
+            stars_frame = tk.Frame(body, bg=DARK_BG)
+            stars_frame.pack(pady=(0, 8))
+            score_lbl = self.create_label(body, f"{initial_score} / 5", 11, GOLD_STAR, "bold", anchor="center")
+            score_lbl.pack(pady=(0, 16))
+            dlg_stars = []
+
+            def paint_dlg_stars(score):
+                for idx, lbl in enumerate(dlg_stars, start=1):
+                    lbl.configure(fg=GOLD_STAR if idx <= score else "#444851")
+                score_lbl.configure(text=f"{score} / 5")
+
+            def select_dlg_star(score):
+                selected["score"] = score
+                paint_dlg_stars(score)
+
+            for star_idx in range(1, 6):
+                star_lbl = tk.Label(
+                    stars_frame, text="★", font=(DEFAULT_FONT, 30, "bold"),
+                    bg=DARK_BG, fg=GOLD_STAR if star_idx <= initial_score else "#444851",
+                    cursor="hand2", bd=0, padx=4,
+                )
+                star_lbl.pack(side="left")
+                star_lbl.bind("<Enter>", lambda _e, s=star_idx: paint_dlg_stars(s))
+                star_lbl.bind("<Button-1>", lambda _e, s=star_idx: select_dlg_star(s))
+                dlg_stars.append(star_lbl)
+            stars_frame.bind("<Leave>", lambda _e: paint_dlg_stars(selected["score"]))
+
+            def confirm_rating():
+                chosen = selected["score"]
+                dialog.destroy()
+                self.save_programme_rating(podcast_id, chosen, callback_func=callback_func)
+
+            btn_row = tk.Frame(body, bg=DARK_BG)
+            btn_row.pack()
+            self.create_button(btn_row, "Save rating", confirm_rating, primary=True, compact=True).pack(side="left", padx=(0, 8))
+            self.create_button(btn_row, "Cancel", dialog.destroy, compact=True).pack(side="left")
+
+            dialog.update_idletasks()
+            dw, dh = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
+            px = self.winfo_rootx() + (self.winfo_width() - dw) // 2
+            py = self.winfo_rooty() + (self.winfo_height() - dh) // 2
+            dialog.geometry(f"+{max(0, px)}+{max(0, py)}")
+            dialog.bind("<Return>", lambda _e: confirm_rating())
+            dialog.bind("<Escape>", lambda _e: dialog.destroy())
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 
