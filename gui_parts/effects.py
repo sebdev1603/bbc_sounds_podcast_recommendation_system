@@ -1,6 +1,7 @@
 """Window icon/titlebar styling, live UI scaling, app shell, transitions, and bottom mini-bar."""
 from collections import deque
 import ctypes
+from pathlib import Path
 import sqlite3
 import sys
 from time import monotonic
@@ -21,17 +22,44 @@ from gui_parts.theme import (
     blend_colour,
 )
 
+# Embedded 64x64, 32x32, and 16x16 BBC Sounds logo PNGs (base64, area-averaged from
+# bbc sounds logo.png) so compiled executables always show the exact BBC Sounds icon
+# even without external --add-data files.
+_EMBEDDED_WINDOW_ICON_PNGS = (
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFa0lEQVR42u2bS0wbRxjHd3bXNjbYBvxIHSCyeZwDpGk4VJUKBVIIEn1Q5cAFBbcHqoYLQgIJDkiV4MAJEAKTlLScKiSoRAgtJw4IxCVAisTjAhxSCaQeIH5EwNdvxvbWPGxjIPJjbemv2Z39dj3fb7/5dnY85nie/xflohIEwS2Kol8en9x4jMrFcZwT9S6G5QyQK0DOM/KgTtLS0t5xhBC6A3JUampqEgCHoZ0EIHcA75MAYqRBmI9C7scUANq4rKwssFqtIWWxWKRz6HY4eyq/40ajMaytzWYD9CE6OWBtbQ1CfU5OTmBxcVGyn5ubY3Wh7N1uN6hUKmY/MDAQ9vpHR0eg1+uj8xj0A6AN8Xg8TLRBdN+vhYWFcwBC2QcC6O/vP3WM6uDggJ3n3782AN+o6FoAtra2QK1Wg06nY2E+NjYGx8fHQQHQY/n5+azhBoMBuru7pfpgADY3N6GkpARwtMrOm5mZuTEA7psAQPOB0+mE3t5eKCoqCgmAKjs7GzY2NmB6epr1Zb/9RQBcLhcUFBRAQ0MD7O7uMhhUMQOANoZGQE1NDXOMQggGwN9lcnJyoLy8nEVCU1MTsw8WAfR7aGJcXl4+l0NiBoDZbIb5+XkYGhoCfMmAvb29sAAmJydhamoKTCYTbG9vB42AnZ0dlulnZ2elCPIDjpkuQPvyxMQEdHR0gEajgf39/ZAAaKQ4HA4GjOYOGtrBIoDW19bWsmihdT09PTA+Ph47AOjdbm5uZmpra4OlpaWwSbCzs5PZt7S0nLqzwZIgzQN9fX1gt9uhtbUV1tfX2XViAkBgSJ5VMAAX2QYD4P+OQMVEF+jq6mJhHEzDw8PQ3t4u2dM7F85+cHAQcBKG2dfX17O6UPZUNAFHBUCkY/XL2H/o8f+NAkiIt8FoAiA+XfcaHEeudJ2oAiCEltjXeeoEkWBEIo7Dt0DCA88JWHpBxFEEENBg+fuX6TD1SAkvq1FVvrL6kvvVCvjjUSpoRQJCPHYBLWqvMQM8T3h4/4RI8gRsh9s/bFSDSfF/V4gyAOLrl+f7JGHHCAtbwnknMHSof+w6dIRDpyKXG3XYqAKjInLnP1gEiMxB4nOSBIgDBZY83SbceQCNkcuNOrR7AZCYAEAd4wVQ+pwVGRCvFLQkeIwQBolCSTwAqBRsyMhnt2GmLB3+LDVK+qvUADOlJpj93Ag/3zOzpJWwAKbLbsFKpQFWKzMDlOGtq8iEkU8yWI6QL4AHmTIGgNvP4h0AG8WRi5MgBfAKAaxWJDIA6ZnPS+NwIh8A3uc6fZ7zxPvFvD8qeCKPCMjAsXdjbhr8YNMwfZ+rgUqzmgGRBQCLiofRIgX8UijCi7silgI8talYFMgMgIAABLkCUAZEgCgvALcRwPNiFXN8tNAL4Cd5ARCSAGQNwOID8NznPNWP8gJA4Dd0+te7NAIU8KKQwFOrQi4AeLCk8DD8sRYc91JgpFgDjuIUaMrVygWAgDM7PGQpcZGUkoM7WOZgmSniVBjWy6ILnH0vkN3bYKg5wSQAuQNQYUNelpnhDXOYKlPS8kM9gjGC44EhcafEKIBXpR/B3xUmWKFRIMkEbyoy4PVDA4zeT9BJUcLmBAWY/sIMK3i3V3ACdNWnFXR+tdzIouLZfWOC/jCCEnCcUJWth8d30qHOppX0Leo7mw7qrFr49JYmcX8YufQjM1EjIBIlAcgdgB711q6/MgBPAAD+GgskXNFZH0TwV2QBqvLSoC4vBb7JU0esr/M08BWWKl6MPwD0rZI1mojXWhpHQQpszQGJNwDep4JwahFF5PI6z8ffKjHu1JoecgPXSC6UTAJIArgKAFxpfUD/4CA3KZVK9vf5/wA3Qv98dKvFvgAAAABJRU5ErkJggg==",
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAACJ0lEQVR42s2Wz4sSYRjH592dGUenLXGjy7J76VRQbFGXoHYPkiiBgsycFMXEi6DgRTQEQSg6hscObX/H/g8d3P4FwYMgJMj8UL+9M7Na5thu6/zo8Jl33ocX3s/743l4GUKIQtEp0wUMw+gUzWH0P+F53ogzxoTwA47jNOZyxf4J/G0HgsEgIpHICoIggG7dteOiKN5coF6vYz6fQ9d1szWoVquQZXktXqvVkE6nl31N08y22+1uJzAajZBIJJDL5dYEUqkUstksZrPZUmA6nSKfz6PdbmMwGDgjEI/HzUkVRVkRSCaTkCQJk8lkKTAcDlGpVJY7sbXAeDxGqVRCo9GAqqorAuVy2YwbYr8fQafTQavVQr/f306gUCig1+utkMlkEIvF1uLGEUWj0bV4s9m8uYDvaXg1BOSKMYSOcU2Ap3yTQ/gusxvYxbun/EbJfxKwVkIu/61+gLY/ijzUt4wtCuXTC9aZHbi/x0M6FChBSEchvDkI/RIoMrYoRQcF5EMRvVgEFxSjPT+h5ddXgVMPBMjilhNL4OK1hwK3dgnePwzgwwMez8Ks9wK3WYKzJyy+HrN4te+ugL5ZgMMZFXjpl8AX/wUECk8FOO8FjAwwLuLeDgFLiPcCdnXAVwHpyBJYFKPz033HSvG1BE7uhfD5+R1K2OTjcdhbATv+ewHVbYEdmimP7vJ4TNN0EweiiwLWk2zxULHH1SeZI49S40OBHwQCAe0nDU7DEtMfAP0AAAAASUVORK5CYII=",
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABHklEQVR42qXTP0vDQBzG8cvdVY2VFh1sqBhRcAgRCq4BV83m5uSSZImDvgbfgy8hS6Zky6sIASF/3ojQYspjclZNpbY1Hb7H5fLjwxEIIYSUVdNZ5ZqJecbYO5k9oI5SClmWRdXLhft6pjFfzgGGYSCOY2RZBtu2kSQJ0jSFZVnirCgKmKa5HPA8D2EYCsD3fQRBIIAoipDn+XJAURS4rivSNG3hXlXVv4HfSVWuzvCg0+9O9uhqQO1y6P0ODrco3hyGiU1E46qb4zWAl8seXq8PcK/ufAIOEY2dFcB5l2LUZ+2BuyHD0ynfADjieDzrtAdYFZc2+AZfPV/0EF3t43bYEmjeqAlM/gvUDXYZBvJP20yaB6plWv9hbeKclx9OcXAYViyb6AAAAABJRU5ErkJggg==",
+)
+
 
 class EffectsMixin:
     """Mixin managing native Windows styling, responsive scaling, navigation shell, and transitions."""
 
     def set_window_icon(self):
-        """Find the BBC Sounds logo image in the project folder and apply it as the window icon."""
-        search_dirs = [ROOT_PATH]
-        for sub in ("assets", "images", "img", "icons", "canva design"):
-            candidate_dir = ROOT_PATH / sub
-            if candidate_dir.is_dir():
-                search_dirs.append(candidate_dir)
+        """Find the BBC Sounds logo image (or embedded fallback) and apply it as the window icon."""
+        base_dirs = []
+        if getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                base_dirs.append(Path(meipass))
+            base_dirs.append(Path(sys.executable).resolve().parent)
+        else:
+            base_dirs.append(ROOT_PATH)
+
+        search_dirs = []
+        seen_dirs = set()
+        for base in base_dirs:
+            for candidate_dir in (
+                base,
+                *(base / sub for sub in ("assets", "images", "img", "icons", "canva design")),
+            ):
+                try:
+                    resolved = candidate_dir.resolve()
+                except OSError:
+                    continue
+                if resolved not in seen_dirs and resolved.is_dir():
+                    seen_dirs.add(resolved)
+                    search_dirs.append(resolved)
 
         def score_file(path):
             name = path.stem.lower()
@@ -40,10 +68,8 @@ class EffectsMixin:
                 name_score = 40
             elif "sound" in name or "bbc" in name:
                 name_score = 30
-            elif "logo" in name or "icon" in name:
-                name_score = 20
             else:
-                name_score = 5
+                return -1
             ext_score = {
                 ".ico": 10, ".png": 8, ".gif": 6,
                 ".webp": 4, ".jpg": 3, ".jpeg": 3, ".bmp": 2,
@@ -52,18 +78,68 @@ class EffectsMixin:
 
         supported_exts = {".ico", ".png", ".gif", ".webp", ".jpg", ".jpeg", ".bmp"}
         candidates = []
+        seen_files = set()
         for folder in search_dirs:
             try:
                 for item in folder.iterdir():
                     if item.is_file() and item.suffix.lower() in supported_exts:
-                        candidates.append(item)
+                        if score_file(item) < 0:
+                            continue
+                        resolved_file = item.resolve()
+                        if resolved_file not in seen_files:
+                            seen_files.add(resolved_file)
+                            candidates.append(resolved_file)
             except OSError:
                 continue
 
         candidates.sort(key=score_file, reverse=True)
+        applied = False
         for icon_path in candidates:
             if self._apply_clean_window_icon(icon_path):
+                applied = True
+                break
+
+        if not applied:
+            applied = self._apply_embedded_window_icon()
+
+        if applied:
+            self._schedule_window_icon_reapply()
+
+    def _apply_embedded_window_icon(self):
+        """Apply the built-in base64 BBC Sounds logo so frozen builds keep the titlebar icon."""
+        try:
+            icons = [
+                tk.PhotoImage(master=self, data=b64_png)
+                for b64_png in _EMBEDDED_WINDOW_ICON_PNGS
+            ]
+            self.iconphoto(True, *icons)
+            self._window_icons = icons
+            return True
+        except Exception:
+            return False
+
+    def _schedule_window_icon_reapply(self):
+        """Re-apply the window icon after initial realization so Windows DWM does not reset it."""
+        self.after_idle(self._reapply_window_icon)
+        self.after(150, self._reapply_window_icon)
+
+    def _reapply_window_icon(self):
+        """Re-apply the stored window icon once the native Windows frame exists."""
+        if not self.winfo_exists():
+            return
+        icons = getattr(self, "_window_icons", None)
+        if icons:
+            try:
+                self.iconphoto(True, *icons)
                 return
+            except Exception:
+                pass
+        icon_path = getattr(self, "_window_icon_path", None)
+        if icon_path and sys.platform == "win32":
+            try:
+                self.iconbitmap(default=str(icon_path))
+            except Exception:
+                pass
 
     def _apply_clean_window_icon(self, icon_path):
         """Strip outer solid/grey background, crop tight to the logo, and apply crisp icon sizes."""
