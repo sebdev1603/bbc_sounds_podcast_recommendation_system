@@ -1429,7 +1429,10 @@ class BBCSoundsGUI(tk.Tk):
             row, "▶  Play", lambda: self.listen(podcast_id), primary=True, compact=True,
         ).pack(side="right")
 
-        cover = self.generate_podcast_cover(row, podcast_id, title, category, 62, 62)
+        cover = self.generate_podcast_cover(
+            row, podcast_id, title, category, 62, 62,
+            corner_radius=10, backdrop=row.cget("bg"),
+        )
         cover.pack(side="left", padx=(0, 11))
         details = tk.Frame(row, bg=row.cget("bg"), cursor="hand2", takefocus=True,
                            highlightthickness=1, highlightbackground=row.cget("bg"),
@@ -1442,13 +1445,73 @@ class BBCSoundsGUI(tk.Tk):
             subtitle += f"  ·  {self.podcast_average_text(podcast_id)}"
         subtitle_label = self.create_label(details, subtitle, 9, TEXT_GRAY, cursor="hand2")
         subtitle_label.pack(fill="x")
-        open_detail = lambda _event=None: self.transition_to(
-            lambda: self.show_detail(podcast_id), "Programme details", direction=1,
-        )
-        for widget in (row, cover, details, title_label, subtitle_label):
+        open_detail = lambda _event=None: self.expand_bottom_bar_to_detail(shell, footer, podcast_id, title, category)
+        for widget in (footer, footer.backdrop, row, cover, details, title_label, subtitle_label):
             widget.bind("<Button-1>", open_detail)
         details.bind("<Return>", open_detail)
         details.bind("<space>", open_detail)
+
+    def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
+        if getattr(shell, "_expanding_bar", False):
+            return
+        canvas, _window = self._page_transition_target
+        if getattr(canvas, "_leaving_page", False):
+            return
+        shell._expanding_bar = True
+        canvas._leaving_page = True
+        self.cancel_pending_render()
+
+        area_frame = canvas.master
+        start_x = footer.winfo_x()
+        start_y = footer.winfo_y()
+        start_w = max(1, footer.winfo_width())
+        start_h = max(1, footer.winfo_height())
+        target_y = area_frame.winfo_y()
+        target_w = max(1, shell.winfo_width())
+        target_h = max(1, shell.winfo_height() - target_y)
+
+        start_bg = "#262228"
+        expander = tk.Frame(shell, bg=start_bg, bd=0, highlightthickness=0)
+        accent_top = tk.Frame(expander, bg=ORANGE_ACCENT, height=3)
+        accent_top.pack(fill="x")
+        preview_box = tk.Frame(expander, bg=start_bg)
+        preview_box.place(relx=0.5, rely=0.5, anchor="center")
+        preview_cat = self.create_label(
+            preview_box, str(category or "Programme").upper(), 10, ORANGE_HL, "bold",
+            anchor="center", bg=start_bg,
+        )
+        preview_cat.pack()
+        preview_title = self.create_label(
+            preview_box, title, 22, TEXT_WHITE, "bold",
+            anchor="center", justify="center", bg=start_bg,
+        )
+        preview_title.pack(pady=(6, 0))
+
+        duration = 0.240
+        started = monotonic()
+
+        def draw_expand():
+            if not expander.winfo_exists() or not shell.winfo_exists():
+                return
+            progress = min(1.0, (monotonic() - started) / duration)
+            eased = 1.0 - (1.0 - progress) ** 3
+            cur_x = round(start_x * (1.0 - eased))
+            cur_y = round(start_y + (target_y - start_y) * eased)
+            cur_w = round(start_w + (target_w - start_w) * eased)
+            cur_h = round(start_h + (target_h - start_h) * eased)
+            cur_bg = blend_colour(start_bg, DARK_BG, eased)
+            expander.configure(bg=cur_bg)
+            preview_box.configure(bg=cur_bg)
+            preview_cat.configure(bg=cur_bg)
+            preview_title.configure(bg=cur_bg)
+            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            expander.lift()
+            if progress < 1.0:
+                self.after(15, draw_expand)
+            else:
+                self.show_detail(podcast_id)
+
+        draw_expand()
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
