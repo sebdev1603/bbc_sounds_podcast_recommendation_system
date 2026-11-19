@@ -135,6 +135,8 @@ class BBCSoundsGUI(tk.Tk):
         self._search_prompt = None
         self._tab_transition_direction = None
         self._scroll_priority_until = 0.0
+        self._active_detail_podcast = None
+        self._bottom_bar_info = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
         self.show_login()
@@ -1433,6 +1435,8 @@ class BBCSoundsGUI(tk.Tk):
         self.update_search_prompt()
         tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
 
+        self._active_detail_podcast = None
+        self._bottom_bar_info = None
         self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
         area_frame = tk.Frame(shell_box, bg=DARK_BG)
         area_frame.pack(fill="both", expand=True)
@@ -1481,6 +1485,17 @@ class BBCSoundsGUI(tk.Tk):
                 direction = 1
         canvas._leaving_page = True
         self.cancel_pending_render()
+
+        if (
+            current == "Programme details"
+            and self._active_detail_podcast is not None
+            and self._bottom_bar_info is not None
+            and self._bottom_bar_info[2] == self._active_detail_podcast[0]
+            and self._bottom_bar_info[0].winfo_exists()
+            and self._bottom_bar_info[1].winfo_exists()
+        ):
+            self.shrink_detail_to_bottom_bar(destination)
+            return
 
         def open_next_page():
             self._tab_transition_direction = direction
@@ -1557,6 +1572,7 @@ class BBCSoundsGUI(tk.Tk):
 
         def dismiss():
             self._dismissed_last_listened = podcast_id
+            self._bottom_bar_info = None
             footer.destroy()
 
         self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
@@ -1585,6 +1601,7 @@ class BBCSoundsGUI(tk.Tk):
             widget.bind("<Button-1>", open_detail)
         details.bind("<Return>", open_detail)
         details.bind("<space>", open_detail)
+        self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
         if getattr(shell, "_expanding_bar", False):
@@ -1647,6 +1664,93 @@ class BBCSoundsGUI(tk.Tk):
                 self.show_detail(podcast_id)
 
         draw_expand()
+
+    def shrink_detail_to_bottom_bar(self, destination):
+        shell, footer, _podcast_id, title, category = self._bottom_bar_info
+        if getattr(shell, "_expanding_bar", False):
+            return
+        shell._expanding_bar = True
+
+        canvas, _window = self._page_transition_target
+        area_frame = canvas.master
+        start_x = area_frame.winfo_rootx() - self.winfo_rootx()
+        start_y = area_frame.winfo_rooty() - self.winfo_rooty()
+        start_w = max(1, area_frame.winfo_width())
+        start_h = max(1, (footer.winfo_rooty() + footer.winfo_height()) - area_frame.winfo_rooty())
+
+        target_x = footer.winfo_rootx() - self.winfo_rootx()
+        target_y = footer.winfo_rooty() - self.winfo_rooty()
+        target_w = max(1, footer.winfo_width())
+        target_h = max(1, footer.winfo_height())
+
+        if start_w <= 1 or start_h <= 1 or target_w <= 1 or target_h <= 1:
+            self._tab_transition_direction = None
+            destination()
+            return
+
+        self._tab_transition_direction = None
+        destination()
+        if not self.winfo_exists():
+            return
+
+        target_bg = "#262228"
+        shrinker = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        accent_top = tk.Frame(shrinker, bg=ORANGE_ACCENT, height=3)
+        accent_top.pack(fill="x")
+        preview_box = tk.Frame(shrinker, bg=DARK_BG)
+        preview_box.place(relx=0.5, rely=0.5, anchor="center")
+        preview_cat = self.create_label(
+            preview_box, str(category or "Programme").upper(), 10, ORANGE_HL, "bold",
+            anchor="center", bg=DARK_BG,
+        )
+        preview_cat.pack()
+        preview_title = self.create_label(
+            preview_box, title, 22, TEXT_WHITE, "bold",
+            anchor="center", justify="center", bg=DARK_BG,
+        )
+        preview_title.pack(pady=(6, 0))
+
+        shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
+        tk.Misc.lift(shrinker)
+
+        duration = 0.260
+        started = monotonic()
+
+        def draw_shrink():
+            if not shrinker.winfo_exists() or not self.winfo_exists():
+                return
+            progress = min(1.0, (monotonic() - started) / duration)
+            eased = 1.0 - (1.0 - progress) ** 3
+            cur_x = round(start_x + (target_x - start_x) * eased)
+            cur_y = round(start_y + (target_y - start_y) * eased)
+            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_bg = blend_colour(DARK_BG, target_bg, eased)
+
+            shrinker.configure(bg=cur_bg)
+            preview_box.configure(bg=cur_bg)
+            if progress > 0.55:
+                fade = (progress - 0.55) / 0.45
+                cat_fg = blend_colour(ORANGE_HL, cur_bg, fade)
+                title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
+                accent_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
+            else:
+                cat_fg = ORANGE_HL
+                title_fg = TEXT_WHITE
+                accent_bg = ORANGE_ACCENT
+            accent_top.configure(bg=accent_bg)
+            preview_cat.configure(bg=cur_bg, fg=cat_fg)
+            preview_title.configure(bg=cur_bg, fg=title_fg)
+
+            shrinker.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            tk.Misc.lift(shrinker)
+
+            if progress < 1.0:
+                self.after(12, draw_shrink)
+            else:
+                shrinker.destroy()
+
+        self.after(12, draw_shrink)
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
@@ -2299,6 +2403,7 @@ class BBCSoundsGUI(tk.Tk):
                 ).fetchone()
 
             page = self.build_shell("Programme details")
+            self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 12))
             self.create_button(
