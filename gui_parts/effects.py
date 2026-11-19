@@ -10,6 +10,7 @@ from tkinter import font as tkfont
 
 from last_listened import get_last_listened
 from gui_parts.theme import (
+    BORDER_LINE,
     DARK_BG,
     DEFAULT_FONT,
     INPUT_BG,
@@ -366,7 +367,7 @@ class EffectsMixin:
             self.after_cancel(self._resize_after_id)
         self._resize_after_id = self.after(60, self.apply_interface_scaling)
 
-    def apply_interface_scaling(self, force=False):
+    def apply_interface_scaling(self, force=False, target_widget=None):
         """Scale UI fonts, buttons, and wrap widths immediately when the window resizes."""
         self._resize_after_id = None
         if not self.winfo_exists():
@@ -380,8 +381,11 @@ class EffectsMixin:
         new_scale_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
         if not force and abs(new_scale_factor - self._ui_scale_factor) < 0.025:
             return
+        if force and abs(new_scale_factor - 1.0) < 0.025 and abs(self._ui_scale_factor - 1.0) < 0.025:
+            return
         self._ui_scale_factor = new_scale_factor
-        self._scale_widget_tree(self, new_scale_factor)
+        root = target_widget if (target_widget is not None and target_widget.winfo_exists()) else self
+        self._scale_widget_tree(root, new_scale_factor)
 
     def _scale_widget_tree(self, root_widget, scale_factor):
         """Walk the widget tree and scale point-sized fonts, rounded buttons, and wraplengths."""
@@ -396,7 +400,7 @@ class EffectsMixin:
                 if base_font is None:
                     raw_font = widget.cget("font")
                     if raw_font:
-                        actual = tkfont.Font(root=self, font=raw_font).actual()
+                        actual = self._get_cached_font(raw_font).actual()
                         size_val = int(actual["size"])
                         if size_val > 0:
                             styles = []
@@ -432,26 +436,24 @@ class EffectsMixin:
             except (tk.TclError, ValueError, TypeError):
                 pass
 
+    def _finish_transition(self):
+        """Mark the active transition complete and immediately resume any queued batch rendering."""
+        self._transition_active = False
+        if self._render_queue:
+            if self._pending_render_id is not None:
+                try:
+                    self.after_cancel(self._pending_render_id)
+                except tk.TclError:
+                    pass
+            self._pending_render_id = self.after(1, self._render_next_batch)
+
     def build_shell(self, active_tab_title):
-        """Construct the persistent top navigation bar, search box, optional mini-bar, and scroll area."""
+        """Construct or reuse the persistent top navigation bar, search box, mini-bar, and scroll area."""
         self.cancel_pending_render()
-        self._podcast_averages = None
         if self._search_after_id is not None:
             self.after_cancel(self._search_after_id)
             self._search_after_id = None
         self._live_search_callback = None
-        self.unbind_all("<MouseWheel>")
-        for widget in self.winfo_children():
-            widget.destroy()
-        self.configure(bg=DARK_BG)
-        self.set_windows_titlebar_colour("#080808")
-        shell_box = tk.Frame(self, bg=DARK_BG)
-        shell_box.pack(fill="both", expand=True)
-
-        topbar = tk.Frame(shell_box, bg="#080808", height=84)
-        topbar.pack(fill="x")
-        topbar.pack_propagate(False)
-        self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
 
         nav_links = [
             ("Home", self.show_home), ("Genres", self.show_search),
@@ -459,77 +461,202 @@ class EffectsMixin:
             ("History", self.show_history), ("Ratings", self.show_ratings),
             ("Report", self.show_report), ("Profile", self.show_profile),
         ]
-        nav_row = tk.Frame(topbar, bg="#080808")
-        nav_row.pack(side="left", padx=35, pady=18)
         profile_tab_active = active_tab_title in ("Your genres", "Profile & survey")
-        for label_text, handler in nav_links:
-            selected_flag = label_text == active_tab_title or (label_text == "Report" and active_tab_title == "Listening report") or (
-                label_text == "Profile" and profile_tab_active
-            )
-            self.create_button(
-                nav_row, label_text.upper(), lambda go=handler, tab=label_text: self.transition_to(go, tab),
-                compact=True, primary=selected_flag, font=(DEFAULT_FONT, 9, "bold"),
-                face=ORANGE_ACCENT if selected_flag else "#080808",
-                fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
-            ).pack(side="left", padx=1)
-        self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
-        search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
-        search_container.pack(side="right", padx=(0, 14), pady=23)
-        search_container.pack_propagate(False)
-        self._search_entry = tk.Entry(
-            search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
-            bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
-            highlightthickness=0,
-        )
-        self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
-        self._search_prompt = tk.Label(
-            search_container, text="Search programmes...", font=(DEFAULT_FONT, 10),
-            bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
-        )
-        self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
-        self._search_entry.bind("<FocusIn>", lambda _event: self._search_prompt.place_forget())
-        self._search_entry.bind("<FocusOut>", lambda _event: self.update_search_prompt())
-        self._search_entry.bind("<KeyRelease>", self.schedule_live_search)
-        self.update_search_prompt()
-        tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
-
-        self._active_detail_podcast = None
-        self._bottom_bar_info = None
-        if active_tab_title != "Programme details":
-            self.add_last_listened_prompt(shell_box, show_average=not profile_tab_active)
-        area_frame = tk.Frame(shell_box, bg=DARK_BG)
-        area_frame.pack(fill="both", expand=True)
-        canvas_pane = tk.Canvas(
-            area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0, yscrollincrement=1,
-        )
-        scroll_bar = tk.Scrollbar(area_frame, orient="vertical", command=canvas_pane.yview,
-                                  bg=SIDEBAR_BG, troughcolor=DARK_BG, activebackground=ORANGE_ACCENT)
-        scroll_bar.pack(side="right", fill="y")
-        canvas_pane.pack(side="left", fill="both", expand=True)
-        canvas_pane.configure(yscrollcommand=scroll_bar.set)
-        content_pane = tk.Frame(canvas_pane, bg=DARK_BG, padx=46, pady=28)
-        canvas_window = canvas_pane.create_window((0, 0), window=content_pane, anchor="nw")
-        content_pane.bind(
-            "<Configure>", lambda event: canvas_pane.configure(scrollregion=(0, 0, event.width, event.height)),
-        )
-
-        def resize_content(event):
-            if event.width != content_pane.winfo_width():
-                canvas_pane.itemconfigure(canvas_window, width=event.width)
-
-        canvas_pane.bind("<Configure>", resize_content)
-        self.bind_page_scroll(canvas_pane, scroll_bar)
-        self.current_page = content_pane
-        self._page_transition_target = (canvas_pane, canvas_window)
-        self._tab_order = [label for label, _ in nav_links]
-        self._active_nav_tab = (
+        active_nav_tab = (
             "Profile" if profile_tab_active else
             "Report" if active_tab_title == "Listening report" else active_tab_title
         )
+
+        shell_box = getattr(self, "_shell_box", None)
+        reusing_shell = shell_box is not None and shell_box.winfo_exists()
+
+        if reusing_shell:
+            # Update only the nav buttons whose active highlight changed.
+            for label_text, btn in self._shell_nav_buttons.items():
+                selected_flag = label_text == active_nav_tab
+                if getattr(btn, "_nav_selected", None) != selected_flag:
+                    btn._nav_selected = selected_flag
+                    new_fg = TEXT_WHITE if selected_flag else TEXT_GRAY
+                    btn._hover_base_fg = new_fg
+                    btn.configure(fg=new_fg)
+                    self.style_rounded_button(
+                        btn,
+                        ORANGE_ACCENT if selected_flag else "#080808",
+                        ORANGE_HL if selected_flag else BORDER_LINE,
+                    )
+            self.update_search_prompt()
+            canvas_pane = self._shell_canvas
+            previous_frame = getattr(canvas_pane, "_slide_frame", None)
+            if previous_frame is not None:
+                try:
+                    canvas_pane.after_cancel(previous_frame)
+                except tk.TclError:
+                    pass
+                canvas_pane._slide_frame = None
+            canvas_pane._leaving_page = False
+            old_page = self.current_page
+            if old_page is not None and old_page.winfo_exists():
+                old_page.destroy()
+            old_win = getattr(self, "_shell_canvas_window", None)
+            if old_win is not None:
+                try:
+                    canvas_pane.delete(old_win)
+                except tk.TclError:
+                    pass
+            canvas_pane.yview_moveto(0)
+            self._active_detail_podcast = None
+            self._sync_bottom_bar(
+                shell_box,
+                show_bar=active_tab_title != "Programme details",
+                show_average=not profile_tab_active,
+            )
+        else:
+            self.unbind_all("<MouseWheel>")
+            for widget in self.winfo_children():
+                widget.destroy()
+            self.configure(bg=DARK_BG)
+            self.set_windows_titlebar_colour("#080808")
+            shell_box = tk.Frame(self, bg=DARK_BG)
+            shell_box.pack(fill="both", expand=True)
+            self._shell_box = shell_box
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+
+            topbar = tk.Frame(shell_box, bg="#080808", height=84)
+            topbar.pack(fill="x")
+            topbar.pack_propagate(False)
+            self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
+
+            nav_row = tk.Frame(topbar, bg="#080808")
+            nav_row.pack(side="left", padx=35, pady=18)
+            self._shell_nav_buttons = {}
+            for label_text, handler in nav_links:
+                selected_flag = label_text == active_nav_tab
+                btn = self.create_button(
+                    nav_row, label_text.upper(), lambda go=handler, tab=label_text: self.transition_to(go, tab),
+                    compact=True, primary=selected_flag, font=(DEFAULT_FONT, 9, "bold"),
+                    face=ORANGE_ACCENT if selected_flag else "#080808",
+                    fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
+                )
+                btn._nav_selected = selected_flag
+                btn.pack(side="left", padx=1)
+                self._shell_nav_buttons[label_text] = btn
+            self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
+            search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
+            search_container.pack(side="right", padx=(0, 14), pady=23)
+            search_container.pack_propagate(False)
+            self._search_entry = tk.Entry(
+                search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
+                bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
+                highlightthickness=0,
+            )
+            self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
+            self._search_prompt = tk.Label(
+                search_container, text="Search programmes...", font=(DEFAULT_FONT, 10),
+                bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
+            )
+            self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
+            self._search_entry.bind("<FocusIn>", lambda _event: self._search_prompt.place_forget())
+            self._search_entry.bind("<FocusOut>", lambda _event: self.update_search_prompt())
+            self._search_entry.bind("<KeyRelease>", self.schedule_live_search)
+            self.update_search_prompt()
+            tk.Frame(shell_box, bg=ORANGE_ACCENT, height=3).pack(fill="x")
+
+            self._active_detail_podcast = None
+            self._bottom_bar_info = None
+            area_frame = tk.Frame(shell_box, bg=DARK_BG)
+            area_frame.pack(fill="both", expand=True)
+            self._shell_area_frame = area_frame
+            canvas_pane = tk.Canvas(
+                area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0, yscrollincrement=1,
+            )
+            scroll_bar = tk.Scrollbar(area_frame, orient="vertical", command=canvas_pane.yview,
+                                      bg=SIDEBAR_BG, troughcolor=DARK_BG, activebackground=ORANGE_ACCENT)
+            scroll_bar.pack(side="right", fill="y")
+            canvas_pane.pack(side="left", fill="both", expand=True)
+            canvas_pane.configure(yscrollcommand=scroll_bar.set)
+            self._shell_canvas = canvas_pane
+            self._shell_scrollbar = scroll_bar
+            self.bind_page_scroll(canvas_pane, scroll_bar)
+
+            def resize_content(event):
+                cur_page = self.current_page
+                cur_win = getattr(self, "_shell_canvas_window", None)
+                if cur_page is not None and cur_win is not None and cur_page.winfo_exists():
+                    if event.width != cur_page.winfo_width():
+                        canvas_pane.itemconfigure(cur_win, width=event.width)
+
+            canvas_pane.bind("<Configure>", resize_content)
+            self._sync_bottom_bar(
+                shell_box,
+                show_bar=active_tab_title != "Programme details",
+                show_average=not profile_tab_active,
+            )
+
+        content_pane = tk.Frame(canvas_pane, bg=DARK_BG, padx=46, pady=28)
+        canvas_w = canvas_pane.winfo_width()
+        win_kwargs = {"window": content_pane, "anchor": "nw"}
+        if canvas_w > 1:
+            win_kwargs["width"] = canvas_w
+        canvas_window = canvas_pane.create_window((0, 0), **win_kwargs)
+        self._shell_canvas_window = canvas_window
+
+        def update_scrollregion(event):
+            if canvas_pane.winfo_exists():
+                canvas_pane.configure(scrollregion=(0, 0, event.width, event.height))
+
+        content_pane.bind("<Configure>", update_scrollregion)
+        self.current_page = content_pane
+        self._page_transition_target = (canvas_pane, canvas_window)
+        self._tab_order = [label for label, _ in nav_links]
+        self._active_nav_tab = active_nav_tab
+
         if self._tab_transition_direction is not None:
             self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
-        self.after_idle(lambda: self.apply_interface_scaling(force=True))
+        elif abs(self._ui_scale_factor - 1.0) >= 0.025:
+            target = content_pane if reusing_shell else self
+            self.after_idle(lambda t=target: self.apply_interface_scaling(force=True, target_widget=t))
         return content_pane
+
+    def _sync_bottom_bar(self, shell, show_bar=True, show_average=True):
+        """Show, reuse, or hide the bottom mini-bar without rebuilding it unnecessarily."""
+        existing = getattr(self, "_shell_bottom_bar", None)
+        if not show_bar or self.current_user is None:
+            if existing is not None and existing.winfo_exists():
+                existing.destroy()
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+            self._bottom_bar_info = None
+            return
+
+        try:
+            with self.get_db_connection() as conn:
+                recent = get_last_listened(conn, self.current_user)
+        except sqlite3.Error:
+            recent = None
+
+        if recent is None or recent[0] == self._dismissed_last_listened:
+            if existing is not None and existing.winfo_exists():
+                existing.destroy()
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+            self._bottom_bar_info = None
+            return
+
+        podcast_id, title, category = recent
+        avg_text = self.podcast_average_text(podcast_id) if show_average else ""
+        bar_key = (podcast_id, title, category, avg_text)
+        if existing is not None and existing.winfo_exists() and getattr(self, "_shell_bottom_bar_key", None) == bar_key:
+            self._bottom_bar_info = (shell, existing, podcast_id, title, category)
+            return
+
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+        self._shell_bottom_bar = None
+        self._shell_bottom_bar_key = None
+        self._bottom_bar_info = None
+        self.add_last_listened_prompt(shell, show_average=show_average, recent=recent)
+        self._shell_bottom_bar_key = bar_key
 
     def transition_to(self, destination, tab=None, *, direction=None):
         """Animate out of the current page (sliding or shrinking to the mini-bar) and open destination."""
@@ -545,6 +672,7 @@ class EffectsMixin:
             else:
                 direction = 1
         canvas._leaving_page = True
+        self._transition_active = True
         self.cancel_pending_render()
 
         if current == "Programme details" and self._active_detail_podcast is not None:
@@ -571,17 +699,32 @@ class EffectsMixin:
             finally:
                 self._tab_transition_direction = None
 
-        self.slide_page(canvas, window, -direction * canvas.winfo_width(), 210, open_next_page)
+        self.slide_page(canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page)
 
     def animate_page_entry(self, canvas, canvas_window, direction):
         """Slide a newly built page horizontally into view from the given direction."""
+        self._transition_active = True
+
+        def on_entry_done():
+            self._finish_transition()
+            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
+                self.apply_interface_scaling(force=True, target_widget=self.current_page)
+
+        width = canvas.winfo_width()
+        if width > 1:
+            canvas.itemconfigure(canvas_window, width=width)
+            canvas.coords(canvas_window, direction * width, 0)
+            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
+            return
+
         canvas.itemconfigure(canvas_window, state="hidden")
 
         def reveal_page():
             if not canvas.winfo_exists():
+                self._finish_transition()
                 return
             canvas.itemconfigure(canvas_window, state="normal")
-            self.slide_page(canvas, canvas_window, 0, 285)
+            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
 
         def start_entry(event):
             canvas.unbind("<Configure>", configure_binding)
@@ -595,38 +738,59 @@ class EffectsMixin:
         """Animate the scrollable content window horizontally to end_x."""
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
-            canvas.after_cancel(previous_frame)
-        start_x = canvas.coords(canvas_window)[0]
+            try:
+                canvas.after_cancel(previous_frame)
+            except tk.TclError:
+                pass
+        coords = canvas.coords(canvas_window)
+        start_x = coords[0] if coords else 0
+        last_x = round(start_x)
         started = monotonic()
+        self._transition_active = True
 
         def draw_frame():
+            nonlocal last_x
             canvas._slide_frame = None
+            if not canvas.winfo_exists():
+                self._transition_active = False
+                return
             progress = min(1.0, (monotonic() - started) * 1000 / duration_ms)
             eased = progress ** 2 if end_x else 1 - (1 - progress) ** 3
-            canvas.coords(canvas_window, round(start_x + (end_x - start_x) * eased), 0)
-            if progress < 1:
-                canvas._slide_frame = canvas.after(15, draw_frame)
+            new_x = round(start_x + (end_x - start_x) * eased)
+            if new_x != last_x:
+                canvas.coords(canvas_window, new_x, 0)
+                last_x = new_x
+            if progress < 1.0:
+                canvas._slide_frame = canvas.after(12, draw_frame)
             elif on_complete:
                 on_complete()
+            else:
+                self._finish_transition()
 
         if not getattr(canvas, "_slide_cleanup_bound", False):
             def cancel_animation(_event):
-                if canvas._slide_frame is not None:
-                    canvas.after_cancel(canvas._slide_frame)
+                frame_id = getattr(canvas, "_slide_frame", None)
+                if frame_id is not None:
+                    try:
+                        canvas.after_cancel(frame_id)
+                    except tk.TclError:
+                        pass
+                self._transition_active = False
 
             canvas.bind("<Destroy>", cancel_animation, add="+")
             canvas._slide_cleanup_bound = True
         draw_frame()
 
-    def add_last_listened_prompt(self, shell, show_average=True):
+    def add_last_listened_prompt(self, shell, show_average=True, recent=None):
         """Attach the clickable bottom mini-bar for the user's most recently played podcast."""
         if self.current_user is None:
             return
-        try:
-            with self.get_db_connection() as conn:
-                recent = get_last_listened(conn, self.current_user)
-        except sqlite3.Error:
-            return
+        if recent is None:
+            try:
+                with self.get_db_connection() as conn:
+                    recent = get_last_listened(conn, self.current_user)
+            except sqlite3.Error:
+                return
         if recent is None:
             return
 
@@ -635,7 +799,11 @@ class EffectsMixin:
             return
 
         footer = self.create_card_frame(shell, bg="#262228")
-        footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10))
+        area_frame = getattr(self, "_shell_area_frame", None)
+        if area_frame is not None and area_frame.winfo_exists() and area_frame.master is shell:
+            footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10), before=area_frame)
+        else:
+            footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10))
         tk.Frame(footer, bg=ORANGE_ACCENT, width=3).pack(side="left", fill="y")
         row = tk.Frame(footer, bg=footer.cget("bg"))
         row.pack(fill="x", padx=10, pady=7)
@@ -643,6 +811,8 @@ class EffectsMixin:
         def dismiss():
             self._dismissed_last_listened = podcast_id
             self._bottom_bar_info = None
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
             footer.destroy()
 
         self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
@@ -671,6 +841,7 @@ class EffectsMixin:
             widget.bind("<Button-1>", open_detail)
         details.bind("<Return>", open_detail)
         details.bind("<space>", open_detail)
+        self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
@@ -682,6 +853,7 @@ class EffectsMixin:
             return
         shell._expanding_bar = True
         canvas._leaving_page = True
+        self._transition_active = True
         self.cancel_pending_render()
 
         area_frame = canvas.master
@@ -709,12 +881,18 @@ class EffectsMixin:
             anchor="center", justify="center", bg=start_bg,
         )
         preview_title.pack(pady=(6, 0))
+        expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
+        tk.Misc.lift(expander)
 
-        duration = 0.240
+        duration = 0.200
         started = monotonic()
+        last_bg = start_bg
 
         def draw_expand():
+            nonlocal last_bg
             if not expander.winfo_exists() or not shell.winfo_exists():
+                shell._expanding_bar = False
+                self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - started) / duration)
             eased = 1.0 - (1.0 - progress) ** 3
@@ -723,15 +901,19 @@ class EffectsMixin:
             cur_w = round(start_w + (target_w - start_w) * eased)
             cur_h = round(start_h + (target_h - start_h) * eased)
             cur_bg = blend_colour(start_bg, DARK_BG, eased)
-            expander.configure(bg=cur_bg)
-            preview_box.configure(bg=cur_bg)
-            preview_cat.configure(bg=cur_bg)
-            preview_title.configure(bg=cur_bg)
+            if cur_bg != last_bg:
+                expander.configure(bg=cur_bg)
+                preview_box.configure(bg=cur_bg)
+                preview_cat.configure(bg=cur_bg)
+                preview_title.configure(bg=cur_bg)
+                last_bg = cur_bg
             expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            tk.Misc.lift(expander)
             if progress < 1.0:
-                self.after(15, draw_expand)
+                self.after(12, draw_expand)
             else:
+                shell._expanding_bar = False
+                expander.destroy()
+                self._finish_transition()
                 self.show_detail(podcast_id)
 
         draw_expand()
@@ -749,14 +931,17 @@ class EffectsMixin:
 
         if start_w <= 1 or start_h <= 1:
             self._tab_transition_direction = None
+            self._finish_transition()
             destination()
             return
 
         target_box = [18, max(start_y, win_h - 90), max(1, win_w - 36), 80]
 
         self._tab_transition_direction = None
+        self._transition_active = True
         destination()
         if not self.winfo_exists():
+            self._transition_active = False
             return
 
         target_bg = "#262228"
@@ -779,11 +964,14 @@ class EffectsMixin:
         shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
 
-        duration = 0.260
+        duration = 0.220
         started = monotonic()
+        last_bg = DARK_BG
 
         def draw_shrink():
+            nonlocal last_bg
             if not shrinker.winfo_exists() or not self.winfo_exists():
+                self._finish_transition()
                 return
             if self._bottom_bar_info is not None:
                 dest_footer = self._bottom_bar_info[1]
@@ -801,28 +989,30 @@ class EffectsMixin:
             cur_h = max(1, round(start_h + (target_h - start_h) * eased))
             cur_bg = blend_colour(DARK_BG, target_bg, eased)
 
-            shrinker.configure(bg=cur_bg)
-            preview_box.configure(bg=cur_bg)
-            if progress > 0.55:
-                fade = (progress - 0.55) / 0.45
-                cat_fg = blend_colour(ORANGE_HL, cur_bg, fade)
-                title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
-                accent_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
-            else:
-                cat_fg = ORANGE_HL
-                title_fg = TEXT_WHITE
-                accent_bg = ORANGE_ACCENT
-            accent_top.configure(bg=accent_bg)
-            preview_cat.configure(bg=cur_bg, fg=cat_fg)
-            preview_title.configure(bg=cur_bg, fg=title_fg)
+            if cur_bg != last_bg or progress > 0.55:
+                shrinker.configure(bg=cur_bg)
+                preview_box.configure(bg=cur_bg)
+                if progress > 0.55:
+                    fade = (progress - 0.55) / 0.45
+                    cat_fg = blend_colour(ORANGE_HL, cur_bg, fade)
+                    title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
+                    accent_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
+                else:
+                    cat_fg = ORANGE_HL
+                    title_fg = TEXT_WHITE
+                    accent_bg = ORANGE_ACCENT
+                accent_top.configure(bg=accent_bg)
+                preview_cat.configure(bg=cur_bg, fg=cat_fg)
+                preview_title.configure(bg=cur_bg, fg=title_fg)
+                last_bg = cur_bg
 
             shrinker.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            tk.Misc.lift(shrinker)
 
             if progress < 1.0:
                 self.after(12, draw_shrink)
             else:
                 shrinker.destroy()
+                self._finish_transition()
 
         self.after(12, draw_shrink)
 

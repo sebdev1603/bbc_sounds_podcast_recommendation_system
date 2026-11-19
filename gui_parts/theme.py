@@ -80,6 +80,7 @@ class RoundedPanel(tk.Frame):
         self.surface = surface
         self.border = border
         self._inset = 0
+        self._last_shape_key = None
         self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), bd=0, highlightthickness=0)
         self.backdrop.place(relwidth=1, relheight=1)
         self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=surface, outline=border)
@@ -89,6 +90,10 @@ class RoundedPanel(tk.Frame):
         return self.surface if key in ("bg", "background") else super().cget(key)
 
     def _redraw_shape(self, width, height):
+        shape_key = (width, height, self._inset)
+        if shape_key == self._last_shape_key:
+            return
+        self._last_shape_key = shape_key
         m = 1 + self._inset
         w = max(m + 2, width - 1 - self._inset)
         h = max(m + 2, height - 1 - self._inset)
@@ -102,6 +107,8 @@ class RoundedPanel(tk.Frame):
         self._redraw_shape(event.width, event.height)
 
     def set_inset(self, inset):
+        if inset == self._inset:
+            return
         self._inset = inset
         bw, bh = self.backdrop.winfo_width(), self.backdrop.winfo_height()
         if bw > 2 and bh > 2:

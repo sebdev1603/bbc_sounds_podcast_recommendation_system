@@ -62,14 +62,22 @@ class BBCSoundsGUI(
         self._search_entry = None
         self._search_prompt = None
         self._tab_transition_direction = None
+        self._transition_active = False
+        self._font_cache = {}
         self._scroll_priority_until = 0.0
         self._active_detail_podcast = None
         self._bottom_bar_info = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.set_window_icon()
         self.set_windows_titlebar_colour(DARK_BG)
         self.show_login()
+
+    def _on_close(self):
+        """Close the persistent database connection before destroying the app window."""
+        self.close_db_connection()
+        self.destroy()
 
 
 if __name__ == "__main__":

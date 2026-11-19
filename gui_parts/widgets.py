@@ -178,22 +178,34 @@ class WidgetsMixin:
             config["fg"] = blend_colour(base_fg, TEXT_WHITE, eased)
         button.configure(**config)
 
+    def _get_cached_font(self, font_spec):
+        """Return a cached tkfont.Font object for a font specification to avoid Tcl churn."""
+        cache = getattr(self, "_font_cache", None)
+        if cache is None:
+            cache = {}
+            self._font_cache = cache
+        key = font_spec if isinstance(font_spec, (str, tuple)) else str(font_spec)
+        font_obj = cache.get(key)
+        if font_obj is None:
+            font_obj = tkfont.Font(root=self, font=font_spec)
+            cache[key] = font_obj
+        return font_obj
+
     def style_rounded_button(self, button, face, hover):
-        """Measure button text and build cached normal/hover rounded pill images."""
+        """Measure button text and build cached normal rounded pill image (hover built lazily)."""
         self.cancel_button_hover(button)
         button._rounded_colours = (face, hover)
         if getattr(button, "_hover_step", 0) == 0 or not hasattr(button, "_hover_base_fg"):
             button._hover_base_fg = button.cget("fg")
         button._hover_step = 0
         button._hover_target = 0
-        metrics = tkfont.Font(root=self, font=button.cget("font"))
+        metrics = self._get_cached_font(button.cget("font"))
         pad_x, pad_y = button._rounded_padding
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
         button._hover_size = (width, height)
         button._normal_image = self.rounded_button_image(width, height, face, inset=2)
-        button._hover_image = self.rounded_button_image(width, height, hover, inset=0)
         button.configure(image=button._normal_image)
 
     def rounded_button_image(self, width, height, colour, inset=2):
@@ -231,7 +243,7 @@ class WidgetsMixin:
         word_gap = max(9, round(10 * scaling))
         tile_font = ("Arial", -round(tile * 0.92), "bold")
         sounds_font = ("Arial", -round(tile * 0.96), "bold")
-        sounds_metrics = tkfont.Font(root=self, font=sounds_font)
+        sounds_metrics = self._get_cached_font(sounds_font)
 
         tiles_w = tile * 3 + gap * 2
         sounds_w = sounds_metrics.measure("SOUNDS")
@@ -688,12 +700,15 @@ class WidgetsMixin:
     def _render_next_batch(self):
         """Render a small time-sliced batch of queued widgets and re-apply UI scaling on completion."""
         self._pending_render_id = None
+        if getattr(self, "_transition_active", False):
+            self._pending_render_id = self.after(20, self._render_next_batch)
+            return
         if monotonic() < self._scroll_priority_until:
             self._pending_render_id = self.after(24, self._render_next_batch)
             return
-        deadline = monotonic() + 0.004
+        deadline = monotonic() + 0.008
         rendered_count = 0
-        while self._render_queue and rendered_count < 4:
+        while self._render_queue and rendered_count < 6:
             items_iter, render_item = self._render_queue[0]
             try:
                 item = next(items_iter)
@@ -705,9 +720,9 @@ class WidgetsMixin:
             if monotonic() >= deadline:
                 break
         if self._render_queue:
-            self._pending_render_id = self.after(8, self._render_next_batch)
-        elif abs(self._ui_scale_factor - 1.0) >= 0.025:
-            self._scale_widget_tree(self, self._ui_scale_factor)
+            self._pending_render_id = self.after(4, self._render_next_batch)
+        elif abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
+            self._scale_widget_tree(self.current_page, self._ui_scale_factor)
 
     def cancel_pending_render(self):
         """Cancel any scheduled batched rendering work when leaving a page."""

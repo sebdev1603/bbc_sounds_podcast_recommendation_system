@@ -351,6 +351,7 @@ class DetailViewMixin:
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened, RatingGiven) "
                         "VALUES (?, ?, 0, ?)", (podcast_id, self.current_user, new_score),
                     )
+            self._podcast_averages = None
             if callback_func:
                 callback_func()
             else:
@@ -458,6 +459,7 @@ class DetailViewMixin:
                     "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 )
+            self._podcast_averages = None
             self.show_ratings()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't remove your rating", err)

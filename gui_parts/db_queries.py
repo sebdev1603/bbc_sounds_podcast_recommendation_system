@@ -11,19 +11,48 @@ from gui_parts.theme import DATABASE_PATH, DURATION_RANGES, sanitize_column_name
 class DatabaseMixin:
     """Mixin providing database access, podcast queries, and rating-average helpers."""
 
+    def _ensure_db_connection(self):
+        """Return a persistent SQLite connection tuned for low-latency desktop queries."""
+        conn = getattr(self, "_db_conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(DATABASE_PATH), timeout=8)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA synchronous = NORMAL")
+                conn.execute("PRAGMA temp_store = MEMORY")
+                conn.execute("PRAGMA cache_size = -8000")
+            except sqlite3.Error:
+                pass
+            self._db_conn = conn
+            self._db_depth = 0
+        return conn
+
+    def close_db_connection(self):
+        """Close the cached SQLite connection cleanly on shutdown."""
+        conn = getattr(self, "_db_conn", None)
+        if conn is not None:
+            self._db_conn = None
+            self._db_depth = 0
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
     @contextmanager
     def get_db_connection(self):
-        """Open a SQLite connection with Row access, auto-committing or rolling back on exit."""
-        conn = sqlite3.connect(str(DATABASE_PATH), timeout=8)
-        conn.row_factory = sqlite3.Row
+        """Reuse the persistent SQLite connection, auto-committing or rolling back on exit."""
+        conn = self._ensure_db_connection()
+        self._db_depth = getattr(self, "_db_depth", 0) + 1
         try:
             yield conn
-            conn.commit()
+            if self._db_depth == 1 and conn.in_transaction:
+                conn.commit()
         except Exception:
-            conn.rollback()
+            if self._db_depth == 1 and conn.in_transaction:
+                conn.rollback()
             raise
         finally:
-            conn.close()
+            self._db_depth = max(0, self._db_depth - 1)
 
     def get_listener_data(self):
         """Return the active listener's row from the listeners table, or None."""
