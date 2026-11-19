@@ -1,4 +1,4 @@
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 import ctypes
 import math
@@ -107,6 +107,11 @@ class RoundedPanel(tk.Frame):
 
 class BBCSoundsGUI(tk.Tk):
     def __init__(self):
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("bbc.sounds.podcast.recommender")
+            except Exception:
+                pass
         super().__init__()
         self.title("BBC Sounds | Discover something new")
         self.geometry("1320x850")
@@ -141,8 +146,226 @@ class BBCSoundsGUI(tk.Tk):
         self._bottom_bar_info = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
+        self.set_window_icon()
         self.set_windows_titlebar_colour(DARK_BG)
         self.show_login()
+
+    def set_window_icon(self):
+        search_dirs = [ROOT_PATH]
+        for sub in ("assets", "images", "img", "icons", "canva design"):
+            candidate_dir = ROOT_PATH / sub
+            if candidate_dir.is_dir():
+                search_dirs.append(candidate_dir)
+
+        def score_file(path):
+            name = path.stem.lower()
+            ext = path.suffix.lower()
+            if "bbc" in name and "sound" in name:
+                name_score = 40
+            elif "sound" in name or "bbc" in name:
+                name_score = 30
+            elif "logo" in name or "icon" in name:
+                name_score = 20
+            else:
+                name_score = 5
+            ext_score = {
+                ".ico": 10, ".png": 8, ".gif": 6,
+                ".webp": 4, ".jpg": 3, ".jpeg": 3, ".bmp": 2,
+            }.get(ext, 0)
+            return name_score + ext_score
+
+        supported_exts = {".ico", ".png", ".gif", ".webp", ".jpg", ".jpeg", ".bmp"}
+        candidates = []
+        for folder in search_dirs:
+            try:
+                for item in folder.iterdir():
+                    if item.is_file() and item.suffix.lower() in supported_exts:
+                        candidates.append(item)
+            except OSError:
+                continue
+
+        candidates.sort(key=score_file, reverse=True)
+        for icon_path in candidates:
+            if self._apply_clean_window_icon(icon_path):
+                return
+
+    def _apply_clean_window_icon(self, icon_path):
+        ext = icon_path.suffix.lower()
+        # Preferred path: Pillow removes outer grey/solid square, crops tight, and resizes cleanly.
+        try:
+            from PIL import Image, ImageTk
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            img = Image.open(icon_path).convert("RGBA")
+            if max(img.size) > 256:
+                img.thumbnail((256, 256), resample)
+            w, h = img.size
+            px = img.load()
+            corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+            opaque_corners = [c for c in corners if c[3] >= 16]
+            if opaque_corners:
+                bg_r = sum(c[0] for c in opaque_corners) // len(opaque_corners)
+                bg_g = sum(c[1] for c in opaque_corners) // len(opaque_corners)
+                bg_b = sum(c[2] for c in opaque_corners) // len(opaque_corners)
+
+                def is_bg(rgba):
+                    r, g, b, a = rgba
+                    if a < 16:
+                        return True
+                    return abs(r - bg_r) + abs(g - bg_g) + abs(b - bg_b) <= 78
+
+                visited = bytearray(w * h)
+                queue = deque()
+                for x in range(w):
+                    for y in (0, h - 1):
+                        idx = y * w + x
+                        if not visited[idx] and is_bg(px[x, y]):
+                            visited[idx] = 1
+                            queue.append((x, y))
+                for y in range(1, h - 1):
+                    for x in (0, w - 1):
+                        idx = y * w + x
+                        if not visited[idx] and is_bg(px[x, y]):
+                            visited[idx] = 1
+                            queue.append((x, y))
+
+                while queue:
+                    cx, cy = queue.popleft()
+                    px[cx, cy] = (0, 0, 0, 0)
+                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if 0 <= nx < w and 0 <= ny < h:
+                            nidx = ny * w + nx
+                            if not visited[nidx] and is_bg(px[nx, ny]):
+                                visited[nidx] = 1
+                                queue.append((nx, ny))
+
+            bbox = img.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+            cw, ch = img.size
+            side = max(1, cw, ch)
+            square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+            square.paste(img, ((side - cw) // 2, (side - ch) // 2), img)
+
+            icons = [
+                ImageTk.PhotoImage(square.resize((sz, sz), resample), master=self)
+                for sz in (64, 32, 16)
+            ]
+            self.iconphoto(True, *icons)
+            self._window_icons = icons
+            return True
+        except Exception:
+            pass
+
+        # Fallback path without Pillow for PNG/GIF: flood-fill border background + crop to tight square.
+        if ext in (".png", ".gif"):
+            try:
+                src = tk.PhotoImage(master=self, file=str(icon_path))
+                sw, sh = src.width(), src.height()
+                if max(sw, sh) > 128:
+                    step = max(1, max(sw, sh) // 128)
+                    src = src.subsample(step, step)
+                    sw, sh = src.width(), src.height()
+
+                def get_rgb(x, y):
+                    if src.transparency_get(x, y):
+                        return None
+                    val = src.get(x, y)
+                    if isinstance(val, tuple):
+                        return val[:3]
+                    return tuple(int(c) for c in str(val).split()[:3])
+
+                corners = [get_rgb(x, y) for x, y in ((0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1))]
+                opaque_corners = [c for c in corners if c is not None]
+                bg_mask = bytearray(sw * sh)
+                if opaque_corners:
+                    bg_r = sum(c[0] for c in opaque_corners) // len(opaque_corners)
+                    bg_g = sum(c[1] for c in opaque_corners) // len(opaque_corners)
+                    bg_b = sum(c[2] for c in opaque_corners) // len(opaque_corners)
+
+                    def is_tk_bg(x, y):
+                        rgb = get_rgb(x, y)
+                        if rgb is None:
+                            return True
+                        return abs(rgb[0] - bg_r) + abs(rgb[1] - bg_g) + abs(rgb[2] - bg_b) <= 78
+
+                    queue = deque()
+                    for x in range(sw):
+                        for y in (0, sh - 1):
+                            idx = y * sw + x
+                            if not bg_mask[idx] and is_tk_bg(x, y):
+                                bg_mask[idx] = 1
+                                queue.append((x, y))
+                    for y in range(1, sh - 1):
+                        for x in (0, sw - 1):
+                            idx = y * sw + x
+                            if not bg_mask[idx] and is_tk_bg(x, y):
+                                bg_mask[idx] = 1
+                                queue.append((x, y))
+                    while queue:
+                        cx, cy = queue.popleft()
+                        for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                            if 0 <= nx < sw and 0 <= ny < sh:
+                                nidx = ny * sw + nx
+                                if not bg_mask[nidx] and is_tk_bg(nx, ny):
+                                    bg_mask[nidx] = 1
+                                    queue.append((nx, ny))
+                else:
+                    for y in range(sh):
+                        for x in range(sw):
+                            if src.transparency_get(x, y):
+                                bg_mask[y * sw + x] = 1
+
+                min_x, min_y, max_x, max_y = sw, sh, -1, -1
+                for y in range(sh):
+                    for x in range(sw):
+                        if not bg_mask[y * sw + x]:
+                            if x < min_x:
+                                min_x = x
+                            if y < min_y:
+                                min_y = y
+                            if x > max_x:
+                                max_x = x
+                            if y > max_y:
+                                max_y = y
+
+                if max_x >= min_x and max_y >= min_y:
+                    cw = max_x - min_x + 1
+                    ch = max_y - min_y + 1
+                    side = max(cw, ch)
+                    pad_x = (side - cw) // 2
+                    pad_y = (side - ch) // 2
+                    icons = []
+                    for sz in (32, 16):
+                        out = tk.PhotoImage(master=self, width=sz, height=sz)
+                        for oy in range(sz):
+                            sy_sq = int((oy + 0.5) * side / sz)
+                            sy = min_y + sy_sq - pad_y
+                            for ox in range(sz):
+                                sx_sq = int((ox + 0.5) * side / sz)
+                                sx = min_x + sx_sq - pad_x
+                                if min_x <= sx <= max_x and min_y <= sy <= max_y and not bg_mask[sy * sw + sx]:
+                                    rgb = get_rgb(sx, sy)
+                                    if rgb is not None:
+                                        out.put(f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}", (ox, oy))
+                                    else:
+                                        out.transparency_set(ox, oy, True)
+                                else:
+                                    out.transparency_set(ox, oy, True)
+                        icons.append(out)
+                    self.iconphoto(True, *icons)
+                    self._window_icons = icons
+                    return True
+            except Exception:
+                pass
+
+        if ext == ".ico" and sys.platform == "win32":
+            try:
+                self.iconbitmap(default=str(icon_path))
+                self._window_icon_path = icon_path
+                return True
+            except Exception:
+                pass
+        return False
 
     def set_windows_titlebar_colour(self, bg_hex=DARK_BG, text_hex=TEXT_WHITE):
         if sys.platform != "win32":
@@ -1919,7 +2142,7 @@ class BBCSoundsGUI(tk.Tk):
             listener_info = self.get_listener_data()
             name_str = self.get_row_field(listener_info, "Username", None) or self.get_row_field(listener_info, "Name", None)
             first_name = str(name_str or "there").split()[0]
-            self.render_page_title(page, f"Good to have you back!!!!!!!! so many keys o algo",
+            self.render_page_title(page, f"Good to have you back!",
                                    "Settle in and find something worth listening to.")
 
             favourite_ids = [
