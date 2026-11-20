@@ -454,12 +454,14 @@ class EffectsMixin:
     def apply_user_accessibility(self, listener_id):
         """Load and apply the signed-in listener's saved text size and theme from database.db."""
         saved_scale, saved_theme = self.load_user_accessibility(listener_id)
+        theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
         self._text_scale = saved_scale
         self._theme_name = saved_theme
-        apply_theme_palette(saved_theme)
-        self.button_images.clear()
-        self.cover_images.clear()
-        self._titlebar_colour = None
+        if theme_changed:
+            apply_theme_palette(saved_theme)
+            self.button_images.clear()
+            self.cover_images.clear()
+            self._titlebar_colour = None
 
     def reset_accessibility_settings(self):
         """Restore all accessibility settings (text size and theme) to defaults and save to database.db."""
@@ -621,6 +623,8 @@ class EffectsMixin:
             # Cold start: clear the login screen and construct the persistent header, search box, and scroll viewport.
             self.unbind_all("<MouseWheel>")
             for widget in self.winfo_children():
+                if getattr(widget, "_preserve_during_shell_build", False):
+                    continue
                 widget.destroy()
             self.configure(bg=DARK_BG)
             self.set_windows_titlebar_colour(TOPBAR_BG, TITLEBAR_TEXT)

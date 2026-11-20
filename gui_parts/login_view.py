@@ -1,6 +1,8 @@
 """Login screen, button-to-home expansion transition, and spinning vinyl turntable visual."""
+import ctypes
 import math
 import sqlite3
+import sys
 from time import monotonic
 import tkinter as tk
 
@@ -81,6 +83,7 @@ class LoginViewMixin:
         input_panel.pack(fill="x", padx=20, pady=(15, 10))
         text_entry = tk.Entry(
             input_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
+            disabledbackground=INPUT_BG, disabledforeground=TEXT_WHITE,
             insertbackground=TEXT_WHITE, relief="flat", highlightthickness=0,
         )
         text_entry.pack(fill="x", padx=12, pady=5, ipady=4)
@@ -121,6 +124,7 @@ class LoginViewMixin:
                 status_label.config(text="Couldn't open the project database: " + str(err))
 
         login_button = self.create_button(login_panel, "Continue  →", handle_login, primary=True)
+        login_button.configure(highlightthickness=0, takefocus=0)
         login_button.pack(anchor="w", padx=20, pady=(5, 20))
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
@@ -158,144 +162,351 @@ class LoginViewMixin:
         disc_canvas.bind("<Destroy>", cancel_record_jobs)
         self.after_idle(lambda: self.apply_interface_scaling(force=True))
 
+    def _capture_window_snapshot(self, win_x, win_y, win_w, win_h):
+        """Capture the current login window client area as a Tk PhotoImage via Windows BitBlt."""
+        if sys.platform != "win32" or win_w <= 1 or win_h <= 1:
+            return None
+        try:
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            vp = ctypes.c_void_p
+            user32.GetDC.restype = vp
+            user32.GetDC.argtypes = [vp]
+            user32.ReleaseDC.argtypes = [vp, vp]
+            gdi32.CreateCompatibleDC.restype = vp
+            gdi32.CreateCompatibleDC.argtypes = [vp]
+            gdi32.CreateCompatibleBitmap.restype = vp
+            gdi32.CreateCompatibleBitmap.argtypes = [vp, ctypes.c_int, ctypes.c_int]
+            gdi32.SelectObject.restype = vp
+            gdi32.SelectObject.argtypes = [vp, vp]
+            gdi32.BitBlt.argtypes = [
+                vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                vp, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
+            ]
+            gdi32.GetDIBits.argtypes = [vp, vp, ctypes.c_uint, ctypes.c_uint, vp, vp, ctypes.c_uint]
+            gdi32.DeleteObject.argtypes = [vp]
+            gdi32.DeleteDC.argtypes = [vp]
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", ctypes.c_uint32),
+                    ("biWidth", ctypes.c_int32),
+                    ("biHeight", ctypes.c_int32),
+                    ("biPlanes", ctypes.c_uint16),
+                    ("biBitCount", ctypes.c_uint16),
+                    ("biCompression", ctypes.c_uint32),
+                    ("biSizeImage", ctypes.c_uint32),
+                    ("biXPelsPerMeter", ctypes.c_int32),
+                    ("biYPelsPerMeter", ctypes.c_int32),
+                    ("biClrUsed", ctypes.c_uint32),
+                    ("biClrImportant", ctypes.c_uint32),
+                ]
+
+            sdc = user32.GetDC(None)
+            if not sdc:
+                return None
+            mdc = gdi32.CreateCompatibleDC(sdc)
+            bmp = gdi32.CreateCompatibleBitmap(sdc, win_w, win_h)
+            old = gdi32.SelectObject(mdc, bmp)
+            try:
+                ok = gdi32.BitBlt(mdc, 0, 0, win_w, win_h, sdc, win_x, win_y, 0x00CC0020)
+                if not ok:
+                    return None
+                bih = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), win_w, -win_h, 1, 32, 0, 0, 0, 0, 0, 0)
+                buf = ctypes.create_string_buffer(win_w * win_h * 4)
+                lines = gdi32.GetDIBits(mdc, bmp, 0, win_h, buf, ctypes.byref(bih), 0)
+                if lines <= 0:
+                    return None
+            finally:
+                gdi32.SelectObject(mdc, old)
+                gdi32.DeleteObject(bmp)
+                gdi32.DeleteDC(mdc)
+                user32.ReleaseDC(None, sdc)
+
+            raw = buf.raw
+            rgb = bytearray(win_w * win_h * 3)
+            rgb[0::3] = raw[2::4]
+            rgb[1::3] = raw[1::4]
+            rgb[2::3] = raw[0::4]
+            header = f"P6\n{win_w} {win_h}\n255\n".encode("ascii")
+            return tk.PhotoImage(master=self, data=header + bytes(rgb), format="PPM")
+        except Exception:
+            return None
+
     def expand_login_button_to_home(self, login_button):
-        """Expand the rounded Continue button to fill the window, then lift a curtain to reveal Home."""
+        """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
         # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
         self.cancel_button_hover(login_button)
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
         hover_t = getattr(login_button, "_hover_step", 0) / 12.0
-        hover_eased = ease_out_elastic(hover_t, damping=4.8, frequency=1.15) if getattr(login_button, "_hover_target", 0) > 0 else 1.0 - (1.0 - hover_t) ** 3
+        hover_eased = (
+            ease_out_elastic(hover_t, damping=4.8, frequency=1.15)
+            if getattr(login_button, "_hover_target", 0) > 0
+            else 1.0 - (1.0 - hover_t) ** 3
+        )
         start_colour = blend_colour(face, hover, hover_eased)
         start_inset = max(0, min(3, round(3.0 - 2.0 * hover_eased)))
         button_bg = login_button.cget("bg")
-        button_font = login_button.cget("font")
 
-        start_x = login_button.winfo_rootx() - self.winfo_rootx() + start_inset
-        start_y = login_button.winfo_rooty() - self.winfo_rooty() + start_inset
-        start_w = max(1, login_button.winfo_width() - start_inset * 2)
-        start_h = max(1, login_button.winfo_height() - start_inset * 2)
-        target_w = max(1, self.winfo_width())
-        target_h = max(1, self.winfo_height())
+        win_x = self.winfo_rootx()
+        win_y = self.winfo_rooty()
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+
+        raw_bx = login_button.winfo_rootx() - win_x
+        raw_by = login_button.winfo_rooty() - win_y
+        raw_bw = max(1, login_button.winfo_width())
+        raw_bh = max(1, login_button.winfo_height())
+
+        start_x = raw_bx + start_inset
+        start_y = raw_by + start_inset
+        start_w = max(1, raw_bw - start_inset * 2)
+        start_h = max(1, raw_bh - start_inset * 2)
 
         if start_w <= 1 or start_h <= 1:
             self.show_home()
             return
 
-        # Overlay Canvas that morphs from the rounded orange pill into a full-window dark backdrop.
-        start_radius = min(10, start_h // 2, start_w // 2)
-        expander = tk.Canvas(self, bg=button_bg, bd=0, highlightthickness=0)
-        text_item = expander.create_text(
-            start_w / 2, start_h / 2, text="Continue  →",
-            fill=TEXT_WHITE, font=button_font,
-        )
+        # Capture the clean login screen BEFORE modifying the button, then clear its text.
+        self.focus_set()
+        login_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
+        login_button.configure(text="")
+        # Use a dark unique chroma key (#010203) instead of bright magenta so any 1px edge never looks bright/white.
+        key_colour = "#010203"
 
-        def draw_rounded_fill(w, h, radius, fill_colour):
-            # Redraw the pill silhouette using two overlapping rectangles and four corner ovals.
-            expander.delete("pill")
-            r = min(radius, w // 2, h // 2)
+        def strip_dwm_border(top_win):
+            """Remove the Windows 11 1px DWM border/rounding on borderless overlay Toplevels."""
+            if sys.platform != "win32":
+                return
+            try:
+                hwnd = ctypes.windll.user32.GetParent(top_win.winfo_id()) or top_win.winfo_id()
+                # DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_DONOTROUND (1)
+                # DWMWA_BORDER_COLOR (34) = DWMWA_COLOR_NONE (0xFFFFFFFE)
+                for attr, raw_val in ((33, 1), (34, 0xFFFFFFFE)):
+                    val = ctypes.c_uint32(raw_val)
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                    )
+            except Exception:
+                pass
+
+        # Two fixed-size full-window Toplevels kept withdrawn until fully painted so Windows
+        # never flashes a default white/grey window frame before the dark canvas appears.
+        backdrop_win = None
+        pill_win = None
+        try:
+            backdrop_win = tk.Toplevel(self)
+            backdrop_win.withdraw()
+            backdrop_win._preserve_during_shell_build = True
+            backdrop_win.overrideredirect(True)
+            backdrop_win.configure(bg=DARK_BG)
+            backdrop_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            backdrop_win.attributes("-transparentcolor", key_colour)
+            backdrop_win.transient(self)
+
+            pill_win = tk.Toplevel(self)
+            pill_win.withdraw()
+            pill_win._preserve_during_shell_build = True
+            pill_win.overrideredirect(True)
+            pill_win.configure(bg=key_colour)
+            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            pill_win.attributes("-transparentcolor", key_colour)
+            pill_win.attributes("-alpha", 1.0)
+            pill_win.transient(self)
+        except tk.TclError:
+            for w in (pill_win, backdrop_win):
+                if w is not None:
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self.show_home()
+            return
+
+        def make_rounded_shapes(canvas, fill_col, tag):
+            return (
+                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            )
+
+        def set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
             if r <= 1:
-                expander.create_rectangle(0, 0, w, h, fill=fill_colour, outline="", tags="pill")
+                canvas.coords(items[0], x0, y0, x1, y1)
+                for extra in items[1:]:
+                    canvas.coords(extra, 0, 0, 0, 0)
             else:
                 d = r * 2
-                expander.create_rectangle(r, 0, w - r, h, fill=fill_colour, outline="", tags="pill")
-                expander.create_rectangle(0, r, w, h - r, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(0, 0, d, d, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(w - d, 0, w, d, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(0, h - d, d, h, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(w - d, h - d, w, h, fill=fill_colour, outline="", tags="pill")
-            expander.tag_raise(text_item)
+                # Keep corner ovals strictly inside [x0, x1-1] x [y0, y1-1] so Tk's inclusive oval
+                # bounds align pixel-for-pixel with the rectangles and leave zero 1px seams.
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
+                canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
+                canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
+                canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
+                canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
+                canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                canvas.itemconfigure(tag, fill=fill_col)
 
-        def reveal_home():
-            # Phase 2: build the Home page underneath, then slide a dark curtain upward to uncover it.
-            if not self.winfo_exists():
+        backdrop_canvas = tk.Canvas(backdrop_win, bg=DARK_BG, bd=0, highlightthickness=0)
+        backdrop_canvas.pack(fill="both", expand=True)
+        if login_snap is not None:
+            backdrop_canvas._snap_ref = login_snap
+            backdrop_canvas.create_image(0, 0, image=login_snap, anchor="nw")
+            # Cover the static button and any border margin on the snapshot with card background.
+            backdrop_canvas.create_rectangle(
+                raw_bx - 4, raw_by - 4, raw_bx + raw_bw + 4, raw_by + raw_bh + 4,
+                fill=button_bg, outline="",
+            )
+        cutout_items = make_rounded_shapes(backdrop_canvas, key_colour, "cutout")
+        backdrop_canvas.itemconfigure("cutout", state="hidden")
+        cutout_visible = [False]
+
+        pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
+        pill_canvas.pack(fill="both", expand=True)
+        pill_items = make_rounded_shapes(pill_canvas, start_colour, "pill")
+
+        start_r = min(10, start_h // 2, start_w // 2)
+        set_rounded_shapes(
+            pill_canvas, pill_items, "pill",
+            start_x, start_y, start_x + start_w, start_y + start_h, start_r,
+        )
+
+        # Layout both canvases while still withdrawn, strip Windows 11 DWM border, then reveal.
+        backdrop_win.update_idletasks()
+        pill_win.update_idletasks()
+        strip_dwm_border(backdrop_win)
+        strip_dwm_border(pill_win)
+        backdrop_win.deiconify()
+        pill_win.deiconify()
+        backdrop_win.lift()
+        pill_win.lift()
+        try:
+            self.update()
+        except tk.TclError:
+            pass
+
+        # Build Home once underneath the fully opaque login backdrop (batch card rendering paused).
+        self._transition_active = True
+        self.show_home()
+        if not self.winfo_exists():
+            self._transition_active = False
+            for w in (pill_win, backdrop_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+        self.update_idletasks()
+        backdrop_win.lift()
+        pill_win.lift()
+
+        # Pre-compute the compressed "coiled spring" rectangle around the button's centre for the
+        # elastic anticipation wind-up before launching into the full window.
+        coil_w = max(24, round(start_w * 0.80))
+        coil_h = max(18, round(start_h * 0.78))
+        coil_x = start_x + (start_w - coil_w) // 2
+        coil_y = start_y + (start_h - coil_h) // 2
+        charged_colour = blend_colour(start_colour, ORANGE_HL, 0.85)
+
+        total_duration = 0.720  # ~0.19s elastic wind-up coil + ~0.53s rounded launch and Home fade-in.
+        max_step = 1.0 / 24.0  # Cap per-frame progress so slow frames never cause visible jumps.
+        windup_end = 0.26  # First 26%: button visibly compresses & brightens, getting ready to launch.
+        fade_start = 0.34  # Begin fading Home in right as the rounded button rockets outward.
+        state = {"progress": 0.0, "last_t": None}
+        last_rect = [None]
+        last_bg = [start_colour]
+
+        def finish():
+            for w in (pill_win, backdrop_win):
+                if w is not None and w.winfo_exists():
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._finish_transition()
+
+        def draw_frame():
+            if not pill_win.winfo_exists() or not backdrop_win.winfo_exists() or not self.winfo_exists():
+                finish()
                 return
-            win_w = max(1, self.winfo_width())
-            win_h = max(1, self.winfo_height())
-            self.show_home()
-            if not self.winfo_exists():
-                return
 
-            curtain = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
-            accent = tk.Frame(curtain, bg=ORANGE_ACCENT, height=3)
-            accent.pack(side="bottom", fill="x")
-            curtain.place(x=0, y=0, width=win_w, height=win_h)
-            curtain.lift()
+            now = monotonic()
+            if state["last_t"] is None:
+                delta = max_step * 0.5
+            else:
+                delta = min(max_step, (now - state["last_t"]) / total_duration)
+            state["last_t"] = now
+            state["progress"] = min(1.0, state["progress"] + delta)
+            progress = state["progress"]
 
-            reveal_duration = 0.420
-            reveal_started = None
-
-            def draw_reveal():
-                nonlocal reveal_started
-                if not curtain.winfo_exists() or not self.winfo_exists():
-                    return
-                if reveal_started is None:
-                    reveal_started = monotonic()
-                # Smooth quartic ease-out lifts the curtain seamlessly while fading its orange edge.
-                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 4
-                cur_y = round(-win_h * eased)
-                if progress > 0.70:
-                    fade = (progress - 0.70) / 0.30
-                    accent.configure(bg=blend_colour(ORANGE_ACCENT, DARK_BG, fade))
-                curtain.place(x=0, y=cur_y, width=win_w, height=win_h)
-                curtain.lift()
-                if progress < 1.0:
-                    self.after(8, draw_reveal)
+            if progress < windup_end:
+                # Phase 1: Elastic anticipation — rounded button compresses inward and brightens.
+                u = progress / windup_end
+                coil_t = 1.0 - (1.0 - u) ** 2
+                cur_x = round(start_x + (coil_x - start_x) * coil_t)
+                cur_y = round(start_y + (coil_y - start_y) * coil_t)
+                cur_w = max(1, round(start_w + (coil_w - start_w) * coil_t))
+                cur_h = max(1, round(start_h + (coil_h - start_h) * coil_t))
+                cur_r = start_r
+                cur_bg = blend_colour(start_colour, charged_colour, coil_t)
+            else:
+                # Phase 2: Rounded elastic launch — expands smoothly while keeping rounded corners
+                # until the final 12% where corners gently settle flush with the window edges.
+                t = (progress - windup_end) / (1.0 - windup_end)
+                launch_eased = 1.0 - (1.0 - t) ** 3
+                cur_x = round(coil_x * (1.0 - launch_eased))
+                cur_y = round(coil_y * (1.0 - launch_eased))
+                cur_w = max(1, min(win_w, round(coil_w + (win_w - coil_w) * launch_eased)))
+                cur_h = max(1, min(win_h, round(coil_h + (win_h - coil_h) * launch_eased)))
+                if t < 0.88:
+                    cur_r = round(start_r + 8 * min(1.0, t / 0.30))
                 else:
-                    curtain.destroy()
+                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.12))
 
-            self.after(8, draw_reveal)
+                if t <= 0.65:
+                    cp = min(1.0, t / 0.60)
+                    cur_bg = blend_colour(charged_colour, DARK_BG, cp * cp * (3.0 - 2.0 * cp))
+                else:
+                    cur_bg = last_bg[0]
 
-        expand_duration = 0.520
-        expand_started = monotonic()
+                if not cutout_visible[0]:
+                    backdrop_canvas.itemconfigure("cutout", state="normal")
+                    cutout_visible[0] = True
 
-        def draw_expand():
-            # Phase 1: fluid elastic ease-in-out gives a gentle pull before blooming to fill the window.
-            if not expander.winfo_exists() or not self.winfo_exists():
-                return
-            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = ease_in_out_back(progress, overshoot=0.65)
+            x0, y0, x1, y1 = cur_x, cur_y, cur_x + cur_w, cur_y + cur_h
+            rect_key = (x0, y0, x1, y1, cur_r)
+            fill_update = cur_bg if cur_bg != last_bg[0] else None
+            if rect_key != last_rect[0] or fill_update is not None:
+                set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, cur_r, fill_update)
+                if cutout_visible[0] and rect_key != last_rect[0]:
+                    set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
+                last_rect[0] = rect_key
+                if fill_update is not None:
+                    last_bg[0] = fill_update
 
-            cur_x = max(0, round(start_x * (1.0 - eased)))
-            cur_y = max(0, round(start_y * (1.0 - eased)))
-            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
-            cur_h = max(1, min(target_h, round(start_h + (target_h - start_h) * eased)))
-            cur_r = round(start_radius * max(0.0, 1.0 - progress / 0.35))
-
-            if progress < 0.45:
-                cur_bg = blend_colour(start_colour, ORANGE_ACCENT, progress / 0.45)
-            else:
-                t = (progress - 0.45) / 0.55
-                smooth_t = t * t * (3.0 - 2.0 * t)
-                cur_bg = blend_colour(ORANGE_ACCENT, DARK_BG, smooth_t)
-
-            if cur_r <= 1:
-                expander.configure(bg=cur_bg)
-            draw_rounded_fill(cur_w, cur_h, cur_r, cur_bg)
-
-            # Fade out the "Continue ->" label during the first 42% of the expansion.
-            if progress < 0.42:
-                text_fade = progress / 0.42
-                expander.coords(text_item, cur_w / 2, cur_h / 2)
-                expander.itemconfigure(
-                    text_item,
-                    state="normal",
-                    fill=blend_colour(TEXT_WHITE, cur_bg, text_fade),
-                )
-            else:
-                expander.itemconfigure(text_item, state="hidden")
-
-            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            # Canvas.lift() aliases tag_raise(); call tk.Misc.lift() to raise the widget above siblings.
-            tk.Misc.lift(expander)
+            if progress >= fade_start:
+                fade_p = min(1.0, (progress - fade_start) / (1.0 - fade_start))
+                fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
+                try:
+                    pill_win.attributes("-alpha", max(0.0, 1.0 - fade_eased))
+                except tk.TclError:
+                    finish()
+                    return
 
             if progress < 1.0:
-                self.after(8, draw_expand)
+                self.after(14, draw_frame)
             else:
-                # Pause briefly at full-screen dark fill before lifting the Home curtain.
-                self.after(120, reveal_home)
+                finish()
 
-        draw_expand()
+        # Start after queued idle layout/scaling callbacks finish so the animation runs uninterrupted.
+        self.after(16, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
