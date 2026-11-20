@@ -1,11 +1,126 @@
-"""Shared paths, colour palette, genre metadata, and base rounded-panel widget."""
+"""Shared paths, colour palette, genre metadata, bundled font loader, and base rounded-panel widget."""
+import ctypes
 from pathlib import Path
+import struct
+import sys
 import tkinter as tk
 
 # Workspace paths (parent of gui_parts/ is the project root).
 ROOT_PATH = Path(__file__).resolve().parent.parent
 DATABASE_PATH = ROOT_PATH / "database.db"
 CANVA_DIR = ROOT_PATH / "canva design"
+
+
+def _read_font_family_name(font_path):
+    """Read the Windows GDI Font Family name (Name ID 1 / 16) from a TTF/OTF binary."""
+    try:
+        data = font_path.read_bytes()
+        if len(data) < 12:
+            return None
+        num_tables = struct.unpack(">H", data[4:6])[0]
+        name_offset = None
+        for idx in range(num_tables):
+            entry = 12 + idx * 16
+            if entry + 16 > len(data):
+                break
+            if data[entry:entry + 4] == b"name":
+                name_offset = struct.unpack(">I", data[entry + 8:entry + 12])[0]
+                break
+        if name_offset is None or name_offset + 6 > len(data):
+            return None
+        _fmt, count, string_offset = struct.unpack(">HHH", data[name_offset:name_offset + 6])
+        storage = name_offset + string_offset
+        name_id_1 = None
+        name_id_16 = None
+        for idx in range(count):
+            rec = name_offset + 6 + idx * 12
+            if rec + 12 > len(data):
+                break
+            platform_id, _enc_id, _lang_id, name_id, length, offset = struct.unpack(">HHHHHH", data[rec:rec + 12])
+            if name_id not in (1, 16):
+                continue
+            raw = data[storage + offset:storage + offset + length]
+            if platform_id == 3:
+                text = raw.decode("utf-16-be", errors="ignore").strip()
+            elif platform_id == 1:
+                text = raw.decode("latin-1", errors="ignore").strip()
+            else:
+                continue
+            if not text:
+                continue
+            if name_id == 1 and name_id_1 is None:
+                name_id_1 = text
+            elif name_id == 16 and name_id_16 is None:
+                name_id_16 = text
+        # Windows GDI registers fonts by Name ID 1 (Font Family), falling back to Name ID 16.
+        return name_id_1 or name_id_16
+    except OSError:
+        return None
+
+
+def load_bundled_reith_font():
+    """Find and privately register bundled BBC Reith Sans font files before Tk initializes."""
+    base_dirs = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            base_dirs.append(Path(meipass))
+        base_dirs.append(Path(sys.executable).resolve().parent)
+    else:
+        base_dirs.append(ROOT_PATH)
+
+    font_exts = {".ttf", ".otf", ".ttc"}
+    candidates = []
+    seen = set()
+    for base in base_dirs:
+        if not base.is_dir():
+            continue
+        try:
+            for item in base.rglob("*"):
+                if item.is_file() and item.suffix.lower() in font_exts:
+                    lower_name = item.stem.lower()
+                    if "reith" in lower_name:
+                        resolved = item.resolve()
+                        if resolved not in seen:
+                            seen.add(resolved)
+                            candidates.append(resolved)
+        except OSError:
+            continue
+
+    if not candidates:
+        return "Segoe UI"
+
+    # Sort so BBC Reith Sans Regular weights come first for family-name detection.
+    def font_priority(path):
+        name = path.stem.lower()
+        is_sans = "sans" in name
+        is_regular = any(tok in name for tok in ("regular", "_rg", "-rg", "reg")) and "italic" not in name and "it" not in name
+        is_bold = any(tok in name for tok in ("bold", "_bd", "-bd"))
+        return (0 if is_sans else 1, 0 if is_regular else (1 if is_bold else 2), len(name), name)
+
+    candidates.sort(key=font_priority)
+
+    # Register every matching BBC Reith font file privately for this Windows process.
+    registered_any = False
+    if sys.platform == "win32":
+        try:
+            gdi32 = ctypes.windll.gdi32
+            gdi32.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
+            gdi32.AddFontResourceExW.restype = ctypes.c_int
+            FR_PRIVATE = 0x10
+            for font_file in candidates:
+                if gdi32.AddFontResourceExW(str(font_file), FR_PRIVATE, 0) > 0:
+                    registered_any = True
+        except Exception:
+            pass
+
+    for font_file in candidates:
+        family = _read_font_family_name(font_file)
+        if family:
+            return family
+
+    return "BBC Reith Sans" if registered_any else "Segoe UI"
+
 
 # Shared dark-theme palette and typography constants used across every screen.
 DARK_BG = "#101113"          # Primary application background.
@@ -19,7 +134,7 @@ TEXT_WHITE = "#f7f7f7"       # High-contrast primary body and heading text.
 TEXT_GRAY = "#a8abb1"        # Muted secondary captions and metadata text.
 TEXT_LIGHT = "#d6d8dc"       # Medium-contrast text for secondary buttons.
 GOLD_STAR = "#ffd166"        # Warm gold colour for filled rating stars.
-DEFAULT_FONT = "Segoe UI"    # Standard Windows UI font family.
+DEFAULT_FONT = load_bundled_reith_font()  # Bundled BBC Reith Sans (falls back to Segoe UI).
 PODCASTS_PER_PAGE = 12       # Number of podcast cards rendered per paginated page.
 
 # Supported podcast genres, duration buckets (in minutes), and visual tile metadata.

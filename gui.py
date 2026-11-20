@@ -4,6 +4,7 @@ from collections import OrderedDict
 import ctypes
 import sys
 import tkinter as tk
+from tkinter import font as tkfont
 
 # Feature mixins split across gui_parts/ to keep the application modular.
 from gui_parts.db_queries import DatabaseMixin
@@ -11,7 +12,7 @@ from gui_parts.detail_view import DetailViewMixin
 from gui_parts.effects import EffectsMixin
 from gui_parts.login_view import LoginViewMixin
 from gui_parts.pages import PagesMixin
-from gui_parts.theme import DARK_BG
+from gui_parts.theme import DARK_BG, DEFAULT_FONT
 from gui_parts.widgets import WidgetsMixin
 
 
@@ -34,6 +35,12 @@ class BBCSoundsGUI(
             except Exception:
                 pass
         super().__init__()
+        # Apply the bundled BBC Reith Sans font to Tkinter's built-in named fonts as well.
+        for named_font in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
+            try:
+                tkfont.nametofont(named_font).configure(family=DEFAULT_FONT)
+            except tk.TclError:
+                pass
         self.title("BBC Sounds | Discover something new")
         self.geometry("1320x850")
         self.minsize(1024, 700)
