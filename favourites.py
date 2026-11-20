@@ -1,6 +1,8 @@
+# CLI module for viewing, adding, and removing favourite genres and favourite podcasts.
 import sqlite3
 import time
 
+# Deferred imports avoid circular dependencies with main.py.
 def clear():
     import main as app
     app.clear()
@@ -14,6 +16,7 @@ def view_podcast_details(podcast_title, username):
     app.view_podcast_details(podcast_title, username)
 
 def get_favorite_genre_count(username):
+    """Return how many favourite genres the listener currently has saved."""
     user_id = int(username) if str(username).isdigit() else username
     
     conn = sqlite3.connect("database.db")
@@ -34,14 +37,16 @@ def get_favorite_genre_count(username):
 
     return genre_count
 
-# All the actual functions
+# Core favourites management functions
 
 def view_favourite_genres(username):
+    """List podcasts matching the listener's favourite genres and let them manage genres."""
     clear()
     print("***FAVOURITE GENRES & MATCHING PODCASTS***\n")
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Load the listener's comma-separated FavoriteGenres string.
     cursor.execute(
         "SELECT FavoriteGenres FROM listeners WHERE ListenerID = ?",
         (username,)
@@ -51,6 +56,7 @@ def view_favourite_genres(username):
     if res and res[0]:
         print(f"Your favourite genres: {res[0].replace(',', ', ')}\n")
 
+        # Match podcasts whose Category appears in the listener's FavoriteGenres CSV.
         cursor.execute(
             """
                 SELECT podcasts.Title, podcasts.Category
@@ -67,6 +73,7 @@ def view_favourite_genres(username):
 
         if results:
             while True:
+                # Re-query on each loop iteration so additions/removals reflect immediately.
                 conn = sqlite3.connect("database.db")
                 cursor = conn.cursor()
 
@@ -108,6 +115,7 @@ def view_favourite_genres(username):
                     choice = input("Enter your choice: ")
                 
                 if choice == '1':
+                    # Open details for one of the matching podcasts.
                     podcast_title = input("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu: ").strip()
                     podcast_title = podcast_title.capitalize()
                     if podcast_title == "":
@@ -121,6 +129,7 @@ def view_favourite_genres(username):
                         break
                 
                 elif choice == '2':
+                    # Prompt for a favourite genre to remove permanently.
                     result = res  
                     
                     if not result or not result[0]:
@@ -143,6 +152,7 @@ def view_favourite_genres(username):
                         break
                 
                 elif choice == '3':
+                    # Allow adding genres until the user stops or reaches the 5-genre limit.
                     conn.close() 
                     while get_favorite_genre_count(username) < 5:
                         
@@ -220,6 +230,7 @@ def view_favourite_genres(username):
     main(username)
 
 def delete_favourite_genre(genre_name, username):
+    """Remove a single genre (case-insensitive) from the listener's FavoriteGenres CSV."""
     user_id = int(username) if str(username).isdigit() else username
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -256,6 +267,7 @@ def delete_favourite_genre(genre_name, username):
     conn.close()
 
 def add_favourite_genre(genre_name, username):
+    """Append a genre to the listener's FavoriteGenres CSV if it is not already saved."""
     clear()
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -284,12 +296,14 @@ def add_favourite_genre(genre_name, username):
     conn.close()
     
 def view_favourite_programmes(username):
+    """Display the listener's saved favourite podcasts and allow viewing or removing them."""
     while True:
         clear()
         print("***FAVOURITE PODCASTS***\n")
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
 
+        # Join podcasts whose PodcastID appears in the listener's FavoritePodcasts CSV.
         cursor.execute(
             """SELECT podcasts.Title FROM podcasts JOIN listeners ON (
                 ',' || listeners.FavoritePodcasts || ',' LIKE '%,' || podcasts.PodcastID || ',%'
@@ -345,6 +359,7 @@ def view_favourite_programmes(username):
             time.sleep(1)
 
 def delete_favourite_programme(podcast_title, username):
+    """Remove a podcast ID (resolved from its title) from the listener's FavoritePodcasts CSV."""
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -365,6 +380,7 @@ def delete_favourite_programme(podcast_title, username):
         result = cursor.fetchone()
         current_favourites = result[0] if result else ""
 
+        # Rebuild the CSV excluding the removed podcast ID.
         updated_favourites = ','.join(
             [pid for pid in current_favourites.split(',') if pid != str(podcast_id)]
         )
@@ -383,6 +399,7 @@ def delete_favourite_programme(podcast_title, username):
     conn.close()
 
 def add_to_favourites(podcast_id, username):
+    """Append a podcast ID to the listener's FavoritePodcasts CSV if not already saved."""
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -394,6 +411,7 @@ def add_to_favourites(podcast_id, username):
     result = cursor.fetchone()
     current_favourites = result[0] if result else ""
 
+    # Only append the podcast ID if it is not already present in the comma-separated list.
     if str(podcast_id) not in current_favourites.split(','):
         updated_favourites = current_favourites + ("," if current_favourites else "") + str(podcast_id)
         cursor.execute(

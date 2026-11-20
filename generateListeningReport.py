@@ -1,6 +1,8 @@
+# CLI module for generating a summary listening report using SQLite and pandas.
 import sqlite3
 import pandas as pd
 
+# Deferred imports avoid circular import issues with main.py.
 def clear():
     import main as app
     app.clear()
@@ -10,6 +12,8 @@ def main(username):
     app.main(username)
 
 def generate_report(username):
+    """Query the user's listening history into a DataFrame and print summary statistics."""
+    # Convert numeric listener IDs to int to match the database column type.
     user_id = int(username) if str(username).isdigit() else username
     
     clear()
@@ -17,6 +21,7 @@ def generate_report(username):
     
     conn = sqlite3.connect("database.db")
 
+    # Fetch all podcasts this listener has interacted with, ordered by play count descending.
     query = """
         SELECT podcasts.Title, listening_history.TimesListened, listening_history.RatingGiven 
         FROM podcasts 
@@ -29,14 +34,16 @@ def generate_report(username):
     conn.close()
 
     if not df.empty:
+        # Display overall counts and most/least listened programmes.
         print(f"You listened to {len(df)} different podcasts.")
         print(f"\nThe most listened podcast is '{df.iloc[0]['Title']}' with {df.iloc[0]['TimesListened']} listens.")
         print(f"\nThe least listened podcast is '{df.iloc[-1]['Title']}' with {df.iloc[-1]['TimesListened']} listens.")
 
-        # Filter out rows where ratings are missing (None/NaN) using pandas dropna
+        # Filter out rows where ratings are missing (None/NaN) using pandas dropna.
         df_rated = df.dropna(subset=['RatingGiven'])
         
         if not df_rated.empty:
+            # Compute highest, lowest, and mean rating across only the rated podcasts.
             print(f"\nYour highest rating given is {df_rated['RatingGiven'].max()} and your lowest rating given is {df_rated['RatingGiven'].min()}.")
             print(f"\nYour average rating for all podcasts is {df_rated['RatingGiven'].mean():.2f}.")
         else:
@@ -44,7 +51,7 @@ def generate_report(username):
 
         print("\nYour podcasts sorted by times listened (from most to least):")
 
-        # Iterate through the DataFrame rows cleanly
+        # Iterate through the DataFrame rows cleanly to print per-programme details.
         for _, row in df.iterrows():
             print(f"\n- {row['Title']}")
             print(f"    Times listened: {row['TimesListened']}")

@@ -1,9 +1,11 @@
+# CLI module for viewing and managing a listener's podcast play history.
 import sqlite3
 import time
 
 from last_listened import order_listening_history
 
 
+# Deferred imports avoid circular dependencies with main.py.
 def clear():
     import main as app
     app.clear()
@@ -15,11 +17,13 @@ def main(username):
 
 
 def view_listening_history(username, view_podcast_details):
+    """Display the listener's history newest-first and handle history management actions."""
     clear()
     print("***LISTENING HISTORY***\n")
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Load all podcasts in the listener's history along with play counts.
     cursor.execute(
         "SELECT podcasts.Title, listening_history.TimesListened, podcasts.PodcastID "
         "FROM podcasts JOIN listening_history ON podcasts.PodcastID = listening_history.PodcastID "
@@ -27,6 +31,7 @@ def view_listening_history(username, view_podcast_details):
         (username,),
     )
 
+    # Sort rows so the most recently played podcasts appear at the top.
     results = order_listening_history(conn, username, cursor.fetchall(), 2, 1)
 
     if results:
@@ -45,6 +50,7 @@ def view_listening_history(username, view_podcast_details):
         choice = input("\nEnter your choice: ").strip()
 
         if choice == "1":
+            # Open the detail view for a podcast present in the user's history.
             podcast_title = input(
                 "Enter the title of the podcast you want to view details for (The name must match exactly): "
             ).strip()
@@ -55,6 +61,7 @@ def view_listening_history(username, view_podcast_details):
             else:
                 view_podcast_details(podcast_title)
         elif choice == "2":
+            # Remove a single podcast entry from the user's history.
             podcast_title = input("Enter the title of the podcast you want to remove from your listening history (The name must match exactly): ").strip()
             podcast_title = podcast_title.capitalize()
             if podcast_title not in [result[0] for result in results]:
@@ -64,6 +71,7 @@ def view_listening_history(username, view_podcast_details):
             else:
                 remove_from_listening_history(podcast_title, username)
         elif choice == "3":
+            # Clear all listening history rows for this listener.
             delete_listening_history(username)
         elif choice == "4":
             main(username)
@@ -77,9 +85,11 @@ def view_listening_history(username, view_podcast_details):
     conn.close()
 
 def remove_from_listening_history(podcast_title, username):
+    """Delete a single podcast from the listener's listening_history table."""
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Resolve the podcast title to its PodcastID before deleting.
     cursor.execute(
         "SELECT PodcastID FROM podcasts WHERE Title = ?",
         (podcast_title,),
@@ -101,9 +111,11 @@ def remove_from_listening_history(podcast_title, username):
     conn.close()
 
 def delete_listening_history(username):
+    """Remove all listening_history rows belonging to the given listener."""
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Delete all listening_history entries associated with this listener ID.
     cursor.execute(
         "DELETE FROM listening_history WHERE ListenerID = ?",
         (username,),

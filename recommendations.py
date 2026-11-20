@@ -1,7 +1,9 @@
+# CLI module for displaying personalised podcast recommendations based on survey preferences.
 import sqlite3
 import time
 
 
+# Deferred imports avoid circular dependencies with main.py.
 def clear():
     import main as app
     app.clear()
@@ -18,11 +20,13 @@ def view_podcast_details(podcast_title, username):
 
 
 def view_recommendations(username):
+    """Fetch and display podcasts matching the user's favourite genres and preferred length."""
     clear()
     print("***YOUR RECOMMENDATIONS***\n")
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Load the user's saved genre and episode-length preferences from the listeners table.
     cursor.execute(
         "SELECT FavoriteGenres, LengthPreference FROM listeners WHERE ListenerID = ?",
         (username,)
@@ -33,6 +37,7 @@ def view_recommendations(username):
     if result and result[0] and result[1]:
         favorite_genres, length_preference = result
 
+        # Parse comma-separated genres and map the length preference to a minute range.
         genres = [genre.strip() for genre in favorite_genres.split(",") if genre.strip()]
         length_ranges = {
             "Long": (45, 60),
@@ -41,6 +46,7 @@ def view_recommendations(username):
         }
         min_length, max_length = length_ranges.get(length_preference, (0, 120))
 
+        # Query podcasts matching any preferred genre within the target duration range.
         placeholders = ",".join("?" for _ in genres)
         query = (
             f"SELECT Title, Category, AverageLengthMins FROM podcasts "
@@ -71,10 +77,12 @@ def view_recommendations(username):
                 choice = input("\nEnter your choice: ").strip()
 
                 if choice == "1":
+                    # Validate that the selected title exists in the recommended list before opening details.
                     podcast_title = input("\nEnter the title of the podcast you want to choose (The name must match exactly): ").strip()
                     podcast_title = podcast_title.capitalize()
                     if podcast_title == "":
                         continue
+                    # Match the typed title case-insensitively against the recommended list.
                     matched_podcast = next(
                         (rec[0] for rec in recommendations if rec[0].lower() == podcast_title.lower()),
                         None

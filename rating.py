@@ -1,6 +1,8 @@
+# CLI module for viewing, adding, updating, and removing podcast ratings.
 import sqlite3
 import time
 
+# Deferred imports avoid circular dependencies with main.py.
 def clear():
     import main as app
     app.clear()
@@ -10,12 +12,14 @@ def main(username):
     app.main(username)
 
 def view_ratings(username):
+    """Display all podcasts rated by the listener and allow updating or removing ratings."""
     while True:
         clear()
         print("***YOUR RATINGS***\n")
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
 
+        # Fetch all podcasts for which this listener has recorded a non-null rating.
         cursor.execute(
             """
             SELECT podcasts.Title, listening_history.RatingGiven
@@ -41,6 +45,7 @@ def view_ratings(username):
     3. Return to main menu''')
             choice = input("\nEnter your choice: ").strip()
             if choice == "1":
+                # Look up the chosen podcast's ID and open the rating update prompt.
                 podcast_title = input("Enter the title of the podcast you want to update the rating for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
                     print("\nThe podcast is not in your rated podcasts.")
@@ -57,6 +62,7 @@ def view_ratings(username):
                     conn.close()
                     add_rating(podcast_id, True, username)
             elif choice == "2":
+                # Look up the chosen podcast's ID and clear its RatingGiven value.
                 podcast_title = input("Enter the title of the podcast you want to remove the rating for (The name must match exactly): ").strip()
                 if podcast_title not in [result[0] for result in results]:
                     print("\nThe podcast is not in your rated podcasts.")
@@ -84,8 +90,10 @@ def view_ratings(username):
             return
 
 def add_rating(podcast_id, check_for_update, username):
+    """Prompt for a 1-5 rating and insert or update it in listening_history."""
     clear()
     if check_for_update == True:
+        # Show the user's previous score before asking for a replacement rating.
         print("***UPDATE RATING***\n")
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
@@ -97,6 +105,7 @@ def add_rating(podcast_id, check_for_update, username):
         result = cursor.fetchone()
         print("Your previous rating was:\n", result[0])
     else:
+        # Require at least one listen before allowing a first-time rating.
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
         
@@ -111,6 +120,7 @@ def add_rating(podcast_id, check_for_update, username):
             print("You have not listened to this podcast yet. Please listen to it first.")
             time.sleep(1)
             return
+    # Validate that the entered rating is an integer between 1 and 5.
     rating = input("Enter your rating for this podcast (1-5): ").strip()
 
     while not rating.isdigit() or int(rating) < 1 or int(rating) > 5:
@@ -120,6 +130,7 @@ def add_rating(podcast_id, check_for_update, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Update the existing listening_history row, or insert a new one if absent.
     result = cursor.execute(
         "SELECT EXISTS (SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?)",
         (username, podcast_id)
@@ -143,9 +154,11 @@ def add_rating(podcast_id, check_for_update, username):
     time.sleep(1)
 
 def remove_rating(podcast_id, username):
+    """Clear the listener's rating for a podcast by setting RatingGiven to NULL."""
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Set RatingGiven to NULL instead of deleting the row so the user's play history stays intact.
     cursor.execute(
         "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
         (username, podcast_id)
