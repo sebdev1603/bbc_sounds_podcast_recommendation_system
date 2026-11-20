@@ -149,8 +149,12 @@ class LoginViewMixin:
                         pass
                     setattr(disc_canvas, attr, None)
 
+        self._login_disc_canvas = disc_canvas
+
         def queue_record_paint(event):
             # Debounce resize redraws so dragging the window edge does not rebuild the canvas every pixel.
+            if getattr(self, "_signing_out", False):
+                return
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
@@ -163,7 +167,8 @@ class LoginViewMixin:
 
         disc_canvas.bind("<Configure>", queue_record_paint)
         disc_canvas.bind("<Destroy>", cancel_record_jobs)
-        self.after_idle(lambda: self.apply_interface_scaling(force=True))
+        if not getattr(self, "_signing_out", False):
+            self.after_idle(lambda: self.apply_interface_scaling(force=True))
 
     def _capture_window_snapshot(self, win_x, win_y, win_w, win_h):
         """Capture the current login window client area as a Tk PhotoImage via Windows BitBlt."""
@@ -588,10 +593,10 @@ class LoginViewMixin:
             for _ in range(4)
         )
 
-        # Pre-compute smooth quarter-circle steps (10 segments per corner) for seamless rounded clipping.
+        # Pre-compute smooth quarter-circle steps (5 segments per corner) for fast, seamless rounded clipping.
         arc_steps = tuple(
             (math.cos(math.radians(a)), math.sin(math.radians(a)))
-            for a in (0, 10, 20, 30, 40, 50, 60, 70, 80, 90)
+            for a in (0, 18, 36, 54, 72, 90)
         )
 
         def update_page_clip(x0, y0, x1, y1, radius):
@@ -679,21 +684,34 @@ class LoginViewMixin:
             pass
 
         # Build the login screen underneath while covered by page_win, and measure the Continue button.
+        self._transition_active = True
         self.show_login()
         if not self.winfo_exists():
             self._signing_out = False
+            self._transition_active = False
             for w in (pill_win, page_win):
                 if w.winfo_exists():
                     w.destroy()
             return
         self.apply_interface_scaling(force=True)
         self.update_idletasks()
+        # Paint the login vinyl graphic statically right now while still hidden behind page_win
+        # (its spin loop stays paused until finish() so it never steals FPS during the transition).
+        disc_canvas = getattr(self, "_login_disc_canvas", None)
+        if disc_canvas is not None and disc_canvas.winfo_exists():
+            class _StaticPaintEvent:
+                widget = disc_canvas
+                width = disc_canvas.winfo_width()
+                height = disc_canvas.winfo_height()
+            self.paint_vinyl_record(_StaticPaintEvent())
+            self.update_idletasks()
         page_win.lift()
         pill_win.lift()
 
         target_btn = getattr(self, "_login_button", None)
         if target_btn is None or not target_btn.winfo_exists():
             self._signing_out = False
+            self._finish_transition()
             for w in (pill_win, page_win):
                 if w.winfo_exists():
                     w.destroy()
@@ -728,12 +746,13 @@ class LoginViewMixin:
         squash_y = end_y + (end_h - squash_h) // 2
         impact_colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.85)
 
-        total_duration = 0.800  # ~0.46s snappy shrink into button + ~0.34s lively elastic spring bounce.
-        max_step = 1.0 / 28.0
+        total_duration = 0.680  # ~0.39s snappy shrink into button + ~0.29s lively elastic spring bounce.
+        max_step = 1.0 / 20.0
         shrink_end = 0.58
         state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_bg = [DARK_BG]
+        last_alpha = [0.0]
         page_hidden = [False]
         btn_revealed = [False]
 
@@ -745,6 +764,12 @@ class LoginViewMixin:
                     except tk.TclError:
                         pass
             self._signing_out = False
+            self._finish_transition()
+            disc = getattr(self, "_login_disc_canvas", None)
+            if disc is not None and disc.winfo_exists():
+                resume = getattr(disc, "_resume_spin", None)
+                if resume is not None:
+                    resume()
 
         def draw_frame():
             if not pill_win.winfo_exists() or not page_win.winfo_exists() or not self.winfo_exists():
@@ -753,7 +778,7 @@ class LoginViewMixin:
 
             now = monotonic()
             if state["last_t"] is None:
-                delta = max_step * 0.5
+                delta = 0.014
             else:
                 delta = min(max_step, (now - state["last_t"]) / total_duration)
             state["last_t"] = now
@@ -821,18 +846,20 @@ class LoginViewMixin:
                 if fill_update is not None:
                     last_bg[0] = fill_update
 
-            try:
-                pill_win.attributes("-alpha", alpha)
-            except tk.TclError:
-                finish()
-                return
+            if abs(alpha - last_alpha[0]) >= 0.008 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
+                try:
+                    pill_win.attributes("-alpha", alpha)
+                    last_alpha[0] = alpha
+                except tk.TclError:
+                    finish()
+                    return
 
             if progress < 1.0:
-                self.after(14, draw_frame)
+                self.after(10, draw_frame)
             else:
                 finish()
 
-        self.after(16, draw_frame)
+        self.after(10, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
@@ -974,7 +1001,10 @@ class LoginViewMixin:
         state = {"tick": getattr(canvas_obj, "_spin_tick", 0.0)}
 
         def animate_spin():
+            canvas_obj._spin_job = None
             if not canvas_obj.winfo_exists():
+                return
+            if getattr(self, "_signing_out", False):
                 return
             # Advance the shared frame counter (~30 fps) and wrap periodically to avoid float drift.
             state["tick"] = (state["tick"] + 1.0) % 36000.0
@@ -1023,4 +1053,6 @@ class LoginViewMixin:
             # Schedule the next rotation frame (~33ms -> 30 fps).
             canvas_obj._spin_job = self.after(33, animate_spin)
 
-        animate_spin()
+        canvas_obj._resume_spin = animate_spin
+        if not getattr(self, "_signing_out", False):
+            animate_spin()
