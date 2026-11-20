@@ -82,6 +82,7 @@ def view_recommendations(username):
                     podcast_title = podcast_title.capitalize()
                     if podcast_title == "":
                         continue
+                    # Match the typed title case-insensitively against the recommended list.
                     matched_podcast = next(
                         (rec[0] for rec in recommendations if rec[0].lower() == podcast_title.lower()),
                         None

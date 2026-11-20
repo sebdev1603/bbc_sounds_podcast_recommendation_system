@@ -411,6 +411,7 @@ def add_to_favourites(podcast_id, username):
     result = cursor.fetchone()
     current_favourites = result[0] if result else ""
 
+    # Only append the podcast ID if it is not already present in the comma-separated list.
     if str(podcast_id) not in current_favourites.split(','):
         updated_favourites = current_favourites + ("," if current_favourites else "") + str(podcast_id)
         cursor.execute(

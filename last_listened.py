@@ -58,6 +58,7 @@ def order_listening_history(conn, listener_id, rows, podcast_id_index, play_coun
 
 def get_last_listened(conn, listener_id):
     """Return (PodcastID, Title, Category) for the listener's most recent played podcast, or None."""
+    # Guard against older databases where the last_listened table has not been created yet.
     if not conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'last_listened'"
     ).fetchone():

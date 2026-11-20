@@ -14,13 +14,22 @@ from gui_parts.theme import (
     DARK_BG,
     DEFAULT_FONT,
     INPUT_BG,
+    MINI_BAR_BG,
     ORANGE_ACCENT,
     ORANGE_HL,
+    PRIMARY_BTN_FG,
     ROOT_PATH,
+    SECONDARY_HOVER_BG,
+    SECONDARY_HOVER_FG,
     SIDEBAR_BG,
     TEXT_GRAY,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
+    TITLEBAR_TEXT,
+    TOPBAR_BG,
+    apply_theme_palette,
     blend_colour,
+    ease_out_elastic,
 )
 
 # Embedded 64x64, 32x32, and 16x16 BBC Sounds logo PNGs (base64, area-averaged from
@@ -321,11 +330,16 @@ class EffectsMixin:
                 pass
         return False
 
-    def set_windows_titlebar_colour(self, bg_hex=DARK_BG, text_hex=TEXT_WHITE):
-        """Apply Windows DWM dark mode and custom caption/text/border colours to the titlebar."""
+    def set_windows_titlebar_colour(self, bg_hex=None, text_hex=None):
+        """Apply Windows DWM light/dark mode and custom caption/text/border colours to the titlebar."""
         if sys.platform != "win32":
             return
-        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex):
+        if bg_hex is None:
+            bg_hex = DARK_BG
+        if text_hex is None:
+            text_hex = TITLEBAR_TEXT
+        dark_mode_flag = int(TITLEBAR_DARK_MODE)
+        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex, dark_mode_flag):
             return
         try:
             hwnd = getattr(self, "_win_hwnd", None)
@@ -342,8 +356,8 @@ class EffectsMixin:
                 return r | (g << 8) | (b << 16)
 
             for attr, value in (
-                (20, 1),
-                (19, 1),
+                (20, dark_mode_flag),
+                (19, dark_mode_flag),
                 (35, to_colorref(bg_hex)),
                 (36, to_colorref(text_hex)),
                 (34, to_colorref(bg_hex)),
@@ -355,20 +369,30 @@ class EffectsMixin:
                     ctypes.byref(val),
                     ctypes.sizeof(val),
                 )
-            self._titlebar_colour = (bg_hex, text_hex)
+            self._titlebar_colour = (bg_hex, text_hex, dark_mode_flag)
         except Exception:
             pass
 
     def schedule_interface_scaling(self, event):
-        """Debounce window resize events before applying live UI scaling."""
+        """Track window drags to pause heavy animations and debounce resize-only scaling."""
         if event.widget is not self:
             return
+        pos = (event.x, event.y)
+        size = (event.width, event.height)
+        prev_pos = getattr(self, "_last_win_pos", None)
+        prev_size = getattr(self, "_last_win_size", None)
+        if prev_pos is not None and (pos != prev_pos or size != prev_size):
+            self._window_moving_until = monotonic() + 0.16
+        self._last_win_pos = pos
+        if size == prev_size:
+            return
+        self._last_win_size = size
         if self._resize_after_id is not None:
             self.after_cancel(self._resize_after_id)
         self._resize_after_id = self.after(60, self.apply_interface_scaling)
 
     def apply_interface_scaling(self, force=False, target_widget=None):
-        """Scale UI fonts, buttons, and wrap widths immediately when the window resizes."""
+        """Scale UI fonts, buttons, and wrap widths immediately when the window resizes or text size changes."""
         self._resize_after_id = None
         if not self.winfo_exists():
             return
@@ -378,7 +402,10 @@ class EffectsMixin:
             return
         width_factor = win_w / 1320
         height_factor = win_h / 850
-        new_scale_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
+        # Combine responsive window scaling with the user's accessibility text-size multiplier.
+        window_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
+        text_scale = getattr(self, "_text_scale", 1.0)
+        new_scale_factor = max(0.70, min(1.75, window_factor * text_scale))
         if not force and abs(new_scale_factor - self._ui_scale_factor) < 0.025:
             return
         if force and abs(new_scale_factor - 1.0) < 0.025 and abs(self._ui_scale_factor - 1.0) < 0.025:
@@ -386,6 +413,77 @@ class EffectsMixin:
         self._ui_scale_factor = new_scale_factor
         root = target_widget if (target_widget is not None and target_widget.winfo_exists()) else self
         self._scale_widget_tree(root, new_scale_factor)
+        resize_search = getattr(self, "_resize_search_bar", None)
+        if resize_search is not None:
+            resize_search()
+
+    def set_text_scale(self, new_scale, persist=True):
+        """Set the accessibility text-size multiplier (0.80..1.40), persist per user, and rescale."""
+        clamped = round(max(0.80, min(1.40, float(new_scale))), 2)
+        if abs(clamped - getattr(self, "_text_scale", 1.0)) < 0.001:
+            return
+        self._text_scale = clamped
+        if persist and self.current_user is not None:
+            self.save_user_accessibility(self.current_user, self._text_scale, getattr(self, "_theme_name", "dark"))
+        self.apply_interface_scaling(force=True)
+
+    def adjust_text_scale(self, delta):
+        """Increase or decrease the accessibility text size by delta (e.g. +0.10 or -0.10)."""
+        self.set_text_scale(getattr(self, "_text_scale", 1.0) + delta)
+
+    def set_theme(self, theme_name, refresh=True, persist=True):
+        """Switch between 'dark', 'light', and 'high_contrast' themes, save per user, and update titlebar."""
+        if theme_name not in ("dark", "light", "high_contrast"):
+            theme_name = "dark"
+        if getattr(self, "_theme_name", "dark") == theme_name and not refresh:
+            return
+        self._theme_name = theme_name
+        apply_theme_palette(theme_name)
+        if persist and self.current_user is not None:
+            self.save_user_accessibility(self.current_user, getattr(self, "_text_scale", 1.0), self._theme_name)
+        # Clear cached pill buttons and rounded covers so they re-rasterize for the new theme.
+        self.button_images.clear()
+        self.cover_images.clear()
+        self._titlebar_colour = None
+        self.configure(bg=DARK_BG)
+        if refresh:
+            # Tear down the persistent shell so topbar, scrollbar, and mini-bar rebuild in the new theme.
+            shell_box = getattr(self, "_shell_box", None)
+            if shell_box is not None and shell_box.winfo_exists():
+                shell_box.destroy()
+            self._shell_box = None
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+            if self.current_user is not None:
+                self.set_windows_titlebar_colour(TOPBAR_BG, TITLEBAR_TEXT)
+                self.show_profile()
+            else:
+                self.set_windows_titlebar_colour(DARK_BG, TITLEBAR_TEXT)
+                self.show_login()
+
+    def apply_user_accessibility(self, listener_id):
+        """Load and apply the signed-in listener's saved text size and theme from database.db."""
+        saved_scale, saved_theme = self.load_user_accessibility(listener_id)
+        theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
+        self._text_scale = saved_scale
+        self._theme_name = saved_theme
+        if theme_changed:
+            apply_theme_palette(saved_theme)
+            self.button_images.clear()
+            self.cover_images.clear()
+            self._titlebar_colour = None
+
+    def reset_accessibility_settings(self):
+        """Restore all accessibility settings (text size and theme) to defaults and save to database.db."""
+        theme_changed = getattr(self, "_theme_name", "dark") != "dark"
+        self._text_scale = 1.0
+        if self.current_user is not None:
+            self.save_user_accessibility(self.current_user, 1.0, "dark")
+        if theme_changed:
+            self.set_theme("dark", refresh=True, persist=False)
+            self.apply_interface_scaling(force=True)
+        else:
+            self.apply_interface_scaling(force=True)
 
     def _scale_widget_tree(self, root_widget, scale_factor):
         """Walk the widget tree and scale point-sized fonts, rounded buttons, and wraplengths."""
@@ -459,33 +557,42 @@ class EffectsMixin:
             ("Home", self.show_home), ("Genres", self.show_search),
             ("For you", self.show_recommendations), ("Favourites", self.show_favourites),
             ("History", self.show_history), ("Ratings", self.show_ratings),
-            ("Report", self.show_report), ("Profile", self.show_profile),
+            ("Report", self.show_report), ("Settings", self.show_profile),
         ]
         profile_tab_active = active_tab_title in ("Your genres", "Profile & survey")
         active_nav_tab = (
-            "Profile" if profile_tab_active else
+            "Settings" if profile_tab_active else
             "Report" if active_tab_title == "Listening report" else active_tab_title
         )
+        # Remember the last non-detail page so Programme details' Back button returns there.
+        if active_tab_title != "Programme details":
+            nav_map = dict(nav_links)
+            if active_tab_title == "Your genres":
+                self._last_non_detail_tab = ("Settings", self.show_genres, "your genres")
+            elif active_nav_tab in nav_map:
+                self._last_non_detail_tab = (active_nav_tab, nav_map[active_nav_tab], active_nav_tab.lower())
 
         shell_box = getattr(self, "_shell_box", None)
         reusing_shell = shell_box is not None and shell_box.winfo_exists()
 
         if reusing_shell:
-            # Update only the nav buttons whose active highlight changed.
+            # Fast path: keep the topbar, search box, and scroll canvas alive, swapping only the page content.
             for label_text, btn in self._shell_nav_buttons.items():
                 selected_flag = label_text == active_nav_tab
                 if getattr(btn, "_nav_selected", None) != selected_flag:
                     btn._nav_selected = selected_flag
-                    new_fg = TEXT_WHITE if selected_flag else TEXT_GRAY
+                    new_fg = PRIMARY_BTN_FG if selected_flag else TEXT_GRAY
                     btn._hover_base_fg = new_fg
+                    btn._hover_target_fg = PRIMARY_BTN_FG if selected_flag else SECONDARY_HOVER_FG
                     btn.configure(fg=new_fg)
                     self.style_rounded_button(
                         btn,
-                        ORANGE_ACCENT if selected_flag else "#080808",
-                        ORANGE_HL if selected_flag else BORDER_LINE,
+                        ORANGE_ACCENT if selected_flag else TOPBAR_BG,
+                        ORANGE_HL if selected_flag else SECONDARY_HOVER_BG,
                     )
             self.update_search_prompt()
             canvas_pane = self._shell_canvas
+            # Cancel any in-flight horizontal slide animation before preparing the new page.
             previous_frame = getattr(canvas_pane, "_slide_frame", None)
             if previous_frame is not None:
                 try:
@@ -494,16 +601,33 @@ class EffectsMixin:
                     pass
                 canvas_pane._slide_frame = None
             canvas_pane._leaving_page = False
-            old_page = self.current_page
-            if old_page is not None and old_page.winfo_exists():
-                old_page.destroy()
-            old_win = getattr(self, "_shell_canvas_window", None)
-            if old_win is not None:
-                try:
-                    canvas_pane.delete(old_win)
-                except tk.TclError:
-                    pass
-            canvas_pane.yview_moveto(0)
+
+            # Clean up any prior outgoing page if a new transition interrupted an older one.
+            prev_anim_old = getattr(self, "_anim_old_page_info", None)
+            if prev_anim_old is not None:
+                p_page, p_win = prev_anim_old
+                if p_page is not None and p_page.winfo_exists():
+                    p_page.destroy()
+                if p_win is not None:
+                    try:
+                        canvas_pane.delete(p_win)
+                    except tk.TclError:
+                        pass
+                self._anim_old_page_info = None
+
+            outgoing_info = getattr(self, "_outgoing_page_info", None)
+            self._outgoing_page_info = None
+            if outgoing_info is None:
+                old_page = self.current_page
+                if old_page is not None and old_page.winfo_exists():
+                    old_page.destroy()
+                old_win = getattr(self, "_shell_canvas_window", None)
+                if old_win is not None:
+                    try:
+                        canvas_pane.delete(old_win)
+                    except tk.TclError:
+                        pass
+                canvas_pane.yview_moveto(0)
             self._active_detail_podcast = None
             self._sync_bottom_bar(
                 shell_box,
@@ -511,40 +635,76 @@ class EffectsMixin:
                 show_average=not profile_tab_active,
             )
         else:
+            outgoing_info = None
+            self._outgoing_page_info = None
+            # Cold start: clear the login screen and construct the persistent header, search box, and scroll viewport.
             self.unbind_all("<MouseWheel>")
             for widget in self.winfo_children():
+                if getattr(widget, "_preserve_during_shell_build", False):
+                    continue
                 widget.destroy()
             self.configure(bg=DARK_BG)
-            self.set_windows_titlebar_colour("#080808")
+            self.set_windows_titlebar_colour(TOPBAR_BG, TITLEBAR_TEXT)
             shell_box = tk.Frame(self, bg=DARK_BG)
             shell_box.pack(fill="both", expand=True)
             self._shell_box = shell_box
             self._shell_bottom_bar = None
             self._shell_bottom_bar_key = None
 
-            topbar = tk.Frame(shell_box, bg="#080808", height=84)
+            topbar = tk.Frame(shell_box, bg=TOPBAR_BG, height=84)
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
-            self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
+            logo_widget = self.draw_app_logo(topbar, 1.1)
+            logo_widget.pack(side="left", padx=(26, 18), pady=22)
 
-            nav_row = tk.Frame(topbar, bg="#080808")
-            nav_row.pack(side="left", padx=35, pady=18)
+            nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
+            nav_row.pack(side="left", padx=(12, 16), pady=18)
             self._shell_nav_buttons = {}
             for label_text, handler in nav_links:
                 selected_flag = label_text == active_nav_tab
                 btn = self.create_button(
                     nav_row, label_text.upper(), lambda go=handler, tab=label_text: self.transition_to(go, tab),
                     compact=True, primary=selected_flag, font=(DEFAULT_FONT, 9, "bold"),
-                    face=ORANGE_ACCENT if selected_flag else "#080808",
-                    fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
+                    face=ORANGE_ACCENT if selected_flag else TOPBAR_BG,
+                    fg=PRIMARY_BTN_FG if selected_flag else TEXT_GRAY,
                 )
                 btn._nav_selected = selected_flag
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
-            self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
+            sign_out_btn = self.create_button(topbar, "Sign out", self.sign_out_to_login, compact=True)
+            sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
             search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
-            search_container.pack(side="right", padx=(0, 14), pady=23)
+            search_container.pack(side="right", padx=(8, 12), pady=23)
             search_container.pack_propagate(False)
+            self._search_container = search_container
+
+            last_search_size = [230, 38]
+
+            def resize_search_bar(_event=None):
+                if not topbar.winfo_exists() or not search_container.winfo_exists():
+                    return
+                bar_w = topbar.winfo_width()
+                if bar_w <= 1:
+                    return
+                # Calculate remaining space between the nav links and Sign out button.
+                used_w = (
+                    logo_widget.winfo_reqwidth() + 44
+                    + nav_row.winfo_reqwidth() + 28
+                    + sign_out_btn.winfo_reqwidth() + 44
+                )
+                available = bar_w - used_w
+                # Grow longer on wider windows (up to 480px) and shrink cleanly on smaller windows (down to 135px).
+                target_w = max(135, min(480, available))
+                target_h = max(34, min(44, round(38 * getattr(self, "_ui_scale_factor", 1.0))))
+                if abs(target_w - last_search_size[0]) >= 2 or target_h != last_search_size[1]:
+                    last_search_size[0] = target_w
+                    last_search_size[1] = target_h
+                    search_container.configure(width=target_w, height=target_h)
+
+            topbar.bind("<Configure>", resize_search_bar)
+            nav_row.bind("<Configure>", resize_search_bar)
+            self._resize_search_bar = resize_search_bar
+            self.after_idle(resize_search_bar)
             self._search_entry = tk.Entry(
                 search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
                 bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
@@ -598,11 +758,16 @@ class EffectsMixin:
         win_kwargs = {"window": content_pane, "anchor": "nw"}
         if canvas_w > 1:
             win_kwargs["width"] = canvas_w
-        canvas_window = canvas_pane.create_window((0, 0), **win_kwargs)
+        if self._tab_transition_direction is not None and canvas_w > 1:
+            # Start the incoming page off-screen so it never flashes at (0, 0) before sliding in.
+            init_pos = (self._tab_transition_direction * canvas_w, 0)
+        else:
+            init_pos = (0, 0)
+        canvas_window = canvas_pane.create_window(init_pos, **win_kwargs)
         self._shell_canvas_window = canvas_window
 
         def update_scrollregion(event):
-            if canvas_pane.winfo_exists():
+            if canvas_pane.winfo_exists() and not getattr(self, "_transition_active", False):
                 canvas_pane.configure(scrollregion=(0, 0, event.width, event.height))
 
         content_pane.bind("<Configure>", update_scrollregion)
@@ -612,8 +777,10 @@ class EffectsMixin:
         self._active_nav_tab = active_nav_tab
 
         if self._tab_transition_direction is not None:
-            self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
-        elif abs(self._ui_scale_factor - 1.0) >= 0.025:
+            self.animate_page_entry(
+                canvas_pane, canvas_window, self._tab_transition_direction, outgoing_info=outgoing_info,
+            )
+        elif abs(self._ui_scale_factor - 1.0) >= 0.025 or abs(getattr(self, "_text_scale", 1.0) - 1.0) >= 0.025:
             target = content_pane if reusing_shell else self
             self.after_idle(lambda t=target: self.apply_interface_scaling(force=True, target_widget=t))
         return content_pane
@@ -666,11 +833,15 @@ class EffectsMixin:
         current = self._active_nav_tab
         if tab is not None and tab == current and direction is None:
             return
-        if direction is None:
-            if current in self._tab_order and tab in self._tab_order:
-                direction = 1 if self._tab_order.index(tab) > self._tab_order.index(current) else -1
-            else:
-                direction = 1
+        tab_distance = 1
+        if current in self._tab_order and tab in self._tab_order:
+            delta = self._tab_order.index(tab) - self._tab_order.index(current)
+            tab_distance = max(1, abs(delta))
+            if direction is None:
+                direction = 1 if delta > 0 else -1
+        elif direction is None:
+            direction = 1
+
         canvas._leaving_page = True
         self._transition_active = True
         self.cancel_pending_render()
@@ -692,50 +863,81 @@ class EffectsMixin:
                 )
                 return
 
+        # Slide the current page completely off-screen before building and sliding in the destination page.
         def open_next_page():
+            self._outgoing_page_info = None
             self._tab_transition_direction = direction
+            self._tab_transition_distance = tab_distance
             try:
                 destination()
             finally:
                 self._tab_transition_direction = None
+                self._tab_transition_distance = 1
 
-        self.slide_page(canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page)
+        self.slide_page(
+            canvas, window, -direction * max(1, canvas.winfo_width()), 145, open_next_page,
+            frame_ms=10,
+        )
 
-    def animate_page_entry(self, canvas, canvas_window, direction):
-        """Slide a newly built page horizontally into view from the given direction."""
+    def _prerender_initial_batch(self, max_items=4):
+        """Render the first visible row of queued cards off-screen so pages slide in already populated."""
+        rendered = 0
+        while self._render_queue and rendered < max_items:
+            items_iter, render_item = self._render_queue[0]
+            try:
+                item = next(items_iter)
+            except StopIteration:
+                self._render_queue.pop(0)
+                continue
+            render_item(item)
+            rendered += 1
+
+    def animate_page_entry(self, canvas, canvas_window, direction, outgoing_info=None):
+        """Slide the new page smoothly into view using real-time elastic pacing."""
         self._transition_active = True
+        tab_distance = max(1, getattr(self, "_tab_transition_distance", 1))
+        max_span = max(1, len(getattr(self, "_tab_order", [])) - 2)
+        ratio = min(1.0, (tab_distance - 1) / max_span)
+        # Real-time durations (220ms adjacent up to 280ms for far jumps) with gentle elastic settle.
+        entry_ms = round(220 + 60 * ratio)
+        damping = 6.8 - 1.6 * ratio
+        frequency = 0.95 + 0.25 * ratio
 
-        def on_entry_done():
+        def finish_entry():
+            if canvas.winfo_exists():
+                canvas.coords(canvas_window, 0, 0)
+                canvas.yview_moveto(0)
+                if self.current_page is not None and self.current_page.winfo_exists():
+                    canvas.configure(
+                        scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
+                    )
             self._finish_transition()
-            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
-                self.apply_interface_scaling(force=True, target_widget=self.current_page)
 
-        width = canvas.winfo_width()
-        if width > 1:
-            canvas.itemconfigure(canvas_window, width=width)
-            canvas.coords(canvas_window, direction * width, 0)
-            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
-            return
-
-        canvas.itemconfigure(canvas_window, state="hidden")
-
-        def reveal_page():
+        def begin_slide():
             if not canvas.winfo_exists():
                 self._finish_transition()
                 return
-            canvas.itemconfigure(canvas_window, state="normal")
-            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
+            # Pre-render the first 4 cards off-screen so the page glides in populated without excess HWND overhead.
+            self._prerender_initial_batch(4)
+            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
+                self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+            width = max(1, canvas.winfo_width())
+            canvas.itemconfigure(canvas_window, width=width)
+            canvas.coords(canvas_window, direction * width, 0)
+            canvas.update_idletasks()
+            self.slide_page(
+                canvas, canvas_window, 0, entry_ms, finish_entry,
+                damping=damping, frequency=frequency, frame_ms=10,
+            )
 
-        def start_entry(event):
-            canvas.unbind("<Configure>", configure_binding)
-            canvas.itemconfigure(canvas_window, width=event.width)
-            canvas.coords(canvas_window, direction * event.width, 0)
-            canvas.after_idle(reveal_page)
+        # Wait one idle tick so the destination page finishes building off-screen before sliding in.
+        canvas.after_idle(begin_slide)
 
-        configure_binding = canvas.bind("<Configure>", start_entry, add="+")
-
-    def slide_page(self, canvas, canvas_window, end_x, duration_ms, on_complete=None):
-        """Animate the scrollable content window horizontally to end_x."""
+    def slide_page(
+        self, canvas, canvas_window, end_x, duration_ms, on_complete=None, *,
+        damping=5.4, frequency=1.15, frame_ms=10,
+    ):
+        """Animate the scrollable content window horizontally to end_x in real elapsed time."""
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
             try:
@@ -744,24 +946,34 @@ class EffectsMixin:
                 pass
         coords = canvas.coords(canvas_window)
         start_x = coords[0] if coords else 0
+        duration_sec = max(0.05, float(duration_ms) / 1000.0)
+        max_step = 0.085  # Cap per-frame jump so a slow frame never teleports, while keeping real-time speed.
+        progress = 0.0
+        last_t = None
         last_x = round(start_x)
-        started = monotonic()
         self._transition_active = True
 
         def draw_frame():
-            nonlocal last_x
+            nonlocal last_x, progress, last_t
             canvas._slide_frame = None
             if not canvas.winfo_exists():
                 self._transition_active = False
                 return
-            progress = min(1.0, (monotonic() - started) * 1000 / duration_ms)
-            eased = progress ** 2 if end_x else 1 - (1 - progress) ** 3
+            now = monotonic()
+            if last_t is None:
+                delta = 0.016 / duration_sec
+            else:
+                delta = min(max_step, (now - last_t) / duration_sec)
+            last_t = now
+            progress = min(1.0, progress + delta)
+            # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
+            eased = progress ** 2.4 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
                 canvas.coords(canvas_window, new_x, 0)
                 last_x = new_x
             if progress < 1.0:
-                canvas._slide_frame = canvas.after(12, draw_frame)
+                canvas._slide_frame = canvas.after(frame_ms, draw_frame)
             elif on_complete:
                 on_complete()
             else:
@@ -798,7 +1010,7 @@ class EffectsMixin:
         if podcast_id == self._dismissed_last_listened:
             return
 
-        footer = self.create_card_frame(shell, bg="#262228")
+        footer = self.create_card_frame(shell, bg=MINI_BAR_BG)
         area_frame = getattr(self, "_shell_area_frame", None)
         if area_frame is not None and area_frame.winfo_exists() and area_frame.master is shell:
             footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10), before=area_frame)
@@ -815,10 +1027,58 @@ class EffectsMixin:
             self._shell_bottom_bar_key = None
             footer.destroy()
 
+        bar_bg = row.cget("bg")
+        sim_fade_job = [None]
+
+        def cancel_sim_fade(_event=None):
+            if sim_fade_job[0] is not None:
+                try:
+                    self.after_cancel(sim_fade_job[0])
+                except tk.TclError:
+                    pass
+                sim_fade_job[0] = None
+
+        def play_from_mini_bar():
+            if not self.listen(podcast_id, open_detail=False):
+                return
+            if not sim_notice_label.winfo_exists():
+                return
+            cancel_sim_fade()
+            sim_notice_label.configure(text="Playback is simulated", fg=TEXT_GRAY)
+            fade_steps = 36
+            fade_step = [0]
+
+            def step_sim_fade():
+                sim_fade_job[0] = None
+                if not sim_notice_label.winfo_exists():
+                    return
+                fade_step[0] += 1
+                frac = min(1.0, fade_step[0] / float(fade_steps))
+                eased = frac * frac * (3.0 - 2.0 * frac)
+                sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, bar_bg, eased))
+                if fade_step[0] < fade_steps:
+                    sim_fade_job[0] = self.after(40, step_sim_fade)
+                else:
+                    sim_notice_label.configure(text="")
+
+            # Hold readable for ~1.1s before smoothly fading into the mini-bar background.
+            sim_fade_job[0] = self.after(1100, step_sim_fade)
+
         self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
         self.create_button(
-            row, "▶  Play", lambda: self.listen(podcast_id), primary=True, compact=True,
+            row, "▶  Play", play_from_mini_bar, primary=True, compact=True,
         ).pack(side="right")
+        sim_notice_label = tk.Label(
+            row,
+            text="",
+            font=(DEFAULT_FONT, 10, "italic"),
+            fg=bar_bg,
+            bg=bar_bg,
+            anchor="e",
+            justify="right",
+        )
+        sim_notice_label.pack(side="right", padx=(0, 12))
+        sim_notice_label.bind("<Destroy>", cancel_sim_fade)
 
         cover = self.generate_podcast_cover(
             row, podcast_id, title, category, 62, 62,
@@ -844,6 +1104,25 @@ class EffectsMixin:
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
+    def open_podcast_detail(self, podcast_id, title=None, category=None):
+        """Open a podcast's detail page by expanding upward via the bottom mini-bar."""
+        if title is None or category is None:
+            try:
+                rec = self.get_single_podcast(podcast_id)
+                if rec:
+                    title = title if title is not None else rec[1]
+                    category = category if category is not None else rec[2]
+            except sqlite3.Error:
+                pass
+        shell = getattr(self, "_shell_box", None)
+        footer = getattr(self, "_shell_bottom_bar", None)
+        if shell is not None and shell.winfo_exists():
+            self.expand_bottom_bar_to_detail(
+                shell, footer, podcast_id, str(title or "Programme"), category or "",
+            )
+            return
+        self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
+
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
         """Expand the bottom mini-bar smoothly upward to open the podcast detail page."""
         if getattr(shell, "_expanding_bar", False):
@@ -857,15 +1136,23 @@ class EffectsMixin:
         self.cancel_pending_render()
 
         area_frame = canvas.master
-        start_x = footer.winfo_x()
-        start_y = footer.winfo_y()
-        start_w = max(1, footer.winfo_width())
-        start_h = max(1, footer.winfo_height())
+        if footer is not None and footer.winfo_exists() and footer.winfo_width() > 1 and footer.winfo_height() > 1:
+            start_x = footer.winfo_x()
+            start_y = footer.winfo_y()
+            start_w = max(1, footer.winfo_width())
+            start_h = max(1, footer.winfo_height())
+        else:
+            shell_w = max(1, shell.winfo_width())
+            shell_h = max(1, shell.winfo_height())
+            start_x = 18
+            start_w = max(1, shell_w - 36)
+            start_h = 80
+            start_y = max(0, shell_h - 90)
         target_y = area_frame.winfo_y()
         target_w = max(1, shell.winfo_width())
         target_h = max(1, shell.winfo_height() - target_y)
 
-        start_bg = "#262228"
+        start_bg = MINI_BAR_BG
         expander = tk.Frame(shell, bg=start_bg, bd=0, highlightthickness=0)
         accent_top = tk.Frame(expander, bg=ORANGE_ACCENT, height=3)
         accent_top.pack(fill="x")
@@ -884,7 +1171,7 @@ class EffectsMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        duration = 0.200
+        duration = 0.420
         started = monotonic()
         last_bg = start_bg
 
@@ -895,12 +1182,12 @@ class EffectsMixin:
                 self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - started) / duration)
-            eased = 1.0 - (1.0 - progress) ** 3
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y + (target_y - start_y) * eased)
-            cur_w = round(start_w + (target_w - start_w) * eased)
-            cur_h = round(start_h + (target_h - start_h) * eased)
-            cur_bg = blend_colour(start_bg, DARK_BG, eased)
+            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            cur_x = max(0, round(start_x * (1.0 - eased)))
+            cur_y = max(target_y, round(start_y + (target_y - start_y) * eased))
+            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_bg = blend_colour(start_bg, DARK_BG, progress)
             if cur_bg != last_bg:
                 expander.configure(bg=cur_bg)
                 preview_box.configure(bg=cur_bg)
@@ -909,12 +1196,45 @@ class EffectsMixin:
                 last_bg = cur_bg
             expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
             if progress < 1.0:
-                self.after(12, draw_expand)
+                self.after(8, draw_expand)
             else:
-                shell._expanding_bar = False
-                expander.destroy()
-                self._finish_transition()
-                self.show_detail(podcast_id)
+                def start_detail_reveal():
+                    if not expander.winfo_exists() or not shell.winfo_exists():
+                        shell._expanding_bar = False
+                        self._finish_transition()
+                        return
+                    # Build the detail page underneath the overlay, then glide the curtain upward to reveal it.
+                    self.show_detail(podcast_id)
+                    if not expander.winfo_exists() or not shell.winfo_exists():
+                        shell._expanding_bar = False
+                        self._finish_transition()
+                        return
+                    tk.Misc.lift(expander)
+                    reveal_frames = 18
+                    reveal_step = 0
+
+                    def draw_detail_reveal():
+                        nonlocal reveal_step
+                        if not expander.winfo_exists() or not shell.winfo_exists():
+                            shell._expanding_bar = False
+                            self._finish_transition()
+                            return
+                        reveal_step += 1
+                        r_prog = min(1.0, reveal_step / float(reveal_frames))
+                        r_eased = 1.0 - (1.0 - r_prog) ** 3
+                        cur_top = round(target_y - target_h * r_eased)
+                        expander.place(x=0, y=cur_top, width=target_w, height=target_h)
+                        tk.Misc.lift(expander)
+                        if reveal_step < reveal_frames:
+                            self.after(10, draw_detail_reveal)
+                        else:
+                            shell._expanding_bar = False
+                            expander.destroy()
+                            self._finish_transition()
+
+                    self.after(10, draw_detail_reveal)
+
+                self.after(80, start_detail_reveal)
 
         draw_expand()
 
@@ -944,7 +1264,7 @@ class EffectsMixin:
             self._transition_active = False
             return
 
-        target_bg = "#262228"
+        target_bg = MINI_BAR_BG
         shrinker = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
         accent_top = tk.Frame(shrinker, bg=ORANGE_ACCENT, height=3)
         accent_top.pack(fill="x")
@@ -964,15 +1284,17 @@ class EffectsMixin:
         shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
 
-        duration = 0.220
-        started = monotonic()
+        duration = 0.440
+        started = None
         last_bg = DARK_BG
 
         def draw_shrink():
-            nonlocal last_bg
+            nonlocal last_bg, started
             if not shrinker.winfo_exists() or not self.winfo_exists():
                 self._finish_transition()
                 return
+            if started is None:
+                started = monotonic()
             if self._bottom_bar_info is not None:
                 dest_footer = self._bottom_bar_info[1]
                 if dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
@@ -982,12 +1304,12 @@ class EffectsMixin:
                     target_box[3] = dest_footer.winfo_height()
             target_x, target_y, target_w, target_h = target_box
             progress = min(1.0, (monotonic() - started) / duration)
-            eased = 1.0 - (1.0 - progress) ** 3
+            eased = ease_out_elastic(progress, damping=5.2, frequency=1.10)
             cur_x = round(start_x + (target_x - start_x) * eased)
             cur_y = round(start_y + (target_y - start_y) * eased)
             cur_w = max(1, round(start_w + (target_w - start_w) * eased))
             cur_h = max(1, round(start_h + (target_h - start_h) * eased))
-            cur_bg = blend_colour(DARK_BG, target_bg, eased)
+            cur_bg = blend_colour(DARK_BG, target_bg, progress)
 
             if cur_bg != last_bg or progress > 0.55:
                 shrinker.configure(bg=cur_bg)
@@ -1009,12 +1331,12 @@ class EffectsMixin:
             shrinker.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
 
             if progress < 1.0:
-                self.after(12, draw_shrink)
+                self.after(8, draw_shrink)
             else:
                 shrinker.destroy()
                 self._finish_transition()
 
-        self.after(12, draw_shrink)
+        self.after(8, draw_shrink)
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
@@ -1037,11 +1359,11 @@ class EffectsMixin:
         def draw_frame(start, started):
             nonlocal pending_frame, target
             pending_frame = None
-            progress = min(1.0, (monotonic() - started) / 0.065)
-            position = round(start + (target - start) * (1 - (1 - progress) ** 2))
+            progress = min(1.0, (monotonic() - started) / 0.165)
+            position = round(start + (target - start) * (1 - (1 - progress) ** 4))
             canvas.yview_scroll(position - round(canvas.canvasy(0)), "units")
             if progress < 1 and position != target:
-                pending_frame = canvas.after(10, draw_frame, start, started)
+                pending_frame = canvas.after(8, draw_frame, start, started)
             else:
                 target = None
 

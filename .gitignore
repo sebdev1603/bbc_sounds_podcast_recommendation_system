@@ -2,7 +2,4 @@ database.db-shm
 database.db-wal
 __pycache__
 .venv
-bbc_sounds_program.spec
-dist
 build
-database.db

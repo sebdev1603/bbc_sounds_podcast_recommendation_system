@@ -115,6 +115,7 @@ def delete_listening_history(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Delete all listening_history entries associated with this listener ID.
     cursor.execute(
         "DELETE FROM listening_history WHERE ListenerID = ?",
         (username,),

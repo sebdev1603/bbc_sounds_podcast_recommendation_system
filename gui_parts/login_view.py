@@ -1,6 +1,8 @@
 """Login screen, button-to-home expansion transition, and spinning vinyl turntable visual."""
+import ctypes
 import math
 import sqlite3
+import sys
 from time import monotonic
 import tkinter as tk
 
@@ -13,6 +15,8 @@ from gui_parts.theme import (
     TEXT_GRAY,
     TEXT_WHITE,
     blend_colour,
+    ease_in_out_back,
+    ease_out_elastic,
     format_user_id,
 )
 
@@ -22,6 +26,7 @@ class LoginViewMixin:
 
     def show_login(self, error_message=""):
         """Render the sign-in screen with listener ID authentication and spinning vinyl art."""
+        # Cancel any background rendering, search timers, and mouse-wheel hooks from a prior session.
         self.cancel_pending_render()
         self._dismissed_last_listened = None
         if self._search_after_id is not None:
@@ -30,7 +35,17 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
+        # Reset the login screen visually to default dark theme and 100% text size without changing DB rows.
+        self._text_scale = 1.0
+        self.set_theme("dark", refresh=False, persist=False)
+        self._shell_box = None
+        self._shell_bottom_bar = None
+        self._shell_bottom_bar_key = None
+
+        # Clear any existing widgets and match the window/titlebar background to DARK_BG.
         for child_widget in self.winfo_children():
+            if getattr(child_widget, "_preserve_during_shell_build", False):
+                continue
             child_widget.destroy()
         self.configure(bg=DARK_BG)
         self.set_windows_titlebar_colour(DARK_BG)
@@ -38,11 +53,13 @@ class LoginViewMixin:
         main_box = tk.Frame(self, bg=DARK_BG)
         main_box.pack(fill="both", expand=True, padx=58, pady=38)
 
+        # Header row with the BBC Sounds logo on the left and tagline on the right.
         top_header = tk.Frame(main_box, bg=DARK_BG)
         top_header.pack(fill="x")
         self.draw_app_logo(top_header, 1.25).pack(side="left")
         self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold").pack(side="right")
 
+        # Two-column split: hero copy + sign-in card on the left, animated vinyl turntable on the right.
         content_split = tk.Frame(main_box, bg=DARK_BG)
         content_split.pack(fill="both", expand=True, pady=(36, 0))
 
@@ -57,6 +74,7 @@ class LoginViewMixin:
             14, TEXT_GRAY, justify="left",
         ).pack(anchor="w", pady=(0, 30))
 
+        # Rounded sign-in card containing the listener ID input field, error label, and Continue button.
         login_panel = self.create_card_frame(left_side)
         login_panel.pack(anchor="w", fill="x", padx=(0, 8), pady=(2, 0))
         self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold").pack(anchor="w", padx=20, pady=(19, 4))
@@ -67,6 +85,7 @@ class LoginViewMixin:
         input_panel.pack(fill="x", padx=20, pady=(15, 10))
         text_entry = tk.Entry(
             input_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
+            disabledbackground=INPUT_BG, disabledforeground=TEXT_WHITE,
             insertbackground=TEXT_WHITE, relief="flat", highlightthickness=0,
         )
         text_entry.pack(fill="x", padx=12, pady=5, ipady=4)
@@ -75,6 +94,7 @@ class LoginViewMixin:
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         def handle_login(_event=None):
+            # Ignore duplicate clicks or Enter presses while the transition animation is already running.
             if getattr(login_button, "_expanding_login", False):
                 return
             username_input = id_var.get().strip()
@@ -82,6 +102,7 @@ class LoginViewMixin:
                 status_label.config(text="Enter your listener ID to continue.")
                 return
             try:
+                # Verify the entered listener ID exists in SQLite.
                 with self.get_db_connection() as conn:
                     found_record = conn.execute(
                         "SELECT ListenerID, CompleteSurvey FROM listeners WHERE ListenerID = ?",
@@ -92,6 +113,9 @@ class LoginViewMixin:
                     if not found_record["CompleteSurvey"]:
                         self.active_genres = []
                         self.active_length = "Medium"
+                    # Load this listener's saved theme and text size before animating into Home.
+                    self.apply_user_accessibility(self.current_user)
+                    # Lock the form, stop the vinyl spin loop, and expand the Continue button into Home.
                     login_button._expanding_login = True
                     text_entry.configure(state="disabled")
                     cancel_record_jobs()
@@ -102,16 +126,20 @@ class LoginViewMixin:
                 status_label.config(text="Couldn't open the project database: " + str(err))
 
         login_button = self.create_button(login_panel, "Continue  →", handle_login, primary=True)
+        login_button.configure(highlightthickness=0, takefocus=0)
         login_button.pack(anchor="w", padx=20, pady=(5, 20))
+        self._login_button = login_button
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
+        # Right-hand canvas hosting the rotating BBC Sounds vinyl turntable graphic.
         right_side = tk.Frame(content_split, bg=DARK_BG, width=460)
         right_side.pack(side="right", fill="both", expand=True, padx=(16, 0))
         disc_canvas = tk.Canvas(right_side, bg=DARK_BG, highlightthickness=0)
         disc_canvas.pack(fill="both", expand=True)
 
         def cancel_record_jobs(_event=None):
+            # Cleanly cancel pending repaint and spin animation callbacks on exit or destroy.
             for attr in ("_paint_job", "_spin_job"):
                 job = getattr(disc_canvas, attr, None)
                 if job is not None:
@@ -121,7 +149,18 @@ class LoginViewMixin:
                         pass
                     setattr(disc_canvas, attr, None)
 
+        self._login_disc_canvas = disc_canvas
+
+        last_disc_size = [None]
+
         def queue_record_paint(event):
+            # Debounce resize redraws and ignore move-only Configure events with unchanged size.
+            if getattr(self, "_signing_out", False):
+                return
+            size = (event.width, event.height)
+            if size == last_disc_size[0]:
+                return
+            last_disc_size[0] = size
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
@@ -134,137 +173,699 @@ class LoginViewMixin:
 
         disc_canvas.bind("<Configure>", queue_record_paint)
         disc_canvas.bind("<Destroy>", cancel_record_jobs)
-        self.after_idle(lambda: self.apply_interface_scaling(force=True))
+        if not getattr(self, "_signing_out", False):
+            self.after_idle(lambda: self.apply_interface_scaling(force=True))
+
+    def _capture_window_snapshot(self, win_x, win_y, win_w, win_h):
+        """Capture the current login window client area as a Tk PhotoImage via Windows BitBlt."""
+        if sys.platform != "win32" or win_w <= 1 or win_h <= 1:
+            return None
+        try:
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            vp = ctypes.c_void_p
+            user32.GetDC.restype = vp
+            user32.GetDC.argtypes = [vp]
+            user32.ReleaseDC.argtypes = [vp, vp]
+            gdi32.CreateCompatibleDC.restype = vp
+            gdi32.CreateCompatibleDC.argtypes = [vp]
+            gdi32.CreateCompatibleBitmap.restype = vp
+            gdi32.CreateCompatibleBitmap.argtypes = [vp, ctypes.c_int, ctypes.c_int]
+            gdi32.SelectObject.restype = vp
+            gdi32.SelectObject.argtypes = [vp, vp]
+            gdi32.BitBlt.argtypes = [
+                vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                vp, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
+            ]
+            gdi32.GetDIBits.argtypes = [vp, vp, ctypes.c_uint, ctypes.c_uint, vp, vp, ctypes.c_uint]
+            gdi32.DeleteObject.argtypes = [vp]
+            gdi32.DeleteDC.argtypes = [vp]
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", ctypes.c_uint32),
+                    ("biWidth", ctypes.c_int32),
+                    ("biHeight", ctypes.c_int32),
+                    ("biPlanes", ctypes.c_uint16),
+                    ("biBitCount", ctypes.c_uint16),
+                    ("biCompression", ctypes.c_uint32),
+                    ("biSizeImage", ctypes.c_uint32),
+                    ("biXPelsPerMeter", ctypes.c_int32),
+                    ("biYPelsPerMeter", ctypes.c_int32),
+                    ("biClrUsed", ctypes.c_uint32),
+                    ("biClrImportant", ctypes.c_uint32),
+                ]
+
+            sdc = user32.GetDC(None)
+            if not sdc:
+                return None
+            mdc = gdi32.CreateCompatibleDC(sdc)
+            bmp = gdi32.CreateCompatibleBitmap(sdc, win_w, win_h)
+            old = gdi32.SelectObject(mdc, bmp)
+            try:
+                ok = gdi32.BitBlt(mdc, 0, 0, win_w, win_h, sdc, win_x, win_y, 0x00CC0020)
+                if not ok:
+                    return None
+                bih = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), win_w, -win_h, 1, 32, 0, 0, 0, 0, 0, 0)
+                buf = ctypes.create_string_buffer(win_w * win_h * 4)
+                lines = gdi32.GetDIBits(mdc, bmp, 0, win_h, buf, ctypes.byref(bih), 0)
+                if lines <= 0:
+                    return None
+            finally:
+                gdi32.SelectObject(mdc, old)
+                gdi32.DeleteObject(bmp)
+                gdi32.DeleteDC(mdc)
+                user32.ReleaseDC(None, sdc)
+
+            raw = buf.raw
+            rgb = bytearray(win_w * win_h * 3)
+            rgb[0::3] = raw[2::4]
+            rgb[1::3] = raw[1::4]
+            rgb[2::3] = raw[0::4]
+            header = f"P6\n{win_w} {win_h}\n255\n".encode("ascii")
+            return tk.PhotoImage(master=self, data=header + bytes(rgb), format="PPM")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _strip_dwm_border(top_win):
+        """Disable Windows 11 DWM non-client border, shadow, and corner rounding on an overlay Toplevel."""
+        if sys.platform != "win32":
+            return
+        try:
+            wid = top_win.winfo_id()
+            hwnd = ctypes.windll.user32.GetAncestor(wid, 2) or wid
+            # DWMWA_NCRENDERING_POLICY (2) = DWMNCRP_DISABLED (1)
+            # DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_DONOTROUND (1)
+            # DWMWA_BORDER_COLOR (34) = DWMWA_COLOR_NONE (0xFFFFFFFE)
+            for attr, raw_val in ((2, 1), (33, 1), (34, 0xFFFFFFFE)):
+                val = ctypes.c_uint32(raw_val)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                )
+        except Exception:
+            pass
 
     def expand_login_button_to_home(self, login_button):
-        """Expand the rounded Continue button to fill the window, then lift a curtain to reveal Home."""
+        """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
+        # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
         self.cancel_button_hover(login_button)
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
-        hover_t = getattr(login_button, "_hover_step", 0) / 5.0
-        hover_eased = 1.0 - (1.0 - hover_t) ** 2
+        hover_t = getattr(login_button, "_hover_step", 0) / 12.0
+        hover_eased = (
+            ease_out_elastic(hover_t, damping=4.8, frequency=1.15)
+            if getattr(login_button, "_hover_target", 0) > 0
+            else 1.0 - (1.0 - hover_t) ** 3
+        )
         start_colour = blend_colour(face, hover, hover_eased)
-        start_inset = round(2 * (1.0 - hover_eased))
+        start_inset = max(0, min(3, round(3.0 - 2.0 * hover_eased)))
         button_bg = login_button.cget("bg")
-        button_font = login_button.cget("font")
 
-        start_x = login_button.winfo_rootx() - self.winfo_rootx() + start_inset
-        start_y = login_button.winfo_rooty() - self.winfo_rooty() + start_inset
-        start_w = max(1, login_button.winfo_width() - start_inset * 2)
-        start_h = max(1, login_button.winfo_height() - start_inset * 2)
-        target_w = max(1, self.winfo_width())
-        target_h = max(1, self.winfo_height())
+        win_x = self.winfo_rootx()
+        win_y = self.winfo_rooty()
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+
+        raw_bx = login_button.winfo_rootx() - win_x
+        raw_by = login_button.winfo_rooty() - win_y
+        raw_bw = max(1, login_button.winfo_width())
+        raw_bh = max(1, login_button.winfo_height())
+
+        start_x = raw_bx + start_inset
+        start_y = raw_by + start_inset
+        start_w = max(1, raw_bw - start_inset * 2)
+        start_h = max(1, raw_bh - start_inset * 2)
 
         if start_w <= 1 or start_h <= 1:
             self.show_home()
             return
 
-        start_radius = min(10, start_h // 2, start_w // 2)
-        expander = tk.Canvas(self, bg=button_bg, bd=0, highlightthickness=0)
-        text_item = expander.create_text(
-            start_w / 2, start_h / 2, text="Continue  →",
-            fill=TEXT_WHITE, font=button_font,
-        )
+        # Capture the clean login screen BEFORE modifying the button, then clear its text.
+        self.focus_set()
+        login_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
+        login_button.configure(text="")
+        # Use a dark unique chroma key (#010203) instead of bright magenta so any 1px edge never looks bright/white.
+        key_colour = "#010203"
 
-        def draw_rounded_fill(w, h, radius, fill_colour):
-            expander.delete("pill")
-            r = min(radius, w // 2, h // 2)
+        # Two fixed-size full-window Toplevels kept withdrawn until fully painted so Windows
+        # never flashes a default white/grey window frame before the dark canvas appears.
+        backdrop_win = None
+        pill_win = None
+        try:
+            backdrop_win = tk.Toplevel(self)
+            backdrop_win.withdraw()
+            backdrop_win._preserve_during_shell_build = True
+            backdrop_win.overrideredirect(True)
+            backdrop_win.configure(bg=DARK_BG)
+            backdrop_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            backdrop_win.attributes("-transparentcolor", key_colour)
+            backdrop_win.transient(self)
+
+            pill_win = tk.Toplevel(self)
+            pill_win.withdraw()
+            pill_win._preserve_during_shell_build = True
+            pill_win.overrideredirect(True)
+            pill_win.configure(bg=key_colour)
+            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            pill_win.attributes("-transparentcolor", key_colour)
+            pill_win.attributes("-alpha", 1.0)
+            pill_win.transient(self)
+        except tk.TclError:
+            for w in (pill_win, backdrop_win):
+                if w is not None:
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self.show_home()
+            return
+
+        def make_rounded_shapes(canvas, fill_col, tag):
+            return (
+                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            )
+
+        def set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
             if r <= 1:
-                expander.create_rectangle(0, 0, w, h, fill=fill_colour, outline="", tags="pill")
+                canvas.coords(items[0], x0, y0, x1, y1)
+                for extra in items[1:]:
+                    canvas.coords(extra, 0, 0, 0, 0)
             else:
                 d = r * 2
-                expander.create_rectangle(r, 0, w - r, h, fill=fill_colour, outline="", tags="pill")
-                expander.create_rectangle(0, r, w, h - r, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(0, 0, d, d, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(w - d, 0, w, d, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(0, h - d, d, h, fill=fill_colour, outline="", tags="pill")
-                expander.create_oval(w - d, h - d, w, h, fill=fill_colour, outline="", tags="pill")
-            expander.tag_raise(text_item)
+                # Keep corner ovals strictly inside [x0, x1-1] x [y0, y1-1] so Tk's inclusive oval
+                # bounds align pixel-for-pixel with the rectangles and leave zero 1px seams.
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
+                canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
+                canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
+                canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
+                canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
+                canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                canvas.itemconfigure(tag, fill=fill_col)
 
-        def reveal_home():
-            if not self.winfo_exists():
+        backdrop_canvas = tk.Canvas(backdrop_win, bg=DARK_BG, bd=0, highlightthickness=0)
+        backdrop_canvas.pack(fill="both", expand=True)
+        if login_snap is not None:
+            backdrop_canvas._snap_ref = login_snap
+            backdrop_canvas.create_image(0, 0, image=login_snap, anchor="nw")
+            # Cover the static button and any border margin on the snapshot with card background.
+            backdrop_canvas.create_rectangle(
+                raw_bx - 4, raw_by - 4, raw_bx + raw_bw + 4, raw_by + raw_bh + 4,
+                fill=button_bg, outline="",
+            )
+        cutout_items = make_rounded_shapes(backdrop_canvas, key_colour, "cutout")
+        backdrop_canvas.itemconfigure("cutout", state="hidden")
+        cutout_visible = [False]
+
+        pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
+        pill_canvas.pack(fill="both", expand=True)
+        pill_items = make_rounded_shapes(pill_canvas, start_colour, "pill")
+
+        start_r = min(10, start_h // 2, start_w // 2)
+        set_rounded_shapes(
+            pill_canvas, pill_items, "pill",
+            start_x, start_y, start_x + start_w, start_y + start_h, start_r,
+        )
+
+        # Layout both canvases while still withdrawn, strip Windows 11 DWM border, then reveal.
+        backdrop_win.update_idletasks()
+        pill_win.update_idletasks()
+        self._strip_dwm_border(backdrop_win)
+        self._strip_dwm_border(pill_win)
+        backdrop_win.deiconify()
+        pill_win.deiconify()
+        self._strip_dwm_border(backdrop_win)
+        self._strip_dwm_border(pill_win)
+        backdrop_win.lift()
+        pill_win.lift()
+        try:
+            self.update()
+        except tk.TclError:
+            pass
+
+        # Build Home once underneath the fully opaque login backdrop (batch card rendering paused).
+        self._transition_active = True
+        self.show_home()
+        if not self.winfo_exists():
+            self._transition_active = False
+            for w in (pill_win, backdrop_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+        self.update_idletasks()
+        backdrop_win.lift()
+        pill_win.lift()
+
+        # Pre-compute the compressed "coiled spring" rectangle around the button's centre for the
+        # elastic anticipation wind-up before launching into the full window.
+        coil_w = max(24, round(start_w * 0.80))
+        coil_h = max(18, round(start_h * 0.78))
+        coil_x = start_x + (start_w - coil_w) // 2
+        coil_y = start_y + (start_h - coil_h) // 2
+        charged_colour = blend_colour(start_colour, ORANGE_HL, 0.85)
+
+        total_duration = 0.720  # ~0.19s elastic wind-up coil + ~0.53s rounded launch and Home fade-in.
+        max_step = 1.0 / 24.0  # Cap per-frame progress so slow frames never cause visible jumps.
+        windup_end = 0.26  # First 26%: button visibly compresses & brightens, getting ready to launch.
+        fade_start = 0.34  # Begin fading Home in right as the rounded button rockets outward.
+        state = {"progress": 0.0, "last_t": None}
+        last_rect = [None]
+        last_bg = [start_colour]
+
+        def finish():
+            for w in (pill_win, backdrop_win):
+                if w is not None and w.winfo_exists():
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._finish_transition()
+
+        def draw_frame():
+            if not pill_win.winfo_exists() or not backdrop_win.winfo_exists() or not self.winfo_exists():
+                finish()
                 return
-            win_w = max(1, self.winfo_width())
-            win_h = max(1, self.winfo_height())
-            self.show_home()
-            if not self.winfo_exists():
-                return
 
-            curtain = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
-            accent = tk.Frame(curtain, bg=ORANGE_ACCENT, height=3)
-            accent.pack(side="bottom", fill="x")
-            curtain.place(x=0, y=0, width=win_w, height=win_h)
-            curtain.lift()
+            now = monotonic()
+            if state["last_t"] is None:
+                delta = max_step * 0.5
+            else:
+                delta = min(max_step, (now - state["last_t"]) / total_duration)
+            state["last_t"] = now
+            state["progress"] = min(1.0, state["progress"] + delta)
+            progress = state["progress"]
 
-            reveal_duration = 0.260
-            reveal_started = monotonic()
-
-            def draw_reveal():
-                if not curtain.winfo_exists() or not self.winfo_exists():
-                    return
-                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 3
-                cur_y = round(-win_h * eased)
-                if progress > 0.70:
-                    fade = (progress - 0.70) / 0.30
-                    accent.configure(bg=blend_colour(ORANGE_ACCENT, DARK_BG, fade))
-                curtain.place(x=0, y=cur_y, width=win_w, height=win_h)
-                curtain.lift()
-                if progress < 1.0:
-                    self.after(12, draw_reveal)
+            if progress < windup_end:
+                # Phase 1: Elastic anticipation — rounded button compresses inward and brightens.
+                u = progress / windup_end
+                coil_t = 1.0 - (1.0 - u) ** 2
+                cur_x = round(start_x + (coil_x - start_x) * coil_t)
+                cur_y = round(start_y + (coil_y - start_y) * coil_t)
+                cur_w = max(1, round(start_w + (coil_w - start_w) * coil_t))
+                cur_h = max(1, round(start_h + (coil_h - start_h) * coil_t))
+                cur_r = start_r
+                cur_bg = blend_colour(start_colour, charged_colour, coil_t)
+            else:
+                # Phase 2: Rounded elastic launch — expands smoothly while keeping rounded corners
+                # until the final 12% where corners gently settle flush with the window edges.
+                t = (progress - windup_end) / (1.0 - windup_end)
+                launch_eased = 1.0 - (1.0 - t) ** 3
+                cur_x = round(coil_x * (1.0 - launch_eased))
+                cur_y = round(coil_y * (1.0 - launch_eased))
+                cur_w = max(1, min(win_w, round(coil_w + (win_w - coil_w) * launch_eased)))
+                cur_h = max(1, min(win_h, round(coil_h + (win_h - coil_h) * launch_eased)))
+                if t < 0.88:
+                    cur_r = round(start_r + 8 * min(1.0, t / 0.30))
                 else:
-                    curtain.destroy()
+                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.12))
 
-            self.after(12, draw_reveal)
+                if t <= 0.65:
+                    cp = min(1.0, t / 0.60)
+                    cur_bg = blend_colour(charged_colour, DARK_BG, cp * cp * (3.0 - 2.0 * cp))
+                else:
+                    cur_bg = last_bg[0]
 
-        expand_duration = 0.340
-        expand_started = monotonic()
+                if not cutout_visible[0]:
+                    backdrop_canvas.itemconfigure("cutout", state="normal")
+                    cutout_visible[0] = True
 
-        def draw_expand():
-            if not expander.winfo_exists() or not self.winfo_exists():
-                return
-            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            if progress < 0.5:
-                eased = 4.0 * (progress ** 3)
-            else:
-                eased = 1.0 - ((-2.0 * progress + 2.0) ** 3) / 2.0
+            x0, y0, x1, y1 = cur_x, cur_y, cur_x + cur_w, cur_y + cur_h
+            rect_key = (x0, y0, x1, y1, cur_r)
+            fill_update = cur_bg if cur_bg != last_bg[0] else None
+            if rect_key != last_rect[0] or fill_update is not None:
+                set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, cur_r, fill_update)
+                if cutout_visible[0] and rect_key != last_rect[0]:
+                    set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
+                last_rect[0] = rect_key
+                if fill_update is not None:
+                    last_bg[0] = fill_update
 
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y * (1.0 - eased))
-            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
-            cur_r = round(start_radius * max(0.0, 1.0 - progress / 0.35))
-
-            if progress < 0.45:
-                cur_bg = blend_colour(start_colour, ORANGE_ACCENT, progress / 0.45)
-            else:
-                t = (progress - 0.45) / 0.55
-                smooth_t = t * t * (3.0 - 2.0 * t)
-                cur_bg = blend_colour(ORANGE_ACCENT, DARK_BG, smooth_t)
-
-            if cur_r <= 1:
-                expander.configure(bg=cur_bg)
-            draw_rounded_fill(cur_w, cur_h, cur_r, cur_bg)
-
-            if progress < 0.42:
-                text_fade = progress / 0.42
-                expander.coords(text_item, cur_w / 2, cur_h / 2)
-                expander.itemconfigure(
-                    text_item,
-                    state="normal",
-                    fill=blend_colour(TEXT_WHITE, cur_bg, text_fade),
-                )
-            else:
-                expander.itemconfigure(text_item, state="hidden")
-
-            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            tk.Misc.lift(expander)
+            if progress >= fade_start:
+                fade_p = min(1.0, (progress - fade_start) / (1.0 - fade_start))
+                fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
+                try:
+                    pill_win.attributes("-alpha", max(0.0, 1.0 - fade_eased))
+                except tk.TclError:
+                    finish()
+                    return
 
             if progress < 1.0:
-                self.after(12, draw_expand)
+                self.after(14, draw_frame)
             else:
-                reveal_home()
+                finish()
 
-        draw_expand()
+        # Start after queued idle layout/scaling callbacks finish so the animation runs uninterrupted.
+        self.after(16, draw_frame)
+
+    def sign_out_to_login(self):
+        """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
+        if getattr(self, "_signing_out", False):
+            return
+        self._signing_out = True
+        self.focus_set()
+
+        win_x = self.winfo_rootx()
+        win_y = self.winfo_rooty()
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+
+        if win_w <= 1 or win_h <= 1:
+            self._signing_out = False
+            self.show_login()
+            return
+
+        # Capture the live current page BEFORE switching to the login screen underneath.
+        page_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
+        key_colour = "#010203"
+
+        # Two fixed-size full-window Toplevels kept withdrawn until painted (zero white flash):
+        # 1) page_win shows the captured page clipped inside a shrinking rounded rectangle.
+        # 2) pill_win draws the matching rounded pill fading in toward ORANGE_ACCENT as it lands.
+        page_win = None
+        pill_win = None
+        try:
+            page_win = tk.Toplevel(self)
+            page_win.withdraw()
+            page_win._preserve_during_shell_build = True
+            page_win.overrideredirect(True)
+            page_win.configure(bg=DARK_BG)
+            page_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            page_win.attributes("-transparentcolor", key_colour)
+            page_win.transient(self)
+
+            pill_win = tk.Toplevel(self)
+            pill_win.withdraw()
+            pill_win._preserve_during_shell_build = True
+            pill_win.overrideredirect(True)
+            pill_win.configure(bg=key_colour)
+            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            pill_win.attributes("-transparentcolor", key_colour)
+            pill_win.attributes("-alpha", 0.0)
+            pill_win.transient(self)
+        except tk.TclError:
+            for w in (pill_win, page_win):
+                if w is not None:
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._signing_out = False
+            self.show_login()
+            return
+
+        page_canvas = tk.Canvas(page_win, bg=DARK_BG, bd=0, highlightthickness=0)
+        page_canvas.pack(fill="both", expand=True)
+        if page_snap is not None:
+            page_canvas._snap_ref = page_snap
+            page_canvas.create_image(0, 0, image=page_snap, anchor="nw")
+
+        # 4 outer chroma-key rectangles + 4 inverse-corner polygons clip page_snap to a rounded box.
+        outer_masks = tuple(
+            page_canvas.create_rectangle(0, 0, 0, 0, fill=key_colour, outline="")
+            for _ in range(4)
+        )
+        corner_masks = tuple(
+            page_canvas.create_polygon(0, 0, 0, 0, 0, 0, fill=key_colour, outline="")
+            for _ in range(4)
+        )
+
+        # Pre-compute smooth quarter-circle steps (5 segments per corner) for fast, seamless rounded clipping.
+        arc_steps = tuple(
+            (math.cos(math.radians(a)), math.sin(math.radians(a)))
+            for a in (0, 18, 36, 54, 72, 90)
+        )
+
+        def update_page_clip(x0, y0, x1, y1, radius):
+            # Inset the clipped page snapshot 1-2px strictly inside pill_win's rounded boundary so
+            # bright pixels from page_snap can never poke past the pill's rounded corners.
+            lx = max(0, x0 + 1)
+            ly = max(0, y0 + 1)
+            rx = min(win_w, max(lx, x1 - 2))
+            by = min(win_h, max(ly, y1 - 2))
+            page_canvas.coords(outer_masks[0], 0, 0, win_w, ly)
+            page_canvas.coords(outer_masks[1], 0, by, win_w, win_h)
+            page_canvas.coords(outer_masks[2], 0, ly, lx, by)
+            page_canvas.coords(outer_masks[3], rx, ly, win_w, by)
+
+            r = max(0, min(radius + 1, (rx - lx) // 2, (by - ly) // 2))
+            if r <= 1:
+                for cm in corner_masks:
+                    page_canvas.coords(cm, 0, 0, 0, 0, 0, 0)
+                return
+
+            # Top-left, top-right, bottom-left, bottom-right inverse rounded corner masks with 2px outer overlap.
+            tl = [lx - 2, ly - 2]
+            for c, s in arc_steps:
+                tl.extend((lx + r - r * s, ly + r - r * c))
+            tr = [rx + 2, ly - 2]
+            for c, s in arc_steps:
+                tr.extend((rx - r + r * c, ly + r - r * s))
+            bl = [lx - 2, by + 2]
+            for c, s in arc_steps:
+                bl.extend((lx + r - r * c, by - r + r * s))
+            br = [rx + 2, by + 2]
+            for c, s in arc_steps:
+                br.extend((rx - r + r * s, by - r + r * c))
+            page_canvas.coords(corner_masks[0], *tl)
+            page_canvas.coords(corner_masks[1], *tr)
+            page_canvas.coords(corner_masks[2], *bl)
+            page_canvas.coords(corner_masks[3], *br)
+
+        pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
+        pill_canvas.pack(fill="both", expand=True)
+        pill_items = (
+            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+        )
+
+        def set_pill_shapes(x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
+            if r <= 1:
+                pill_canvas.coords(pill_items[0], x0, y0, x1, y1)
+                for extra in pill_items[1:]:
+                    pill_canvas.coords(extra, 0, 0, 0, 0)
+            else:
+                d = r * 2
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                pill_canvas.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
+                pill_canvas.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
+                pill_canvas.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
+                pill_canvas.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
+                pill_canvas.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
+                pill_canvas.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                pill_canvas.itemconfigure("pill", fill=fill_col)
+
+        # Reveal the full-window page snapshot BEFORE switching to the login screen underneath.
+        page_win.update_idletasks()
+        pill_win.update_idletasks()
+        self._strip_dwm_border(page_win)
+        self._strip_dwm_border(pill_win)
+        page_win.deiconify()
+        pill_win.deiconify()
+        self._strip_dwm_border(page_win)
+        self._strip_dwm_border(pill_win)
+        page_win.lift()
+        pill_win.lift()
+        try:
+            self.update()
+        except tk.TclError:
+            pass
+
+        # Build the login screen underneath while covered by page_win, and measure the Continue button.
+        self._transition_active = True
+        self.show_login()
+        if not self.winfo_exists():
+            self._signing_out = False
+            self._transition_active = False
+            for w in (pill_win, page_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+        self.apply_interface_scaling(force=True)
+        self.update_idletasks()
+        # Paint the login vinyl graphic statically right now while still hidden behind page_win
+        # (its spin loop stays paused until finish() so it never steals FPS during the transition).
+        disc_canvas = getattr(self, "_login_disc_canvas", None)
+        if disc_canvas is not None and disc_canvas.winfo_exists():
+            class _StaticPaintEvent:
+                widget = disc_canvas
+                width = disc_canvas.winfo_width()
+                height = disc_canvas.winfo_height()
+            self.paint_vinyl_record(_StaticPaintEvent())
+            self.update_idletasks()
+        page_win.lift()
+        pill_win.lift()
+
+        target_btn = getattr(self, "_login_button", None)
+        if target_btn is None or not target_btn.winfo_exists():
+            self._signing_out = False
+            self._finish_transition()
+            for w in (pill_win, page_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+
+        end_inset = 3
+        end_x = target_btn.winfo_rootx() - win_x + end_inset
+        end_y = target_btn.winfo_rooty() - win_y + end_inset
+        end_w = max(1, target_btn.winfo_width() - end_inset * 2)
+        end_h = max(1, target_btn.winfo_height() - end_inset * 2)
+        end_r = min(10, end_h // 2, end_w // 2)
+
+        # Temporarily mask the real Continue button with its card background so its full-size edges
+        # never peek out behind the squashed/bouncing pill during the elastic rebound.
+        btn_cover = tk.Frame(target_btn.master, bg=target_btn.cget("bg"), bd=0, highlightthickness=0)
+        btn_cover.place(
+            x=target_btn.winfo_x() - 2,
+            y=target_btn.winfo_y() - 2,
+            width=target_btn.winfo_width() + 4,
+            height=target_btn.winfo_height() + 4,
+        )
+        btn_cover.lift()
+        self.update_idletasks()
+        page_win.lift()
+        pill_win.lift()
+
+        # Deeply compressed impact target when the shrinking page snaps into the Continue button,
+        # followed by a lively damped elastic spring rebound that overshoots and settles cleanly.
+        squash_w = max(24, round(end_w * 0.72))
+        squash_h = max(18, round(end_h * 0.70))
+        squash_x = end_x + (end_w - squash_w) // 2
+        squash_y = end_y + (end_h - squash_h) // 2
+        impact_colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.85)
+
+        total_duration = 0.680  # ~0.39s snappy shrink into button + ~0.29s lively elastic spring bounce.
+        max_step = 1.0 / 20.0
+        shrink_end = 0.58
+        state = {"progress": 0.0, "last_t": None}
+        last_rect = [None]
+        last_bg = [DARK_BG]
+        last_alpha = [0.0]
+        page_hidden = [False]
+        btn_revealed = [False]
+
+        def finish():
+            for w in (pill_win, page_win, btn_cover):
+                if w is not None and w.winfo_exists():
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._signing_out = False
+            self._finish_transition()
+            disc = getattr(self, "_login_disc_canvas", None)
+            if disc is not None and disc.winfo_exists():
+                resume = getattr(disc, "_resume_spin", None)
+                if resume is not None:
+                    resume()
+
+        def draw_frame():
+            if not pill_win.winfo_exists() or not page_win.winfo_exists() or not self.winfo_exists():
+                finish()
+                return
+
+            now = monotonic()
+            if state["last_t"] is None:
+                delta = 0.014
+            else:
+                delta = min(max_step, (now - state["last_t"]) / total_duration)
+            state["last_t"] = now
+            state["progress"] = min(1.0, state["progress"] + delta)
+            progress = state["progress"]
+
+            if progress < shrink_end:
+                # Phase 1: Pull the entire current page inward into the compressed Continue button.
+                t = progress / shrink_end
+                # Smooth cubic ease-in-out gathers momentum as it collapses into the button.
+                eased = (
+                    4.0 * t ** 3
+                    if t < 0.5
+                    else 1.0 - ((-2.0 * t + 2.0) ** 3) / 2.0
+                )
+                cur_x = round(squash_x * eased)
+                cur_y = round(squash_y * eased)
+                cur_w = max(1, round(win_w + (squash_w - win_w) * eased))
+                cur_h = max(1, round(win_h + (squash_h - win_h) * eased))
+                # Corners round in smoothly during the first 15%, then settle to end_r.
+                if t < 0.15:
+                    cur_r = round((end_r + 8) * (t / 0.15))
+                else:
+                    cur_r = round((end_r + 8) - 8 * ((t - 0.15) / 0.85))
+
+                # Fade the pill overlay in smoothly over the shrinking page toward bright impact orange.
+                fade_p = min(1.0, t / 0.82)
+                fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
+                cur_bg = blend_colour(DARK_BG, impact_colour, fade_eased)
+                alpha = fade_eased
+                # Hide page_win the instant pill_win is fully opaque so no snapshot edges can ever show.
+                if alpha >= 0.99 and not page_hidden[0]:
+                    page_win.withdraw()
+                    page_hidden[0] = True
+            else:
+                # Phase 2: Lively damped elastic spring bounce from compressed impact into the Continue button.
+                if not page_hidden[0]:
+                    page_win.withdraw()
+                    page_hidden[0] = True
+                u = (progress - shrink_end) / (1.0 - shrink_end)
+                spring = ease_out_elastic(u, damping=3.2, frequency=1.55)
+                cur_w = max(1, round(squash_w + (end_w - squash_w) * spring))
+                cur_h = max(1, round(squash_h + (end_h - squash_h) * spring))
+                cur_x = end_x + (end_w - cur_w) // 2
+                cur_y = end_y + (end_h - cur_h) // 2
+                cur_r = min(end_r, cur_h // 2, cur_w // 2)
+                cur_bg = blend_colour(impact_colour, ORANGE_ACCENT, min(1.0, u / 0.65))
+                # Uncover the real Continue button right as the spring settles, then fade seamlessly into its label.
+                if u >= 0.72:
+                    if not btn_revealed[0] and btn_cover.winfo_exists():
+                        btn_cover.destroy()
+                        btn_revealed[0] = True
+                    alpha = max(0.0, 1.0 - (u - 0.72) / 0.28)
+                else:
+                    alpha = 1.0
+
+            x0, y0, x1, y1 = cur_x, cur_y, cur_x + cur_w, cur_y + cur_h
+            rect_key = (x0, y0, x1, y1, cur_r)
+            fill_update = cur_bg if cur_bg != last_bg[0] else None
+            if rect_key != last_rect[0] or fill_update is not None:
+                set_pill_shapes(x0, y0, x1, y1, cur_r, fill_update)
+                if not page_hidden[0] and rect_key != last_rect[0]:
+                    update_page_clip(x0, y0, x1, y1, cur_r)
+                last_rect[0] = rect_key
+                if fill_update is not None:
+                    last_bg[0] = fill_update
+
+            if abs(alpha - last_alpha[0]) >= 0.008 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
+                try:
+                    pill_win.attributes("-alpha", alpha)
+                    last_alpha[0] = alpha
+                except tk.TclError:
+                    finish()
+                    return
+
+            if progress < 1.0:
+                self.after(10, draw_frame)
+            else:
+                finish()
+
+        self.after(10, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
@@ -288,7 +889,7 @@ class LoginViewMixin:
         inner_r = outer_r * 0.65
         vinyl_r = outer_r * 0.50
 
-        # 1. Three concentric rotating circles of text (matching 1.svg).
+        # 1. Three concentric rotating circles of text (matching 1.svg), skipping blank spaces.
         ring_text = "LISTEN · DISCOVER · STREAM · SHARE · BBC SOUND · "
         ring_specs = [
             (outer_r, "#d2d5db", max(11, round(unit * 0.032)), 0.45),
@@ -299,15 +900,18 @@ class LoginViewMixin:
         for radius, colour, font_size, speed in ring_specs:
             step = 360.0 / len(ring_text)
             for idx, char in enumerate(ring_text):
+                if char == " ":
+                    continue
                 base_deg = idx * step
                 rad = math.radians(base_deg - 90)
+                init_ang = round((-base_deg) % 360) % 360
                 item_id = canvas_obj.create_text(
                     center_x + radius * math.cos(rad),
                     center_y + radius * math.sin(rad),
                     text=char, fill=colour, font=("Arial Black", font_size, "bold"),
-                    angle=(-base_deg) % 360,
+                    angle=init_ang,
                 )
-                ring_items.append((item_id, base_deg, radius, speed))
+                ring_items.append([item_id, base_deg, radius, speed, init_ang])
 
         # 2. Rotating Vinyl CD / Record in the centre.
         canvas_obj.create_oval(
@@ -402,52 +1006,88 @@ class LoginViewMixin:
             fill=ORANGE_ACCENT, outline="",
         )
 
-        # Continuous 360-degree rotation loop for vinyl CD and all 3 text circles.
-        state = {"tick": getattr(canvas_obj, "_spin_tick", 0.0)}
+        # Continuous time-based 60fps rotation loop batched into a single Tcl eval per frame,
+        # automatically pausing while the user drags/resizes the window so dragging stays lag-free.
+        state = {
+            "tick": getattr(canvas_obj, "_spin_tick", 0.0),
+            "last_t": None,
+            "last_top_ang": None,
+            "last_bot_ang": None,
+        }
+        canvas_path = str(canvas_obj)
+        tk_eval = canvas_obj.tk.eval
+        cos = math.cos
+        sin = math.sin
+        deg2rad = math.pi / 180.0
+        top_r = label_r * 0.45
+        bot_r = label_r * 0.48
 
         def animate_spin():
+            canvas_obj._spin_job = None
             if not canvas_obj.winfo_exists():
                 return
-            state["tick"] = (state["tick"] + 1.0) % 36000.0
+            if getattr(self, "_signing_out", False):
+                state["last_t"] = None
+                return
+            now = monotonic()
+            if now < getattr(self, "_window_moving_until", 0.0):
+                state["last_t"] = None
+                canvas_obj._spin_job = self.after(40, animate_spin)
+                return
+
+            # Advance in real elapsed time (30 ticks/sec matches the original speed at 60fps).
+            dt = 0.016 if state["last_t"] is None else min(0.05, now - state["last_t"])
+            state["last_t"] = now
+            state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
             canvas_obj._spin_tick = state["tick"]
             t = state["tick"]
 
-            for item_id, base_deg, radius, speed in ring_items:
+            cmds = []
+            append = cmds.append
+
+            # Rotate each letter smoothly along its concentric ring; only update GDI font angle on 1-deg steps.
+            for item in ring_items:
+                item_id, base_deg, radius, speed, last_ang = item
                 deg = (base_deg + t * speed) % 360.0
-                rad = math.radians(deg - 90.0)
-                canvas_obj.coords(
-                    item_id,
-                    center_x + radius * math.cos(rad),
-                    center_y + radius * math.sin(rad),
-                )
-                canvas_obj.itemconfigure(item_id, angle=(-deg) % 360.0)
+                rad = (deg - 90.0) * deg2rad
+                append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.2f} {center_y + radius * sin(rad):.2f}")
+                ang = round((-deg) % 360.0) % 360
+                if ang != last_ang:
+                    item[4] = ang
+                    append(f"{canvas_path} itemconfigure {item_id} -angle {ang}")
 
+            # Rotate the vinyl highlights and specular glints clockwise.
             vinyl_deg = (t * 2.2) % 360.0
-            canvas_obj.itemconfigure(sheen_1, start=(25.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(sheen_2, start=(205.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(glint_1, start=(35.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(glint_2, start=(215.0 - vinyl_deg) % 360.0)
+            append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.2f}")
 
-            v_rad = math.radians(vinyl_deg - 90.0)
-            mx = center_x + label_dot_r * math.cos(v_rad)
-            my = center_y + label_dot_r * math.sin(v_rad)
-            canvas_obj.coords(label_marker, mx - 3, my - 3, mx + 3, my + 3)
+            # Orbit the centre label dot and "BBC / SOUNDS" text around the spindle.
+            v_rad = (vinyl_deg - 90.0) * deg2rad
+            cv, sv = cos(v_rad), sin(v_rad)
+            mx = center_x + label_dot_r * cv
+            my = center_y + label_dot_r * sv
+            append(f"{canvas_path} coords {label_marker} {mx - 3:.2f} {my - 3:.2f} {mx + 3:.2f} {my + 3:.2f}")
+            append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.2f} {center_y + top_r * sv:.2f}")
+            append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.2f} {center_y - bot_r * sv:.2f}")
 
-            top_rad = math.radians(vinyl_deg - 90.0)
-            bot_rad = math.radians(vinyl_deg + 90.0)
-            canvas_obj.coords(
-                label_top,
-                center_x + label_r * 0.45 * math.cos(top_rad),
-                center_y + label_r * 0.45 * math.sin(top_rad),
-            )
-            canvas_obj.itemconfigure(label_top, angle=(-vinyl_deg) % 360.0)
-            canvas_obj.coords(
-                label_bottom,
-                center_x + label_r * 0.48 * math.cos(bot_rad),
-                center_y + label_r * 0.48 * math.sin(bot_rad),
-            )
-            canvas_obj.itemconfigure(label_bottom, angle=(180.0 - vinyl_deg) % 360.0)
+            top_ang = round((-vinyl_deg) % 360.0) % 360
+            if top_ang != state["last_top_ang"]:
+                state["last_top_ang"] = top_ang
+                append(f"{canvas_path} itemconfigure {label_top} -angle {top_ang}")
+            bot_ang = round((180.0 - vinyl_deg) % 360.0) % 360
+            if bot_ang != state["last_bot_ang"]:
+                state["last_bot_ang"] = bot_ang
+                append(f"{canvas_path} itemconfigure {label_bottom} -angle {bot_ang}")
 
-            canvas_obj._spin_job = self.after(33, animate_spin)
+            try:
+                tk_eval("\n".join(cmds))
+            except tk.TclError:
+                return
 
-        animate_spin()
+            canvas_obj._spin_job = self.after(14, animate_spin)
+
+        canvas_obj._resume_spin = animate_spin
+        if not getattr(self, "_signing_out", False):
+            animate_spin()

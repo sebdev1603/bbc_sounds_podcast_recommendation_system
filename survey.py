@@ -143,6 +143,7 @@ def is_survey_complete(username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Check whether CompleteSurvey is flagged as 1 for this listener ID.
     cursor.execute(
         "SELECT 1 FROM listeners WHERE ListenerID = ? AND CompleteSurvey = 1",
         (user_id,)

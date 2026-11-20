@@ -8,22 +8,32 @@ from tkinter import messagebox
 
 from last_listened import record_last_listened
 from gui_parts.theme import (
+    ACTION_BTN_BG,
+    ACTION_BTN_FG,
     BORDER_LINE,
     DARK_BG,
     DEFAULT_FONT,
+    DIVIDER_LINE,
     GOLD_STAR,
     ORANGE_ACCENT,
     ORANGE_HL,
+    PRIMARY_BTN_FG,
+    SECONDARY_HOVER_BG,
+    STAR_EMPTY,
+    SUBCARD_BG,
     TEXT_GRAY,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
+    TITLEBAR_TEXT,
     blend_colour,
+    ease_out_elastic,
 )
 
 
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
 
-    def show_detail(self, podcast_id):
+    def show_detail(self, podcast_id, *, show_simulated_notice=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
@@ -39,11 +49,14 @@ class DetailViewMixin:
 
             page = self.build_shell("Programme details")
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
+            back_tab, back_handler, back_name = getattr(
+                self, "_last_non_detail_tab", ("Genres", self.show_search, "genres"),
+            )
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 12))
             self.create_button(
-                back_row, "←  Back to discover",
-                lambda: self.transition_to(self.show_search, "Genres", direction=-1), compact=True,
+                back_row, f"←  Back to {back_name}",
+                lambda: self.transition_to(back_handler, back_tab, direction=-1), compact=True,
             ).pack(side="left")
             self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
 
@@ -52,7 +65,7 @@ class DetailViewMixin:
             detail_column._skip_auto_scale = True
             detail_column.pack(fill="x", padx=56)
 
-            top_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            top_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             top_rule.pack(fill="x", pady=(4, 34))
 
             hero_box = tk.Frame(detail_column, bg=DARK_BG)
@@ -91,13 +104,14 @@ class DetailViewMixin:
                 if not play_canvas.winfo_exists():
                     return
                 size = play_state["size"]
-                t = play_state["step"] / 5.0
-                eased = 1.0 - (1.0 - t) ** 2
-                inset = 4.0 - 3.0 * eased
+                t = play_state["step"] / 12.0
+                # Smooth damped elastic spring stretches the play circle and settles seamlessly.
+                eased = ease_out_elastic(t, damping=4.6, frequency=1.20) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 3
+                inset = max(0.5, 5.0 - 3.5 * eased)
                 colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, eased)
                 play_canvas.delete("all")
                 play_canvas.create_oval(inset, inset, size - inset, size - inset, fill=colour, outline="")
-                tri_scale = 1.0 + 0.06 * eased
+                tri_scale = 1.0 + 0.08 * eased
                 cx, cy = size * 0.50, size * 0.50
                 pts = [
                     (size * 0.39, size * 0.26),
@@ -125,7 +139,7 @@ class DetailViewMixin:
                     play_state["step"] += 1 if play_state["target"] > play_state["step"] else -1
                     draw_play_button()
                     if play_state["step"] != play_state["target"]:
-                        play_state["job"] = self.after(18, step_play)
+                        play_state["job"] = self.after(16, step_play)
 
                 step_play()
 
@@ -138,11 +152,11 @@ class DetailViewMixin:
                     play_state["job"] = None
 
             for play_widget in (play_canvas, listen_label):
-                play_widget.bind("<Enter>", lambda _e: animate_play_hover(5))
+                play_widget.bind("<Enter>", lambda _e: animate_play_hover(12))
                 play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
             play_canvas.bind("<Destroy>", cancel_play_hover)
 
-            v_divider = tk.Frame(controls_row, bg="#575756", width=2, height=62)
+            v_divider = tk.Frame(controls_row, bg=DIVIDER_LINE, width=2, height=62)
             v_divider.pack(side="left", padx=(0, 22))
 
             actions_box = tk.Frame(controls_row, bg=DARK_BG)
@@ -150,12 +164,12 @@ class DetailViewMixin:
             is_fav = self.check_if_favourited(podcast_id)
             fav_button = self.create_button(
                 actions_box,
-                "♥  Remove from favourites" if is_fav else "♡  Save to favourites",
+                "♥  Remove from favourites" if is_fav else "♥  Save to favourites",
                 lambda: self.toggle_favourite(podcast_id),
                 primary=is_fav,
                 compact=True,
-                face=ORANGE_ACCENT if is_fav else "#23262d",
-                fg=TEXT_WHITE,
+                face=ORANGE_ACCENT if is_fav else ACTION_BTN_BG,
+                fg=PRIMARY_BTN_FG if is_fav else ACTION_BTN_FG,
             )
             fav_button.pack(anchor="w", pady=(0, 8))
             rate_button = self.create_button(
@@ -163,19 +177,62 @@ class DetailViewMixin:
                 "★  Rate this programme",
                 lambda: self.rate_programme(podcast_id),
                 compact=True,
-                face="#23262d",
-                fg=TEXT_WHITE,
+                face=ACTION_BTN_BG,
+                fg=ACTION_BTN_FG,
             )
             rate_button.pack(anchor="w")
             action_buttons = [
-                (fav_button, ORANGE_ACCENT if is_fav else "#23262d", ORANGE_HL if is_fav else BORDER_LINE),
-                (rate_button, "#23262d", BORDER_LINE),
+                (fav_button, ORANGE_ACCENT if is_fav else ACTION_BTN_BG, ORANGE_HL if is_fav else SECONDARY_HOVER_BG),
+                (rate_button, ACTION_BTN_BG, SECONDARY_HOVER_BG),
             ]
 
-            bottom_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            # Subtle background notice that appears when Play is clicked and slowly fades away.
+            sim_notice_label = tk.Label(
+                right_pane,
+                text="Playback is simulated" if show_simulated_notice else "",
+                font=(DEFAULT_FONT, 10, "italic"),
+                fg=TEXT_GRAY if show_simulated_notice else DARK_BG,
+                bg=DARK_BG,
+                anchor="w",
+                justify="left",
+            )
+            sim_notice_label.pack(anchor="w", pady=(12, 0))
+            sim_fade_job = [None]
+
+            def cancel_sim_fade(_event=None):
+                if sim_fade_job[0] is not None:
+                    try:
+                        self.after_cancel(sim_fade_job[0])
+                    except tk.TclError:
+                        pass
+                    sim_fade_job[0] = None
+
+            sim_notice_label.bind("<Destroy>", cancel_sim_fade)
+
+            if show_simulated_notice:
+                fade_steps = 36
+                fade_step = [0]
+
+                def step_sim_fade():
+                    sim_fade_job[0] = None
+                    if not sim_notice_label.winfo_exists():
+                        return
+                    fade_step[0] += 1
+                    frac = min(1.0, fade_step[0] / float(fade_steps))
+                    eased = frac * frac * (3.0 - 2.0 * frac)
+                    sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, DARK_BG, eased))
+                    if fade_step[0] < fade_steps:
+                        sim_fade_job[0] = self.after(40, step_sim_fade)
+                    else:
+                        sim_notice_label.configure(text="")
+
+                # Hold readable for ~1.1s before slowly fading into the background over ~1.45s.
+                sim_fade_job[0] = self.after(1100, step_sim_fade)
+
+            bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             bottom_rule.pack(fill="x", pady=(0, 22))
 
-            sub_card = self.create_card_frame(detail_column, bg="#1d1e22")
+            sub_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
             sub_card.pack(fill="x", padx=28, pady=(0, 8))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
@@ -191,12 +248,12 @@ class DetailViewMixin:
             summary_label.pack(anchor="w", padx=18, pady=(0, 8))
 
             # Read-only 5-star polygon display aligned with the personal rating label.
-            rating_row = tk.Frame(sub_card, bg="#1d1e22")
+            rating_row = tk.Frame(sub_card, bg=SUBCARD_BG)
             rating_row.pack(anchor="w", padx=18, pady=(0, 14))
             rating_caption = self.create_label(
                 rating_row,
                 "Your rating:",
-                10, TEXT_GRAY, "bold", bg="#1d1e22",
+                10, TEXT_GRAY, "bold", bg=SUBCARD_BG,
             )
             rating_caption.pack(side="left", padx=(0, 10))
 
@@ -205,7 +262,7 @@ class DetailViewMixin:
                 rating_row,
                 width=5 * star_state["size"] + 4 * star_state["gap"],
                 height=star_state["size"],
-                bg="#1d1e22",
+                bg=SUBCARD_BG,
                 bd=0,
                 highlightthickness=0,
             )
@@ -232,7 +289,7 @@ class DetailViewMixin:
                         pts.extend((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
                     star_canvas.create_polygon(
                         pts,
-                        fill=GOLD_STAR if star_idx <= active else "#444851",
+                        fill=GOLD_STAR if star_idx <= active else STAR_EMPTY,
                         outline="",
                     )
 
@@ -253,7 +310,8 @@ class DetailViewMixin:
                     return
                 last_layout["cover"] = cover_size
                 play_size = round(max(74, min(124, 82 * scale)))
-                font_scale = scale
+                # Apply the user's accessibility text-size multiplier to detail-page typography.
+                font_scale = scale * getattr(self, "_text_scale", 1.0)
 
                 for child in cover_holder.winfo_children():
                     child.destroy()
@@ -285,6 +343,7 @@ class DetailViewMixin:
                 meta_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 avg_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
+                sim_notice_label.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "italic"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
                 summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 rating_caption.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "bold"))
@@ -308,35 +367,43 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
-    def listen(self, podcast_id):
+    def listen(self, podcast_id, *, open_detail=True):
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
         try:
             with self.get_db_connection() as conn:
+                # Check if this listener already has a listening_history row for this podcast.
                 existing_entry = conn.execute(
                     "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
                 if existing_entry:
+                    # Increment the existing play counter safely even if TimesListened was NULL.
                     conn.execute(
                         "UPDATE listening_history SET TimesListened = COALESCE(TimesListened, 0) + 1 "
                         "WHERE ListenerID = ? AND PodcastID = ?", (self.current_user, podcast_id),
                     )
                 else:
+                    # Create a new listening_history record starting at 1 play.
                     conn.execute(
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened) VALUES (?, ?, 1)",
                         (podcast_id, self.current_user),
                     )
+                # Update recency tables in the same transaction so the bottom mini-bar reflects this play.
                 record_last_listened(conn, self.current_user, podcast_id)
+            # Clear any prior dismissal so the newly played podcast appears in the mini-bar.
             self._dismissed_last_listened = None
-            messagebox.showinfo("Now playing", "Listening to this programme…\n\nPlayback is simulated in this prototype.", parent=self)
-            self.show_detail(podcast_id)
+            if open_detail:
+                self.show_detail(podcast_id, show_simulated_notice=True)
+            return True
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
+            return False
 
     def save_programme_rating(self, podcast_id, new_score, callback_func=None):
         """Persist a 1-5 rating for the active listener and refresh the current view."""
         try:
             with self.get_db_connection() as conn:
+                # Update the listener's rating in place, or insert a row if one doesn't exist yet.
                 prior_record = conn.execute(
                     "SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
@@ -351,6 +418,7 @@ class DetailViewMixin:
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened, RatingGiven) "
                         "VALUES (?, ?, 0, ?)", (podcast_id, self.current_user, new_score),
                     )
+            # Invalidate the cached community rating averages so the new score is reflected immediately.
             self._podcast_averages = None
             if callback_func:
                 callback_func()
@@ -385,14 +453,26 @@ class DetailViewMixin:
             dialog.transient(self)
             dialog.grab_set()
 
+            # Style the popup dialog's Windows titlebar to match the active theme.
             if sys.platform == "win32":
                 try:
                     dialog.update_idletasks()
                     dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
-                    val = ctypes.c_int(1)
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        ctypes.c_void_p(dlg_hwnd), ctypes.c_int(20), ctypes.byref(val), ctypes.sizeof(val),
-                    )
+
+                    def _to_colorref(hex_col):
+                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
+
+                    for attr, value in (
+                        (20, int(TITLEBAR_DARK_MODE)),
+                        (19, int(TITLEBAR_DARK_MODE)),
+                        (35, _to_colorref(DARK_BG)),
+                        (36, _to_colorref(TITLEBAR_TEXT)),
+                        (34, _to_colorref(DARK_BG)),
+                    ):
+                        val = ctypes.c_int(value)
+                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                        )
                 except Exception:
                     pass
 
@@ -410,7 +490,7 @@ class DetailViewMixin:
 
             def paint_dlg_stars(score):
                 for idx, lbl in enumerate(dlg_stars, start=1):
-                    lbl.configure(fg=GOLD_STAR if idx <= score else "#444851")
+                    lbl.configure(fg=GOLD_STAR if idx <= score else STAR_EMPTY)
                 score_lbl.configure(text=f"{score} / 5")
 
             def select_dlg_star(score):
@@ -420,7 +500,7 @@ class DetailViewMixin:
             for star_idx in range(1, 6):
                 star_lbl = tk.Label(
                     stars_frame, text="★", font=(DEFAULT_FONT, 30, "bold"),
-                    bg=DARK_BG, fg=GOLD_STAR if star_idx <= initial_score else "#444851",
+                    bg=DARK_BG, fg=GOLD_STAR if star_idx <= initial_score else STAR_EMPTY,
                     cursor="hand2", bd=0, padx=4,
                 )
                 star_lbl.pack(side="left")
@@ -454,11 +534,13 @@ class DetailViewMixin:
         if not messagebox.askyesno("Remove rating", "Remove your rating for this programme?", parent=self):
             return
         try:
+            # Set RatingGiven to NULL rather than deleting the row so play counts are preserved.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 )
+            # Clear cached average ratings so community scores recalculate on next render.
             self._podcast_averages = None
             self.show_ratings()
         except sqlite3.Error as err:
@@ -468,12 +550,14 @@ class DetailViewMixin:
         """Add or remove a podcast from the active listener's FavoritePodcasts CSV."""
         try:
             with self.get_db_connection() as conn:
+                # Read the current comma-separated list of favourited PodcastIDs.
                 record = conn.execute(
                     "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?", (self.current_user,)
                 ).fetchone()
                 current_str = str((record[0] if record else "") or "")
                 id_tokens = [item.strip() for item in current_str.split(",") if item.strip()]
                 target_str = str(podcast_id)
+                # Toggle membership: remove if already saved, otherwise append.
                 if target_str in id_tokens:
                     id_tokens.remove(target_str)
                     message_text = "Removed from your favourites."
@@ -494,6 +578,7 @@ class DetailViewMixin:
         if not messagebox.askyesno("Remove from history", "Remove this programme from your listening history?", parent=self):
             return
         try:
+            # Delete only the matching (ListenerID, PodcastID) row from listening_history.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "DELETE FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
@@ -508,6 +593,7 @@ class DetailViewMixin:
         if not messagebox.askyesno("Clear listening history", "Remove all programmes from your listening history?", parent=self):
             return
         try:
+            # Remove every listening_history record belonging to the current listener.
             with self.get_db_connection() as conn:
                 conn.execute("DELETE FROM listening_history WHERE ListenerID = ?", (self.current_user,))
             self.show_history()

@@ -66,7 +66,7 @@ def search_programmes(username):
 
     conn.close()
 
-    # Allow the user to open a specific podcast from the results or return to the menu.
+    # Capitalize the entered title and either return to the main menu or open podcast details.
     podcast_title = input("\nEnter the title of the podcast you want to view details for, or press Enter to return to the main menu: ").strip()
     podcast_title = podcast_title.capitalize()
     if podcast_title == "":

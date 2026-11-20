@@ -43,6 +43,7 @@ def generate_report(username):
         df_rated = df.dropna(subset=['RatingGiven'])
         
         if not df_rated.empty:
+            # Compute highest, lowest, and mean rating across only the rated podcasts.
             print(f"\nYour highest rating given is {df_rated['RatingGiven'].max()} and your lowest rating given is {df_rated['RatingGiven'].min()}.")
             print(f"\nYour average rating for all podcasts is {df_rated['RatingGiven'].mean():.2f}.")
         else:
