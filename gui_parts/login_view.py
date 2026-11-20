@@ -13,6 +13,8 @@ from gui_parts.theme import (
     TEXT_GRAY,
     TEXT_WHITE,
     blend_colour,
+    ease_in_out_back,
+    ease_out_elastic,
     format_user_id,
 )
 
@@ -161,10 +163,10 @@ class LoginViewMixin:
         # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
         self.cancel_button_hover(login_button)
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
-        hover_t = getattr(login_button, "_hover_step", 0) / 5.0
-        hover_eased = 1.0 - (1.0 - hover_t) ** 2
+        hover_t = getattr(login_button, "_hover_step", 0) / 12.0
+        hover_eased = ease_out_elastic(hover_t, damping=4.8, frequency=1.15) if getattr(login_button, "_hover_target", 0) > 0 else 1.0 - (1.0 - hover_t) ** 3
         start_colour = blend_colour(face, hover, hover_eased)
-        start_inset = round(2 * (1.0 - hover_eased))
+        start_inset = max(0, min(3, round(3.0 - 2.0 * hover_eased)))
         button_bg = login_button.cget("bg")
         button_font = login_button.cget("font")
 
@@ -219,15 +221,18 @@ class LoginViewMixin:
             curtain.place(x=0, y=0, width=win_w, height=win_h)
             curtain.lift()
 
-            reveal_duration = 0.260
-            reveal_started = monotonic()
+            reveal_duration = 0.420
+            reveal_started = None
 
             def draw_reveal():
+                nonlocal reveal_started
                 if not curtain.winfo_exists() or not self.winfo_exists():
                     return
-                # Cubic ease-out lifts the curtain smoothly while fading its bottom orange edge.
+                if reveal_started is None:
+                    reveal_started = monotonic()
+                # Smooth quartic ease-out lifts the curtain seamlessly while fading its orange edge.
                 progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 3
+                eased = 1.0 - (1.0 - progress) ** 4
                 cur_y = round(-win_h * eased)
                 if progress > 0.70:
                     fade = (progress - 0.70) / 0.30
@@ -235,29 +240,26 @@ class LoginViewMixin:
                 curtain.place(x=0, y=cur_y, width=win_w, height=win_h)
                 curtain.lift()
                 if progress < 1.0:
-                    self.after(12, draw_reveal)
+                    self.after(8, draw_reveal)
                 else:
                     curtain.destroy()
 
-            self.after(12, draw_reveal)
+            self.after(8, draw_reveal)
 
-        expand_duration = 0.340
+        expand_duration = 0.520
         expand_started = monotonic()
 
         def draw_expand():
-            # Phase 1: cubic ease-in-out expands the button to fill the window and shifts orange -> DARK_BG.
+            # Phase 1: fluid elastic ease-in-out gives a gentle pull before blooming to fill the window.
             if not expander.winfo_exists() or not self.winfo_exists():
                 return
             progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            if progress < 0.5:
-                eased = 4.0 * (progress ** 3)
-            else:
-                eased = 1.0 - ((-2.0 * progress + 2.0) ** 3) / 2.0
+            eased = ease_in_out_back(progress, overshoot=0.65)
 
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y * (1.0 - eased))
-            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_x = max(0, round(start_x * (1.0 - eased)))
+            cur_y = max(0, round(start_y * (1.0 - eased)))
+            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
+            cur_h = max(1, min(target_h, round(start_h + (target_h - start_h) * eased)))
             cur_r = round(start_radius * max(0.0, 1.0 - progress / 0.35))
 
             if progress < 0.45:
@@ -288,9 +290,10 @@ class LoginViewMixin:
             tk.Misc.lift(expander)
 
             if progress < 1.0:
-                self.after(12, draw_expand)
+                self.after(8, draw_expand)
             else:
-                reveal_home()
+                # Pause briefly at full-screen dark fill before lifting the Home curtain.
+                self.after(120, reveal_home)
 
         draw_expand()
 

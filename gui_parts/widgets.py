@@ -31,6 +31,7 @@ from gui_parts.theme import (
     TEXT_LIGHT,
     TEXT_WHITE,
     blend_colour,
+    ease_out_elastic,
 )
 
 
@@ -132,7 +133,7 @@ class WidgetsMixin:
         button._hover_step = 0
         button._hover_target = 0
         self.style_rounded_button(button, face, ORANGE_HL if primary else SECONDARY_HOVER_BG)
-        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 5))
+        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 12))
         button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
         button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
         return button
@@ -148,7 +149,7 @@ class WidgetsMixin:
             button._hover_job = None
 
     def animate_button_hover(self, button, target_step):
-        """Ease a button's hover state smoothly toward target_step (0..5)."""
+        """Ease a button's hover state smoothly toward target_step (0..12) with elastic spring."""
         if not button.winfo_exists():
             return
         if target_step > 0 and str(button.cget("state")) == "disabled":
@@ -169,19 +170,20 @@ class WidgetsMixin:
             button._hover_step = current
             self._apply_button_hover_frame(button, current)
             if current != target:
-                button._hover_job = self.after(18, step_frame)
+                button._hover_job = self.after(16, step_frame)
 
         step_frame()
 
     def _apply_button_hover_frame(self, button, step):
-        """Render a single intermediate frame of a button's hover expansion and tint."""
+        """Render a single intermediate frame of a button's elastic hover expansion and tint."""
         face, hover = button._rounded_colours
         width, height = button._hover_size
         base_fg = button._hover_base_fg
-        t = step / 5.0
-        eased = 1.0 - (1.0 - t) ** 2
+        t = step / 12.0
+        # Fluid damped elastic spring on enter; smooth cubic ease-out on leave.
+        eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if getattr(button, "_hover_target", 0) > 0 else 1.0 - (1.0 - t) ** 3
         colour = blend_colour(face, hover, eased)
-        inset = round(2 * (1.0 - eased))
+        inset = max(0, min(3, round(3.0 - 2.0 * eased)))
         image = self.rounded_button_image(width, height, colour, inset=inset)
         button._current_image = image
         config = {"image": image}
@@ -221,14 +223,15 @@ class WidgetsMixin:
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
         button._hover_size = (width, height)
-        button._normal_image = self.rounded_button_image(width, height, face, inset=2)
+        button._normal_image = self.rounded_button_image(width, height, face, inset=3)
         button.configure(image=button._normal_image)
 
-    def rounded_button_image(self, width, height, colour, inset=2):
+    def rounded_button_image(self, width, height, colour, inset=3):
         """Rasterize and cache a rounded-rectangle PhotoImage for a button state."""
         key = (width, height, colour, inset)
         if key not in self.button_images:
-            canvas_w, canvas_h = width + 4, height + 4
+            # Reserve 3px transparent margin per side so elastic hover bounce never shifts layout.
+            canvas_w, canvas_h = width + 6, height + 6
             image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
             left, top = inset, inset
             right, bottom = canvas_w - inset, canvas_h - inset

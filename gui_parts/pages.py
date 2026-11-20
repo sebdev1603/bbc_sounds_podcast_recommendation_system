@@ -27,6 +27,7 @@ from gui_parts.theme import (
     TEXT_LIGHT,
     TEXT_WHITE,
     blend_colour,
+    ease_out_elastic,
 )
 
 
@@ -218,7 +219,7 @@ class PagesMixin:
                     ),
                 )
                 category_card = self.create_card_frame(category_row, bg=tile_colour, cursor="hand2")
-                category_card._inset = 2
+                category_card._inset = 3
                 category_card.grid(
                     row=idx // columns_count, column=idx % columns_count,
                     sticky="nsew", padx=5, pady=5,
@@ -275,16 +276,18 @@ class PagesMixin:
                     ttl=title_label,
                     dsc=description_label,
                     act=action_label,
+                    state=card_state,
                 ):
                     if not card.winfo_exists():
                         return
-                    t = step / 5.0
-                    eased = 1.0 - (1.0 - t) ** 2
+                    t = step / 12.0
+                    # Fluid damped elastic spring on hover; smooth cubic ease-out on leave.
+                    eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
                     cur_bg = blend_colour(base_col, hi_col, eased)
                     cur_border = blend_colour(BORDER_LINE, ORANGE_HL, eased)
                     cur_ico_bg = blend_colour("#17181b", ORANGE_ACCENT, eased)
                     cur_act_fg = blend_colour("#ffffff", GOLD_STAR, eased)
-                    card.set_inset(round(2 * (1.0 - eased)))
+                    card.set_inset(max(0, min(3, round(3.0 - 2.0 * eased))))
                     card.set_surface(cur_bg, cur_border)
                     hdr.configure(bg=cur_bg)
                     ttl.configure(bg=cur_bg)
@@ -311,7 +314,7 @@ class PagesMixin:
                         state["step"] = cur
                         apply_fn(cur)
                         if cur != tgt:
-                            state["job"] = self.after(18, step_card)
+                            state["job"] = self.after(16, step_card)
 
                     step_card()
 
@@ -338,8 +341,8 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 5.0
-                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
+                    t = state["step"] / 12.0
+                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 3)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
                         lambda: (self.search_text.set(name), perform_search_action()),
@@ -347,7 +350,7 @@ class PagesMixin:
                     )
 
                 for clickable_widget in card_widgets:
-                    clickable_widget.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(5))
+                    clickable_widget.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(12))
                     clickable_widget.bind("<Leave>", on_card_leave)
                     clickable_widget.bind("<Button-1>", open_genre)
                 category_card.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -402,7 +405,7 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.240
+        expand_duration = 0.420
         expand_started = monotonic()
 
         def start_reveal():
@@ -419,34 +422,37 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.200
-            reveal_started = monotonic()
+            reveal_duration = 0.360
+            reveal_started = None
 
             def draw_reveal():
+                nonlocal reveal_started
                 if not expander.winfo_exists() or not area_frame.winfo_exists():
                     return
+                if reveal_started is None:
+                    reveal_started = monotonic()
                 progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 3
+                eased = 1.0 - (1.0 - progress) ** 4
                 cur_y = round(-target_h * eased)
                 expander.place(x=0, y=cur_y, width=target_w, height=target_h)
                 tk.Misc.lift(expander)
                 if progress < 1.0:
-                    self.after(12, draw_reveal)
+                    self.after(8, draw_reveal)
                 else:
                     expander.destroy()
                     area_frame._expanding_genre = False
 
-            self.after(12, draw_reveal)
+            self.after(8, draw_reveal)
 
         def draw_expand():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
                 return
             progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = 1.0 - (1.0 - progress) ** 3
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y * (1.0 - eased))
-            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            cur_x = max(0, round(start_x * (1.0 - eased)))
+            cur_y = max(0, round(start_y * (1.0 - eased)))
+            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
+            cur_h = max(1, min(target_h, round(start_h + (target_h - start_h) * eased)))
 
             if progress > 0.45:
                 fade = (progress - 0.45) / 0.55
@@ -472,9 +478,10 @@ class PagesMixin:
             tk.Misc.lift(expander)
 
             if progress < 1.0:
-                self.after(12, draw_expand)
+                self.after(8, draw_expand)
             else:
-                start_reveal()
+                # Hold briefly at full expansion before sliding the curtain up to reveal programmes.
+                self.after(120, start_reveal)
 
         draw_expand()
 

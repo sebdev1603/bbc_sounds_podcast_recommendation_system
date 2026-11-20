@@ -1,5 +1,6 @@
 """Shared paths, colour palette, genre metadata, bundled font loader, and base rounded-panel widget."""
 import ctypes
+import math
 from pathlib import Path
 import struct
 import sys
@@ -309,11 +310,38 @@ def sanitize_column_name(col):
 
 
 def blend_colour(hex_colour, target_colour, amount):
-    """Blend two #RRGGBB colours linearly by amount (0.0 -> source, 1.0 -> target)."""
+    """Blend two #RRGGBB colours linearly by amount (clamped to 0.0..1.0)."""
+    clamped = max(0.0, min(1.0, float(amount)))
     source = tuple(int(hex_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
     target = tuple(int(target_colour[pos:pos + 2], 16) for pos in (1, 3, 5))
-    mixed = tuple(round(start + (end - start) * amount) for start, end in zip(source, target))
+    mixed = tuple(round(start + (end - start) * clamped) for start, end in zip(source, target))
     return "#" + "".join(f"{channel:02x}" for channel in mixed)
+
+
+def ease_out_back(t, overshoot=1.35):
+    """Bouncy spring-out easing curve that gently overshoots 1.0 and settles back."""
+    u = max(0.0, min(1.0, float(t))) - 1.0
+    return 1.0 + (overshoot + 1.0) * (u ** 3) + overshoot * (u ** 2)
+
+
+def ease_in_out_back(t, overshoot=1.15):
+    """Elastic ease-in-out curve with subtle anticipation and soft spring settle."""
+    p = max(0.0, min(1.0, float(t)))
+    c2 = overshoot * 1.525
+    if p < 0.5:
+        return (((2.0 * p) ** 2) * ((c2 + 1.0) * 2.0 * p - c2)) / 2.0
+    return (((2.0 * p - 2.0) ** 2) * ((c2 + 1.0) * (p * 2.0 - 2.0) + c2) + 2.0) / 2.0
+
+
+def ease_out_elastic(t, damping=5.2, frequency=1.15):
+    """Smooth damped elastic spring curve with controlled stretch and zero end-snap."""
+    p = max(0.0, min(1.0, float(t)))
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return 1.0
+    # Multiply by (1 - p) so the spring tapers cleanly to 1.0 with zero jump on the final frame.
+    return 1.0 - (1.0 - p) * math.exp(-damping * p) * math.cos(p * math.pi * 2.0 * frequency)
 
 
 class RoundedPanel(tk.Frame):

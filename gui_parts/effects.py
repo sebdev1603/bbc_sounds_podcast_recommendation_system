@@ -29,6 +29,7 @@ from gui_parts.theme import (
     TOPBAR_BG,
     apply_theme_palette,
     blend_colour,
+    ease_out_elastic,
 )
 
 # Embedded 64x64, 32x32, and 16x16 BBC Sounds logo PNGs (base64, area-averaged from
@@ -569,7 +570,7 @@ class EffectsMixin:
                     )
             self.update_search_prompt()
             canvas_pane = self._shell_canvas
-            # Cancel any in-flight horizontal slide animation before destroying the old page frame.
+            # Cancel any in-flight horizontal slide animation before preparing the new page.
             previous_frame = getattr(canvas_pane, "_slide_frame", None)
             if previous_frame is not None:
                 try:
@@ -578,17 +579,33 @@ class EffectsMixin:
                     pass
                 canvas_pane._slide_frame = None
             canvas_pane._leaving_page = False
-            old_page = self.current_page
-            if old_page is not None and old_page.winfo_exists():
-                old_page.destroy()
-            old_win = getattr(self, "_shell_canvas_window", None)
-            if old_win is not None:
-                try:
-                    canvas_pane.delete(old_win)
-                except tk.TclError:
-                    pass
-            # Reset scroll position to the top and sync the bottom mini-bar (hidden on detail view).
-            canvas_pane.yview_moveto(0)
+
+            # Clean up any prior outgoing page if a new transition interrupted an older one.
+            prev_anim_old = getattr(self, "_anim_old_page_info", None)
+            if prev_anim_old is not None:
+                p_page, p_win = prev_anim_old
+                if p_page is not None and p_page.winfo_exists():
+                    p_page.destroy()
+                if p_win is not None:
+                    try:
+                        canvas_pane.delete(p_win)
+                    except tk.TclError:
+                        pass
+                self._anim_old_page_info = None
+
+            outgoing_info = getattr(self, "_outgoing_page_info", None)
+            self._outgoing_page_info = None
+            if outgoing_info is None:
+                old_page = self.current_page
+                if old_page is not None and old_page.winfo_exists():
+                    old_page.destroy()
+                old_win = getattr(self, "_shell_canvas_window", None)
+                if old_win is not None:
+                    try:
+                        canvas_pane.delete(old_win)
+                    except tk.TclError:
+                        pass
+                canvas_pane.yview_moveto(0)
             self._active_detail_podcast = None
             self._sync_bottom_bar(
                 shell_box,
@@ -596,6 +613,8 @@ class EffectsMixin:
                 show_average=not profile_tab_active,
             )
         else:
+            outgoing_info = None
+            self._outgoing_page_info = None
             # Cold start: clear the login screen and construct the persistent header, search box, and scroll viewport.
             self.unbind_all("<MouseWheel>")
             for widget in self.winfo_children():
@@ -684,11 +703,16 @@ class EffectsMixin:
         win_kwargs = {"window": content_pane, "anchor": "nw"}
         if canvas_w > 1:
             win_kwargs["width"] = canvas_w
-        canvas_window = canvas_pane.create_window((0, 0), **win_kwargs)
+        if self._tab_transition_direction is not None and canvas_w > 1:
+            # Start the incoming page off-screen so it never flashes at (0, 0) before sliding in.
+            init_pos = (self._tab_transition_direction * canvas_w, 0)
+        else:
+            init_pos = (0, 0)
+        canvas_window = canvas_pane.create_window(init_pos, **win_kwargs)
         self._shell_canvas_window = canvas_window
 
         def update_scrollregion(event):
-            if canvas_pane.winfo_exists():
+            if canvas_pane.winfo_exists() and not getattr(self, "_transition_active", False):
                 canvas_pane.configure(scrollregion=(0, 0, event.width, event.height))
 
         content_pane.bind("<Configure>", update_scrollregion)
@@ -698,7 +722,9 @@ class EffectsMixin:
         self._active_nav_tab = active_nav_tab
 
         if self._tab_transition_direction is not None:
-            self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
+            self.animate_page_entry(
+                canvas_pane, canvas_window, self._tab_transition_direction, outgoing_info=outgoing_info,
+            )
         elif abs(self._ui_scale_factor - 1.0) >= 0.025 or abs(getattr(self, "_text_scale", 1.0) - 1.0) >= 0.025:
             target = content_pane if reusing_shell else self
             self.after_idle(lambda t=target: self.apply_interface_scaling(force=True, target_widget=t))
@@ -752,11 +778,15 @@ class EffectsMixin:
         current = self._active_nav_tab
         if tab is not None and tab == current and direction is None:
             return
-        if direction is None:
-            if current in self._tab_order and tab in self._tab_order:
-                direction = 1 if self._tab_order.index(tab) > self._tab_order.index(current) else -1
-            else:
-                direction = 1
+        tab_distance = 1
+        if current in self._tab_order and tab in self._tab_order:
+            delta = self._tab_order.index(tab) - self._tab_order.index(current)
+            tab_distance = max(1, abs(delta))
+            if direction is None:
+                direction = 1 if delta > 0 else -1
+        elif direction is None:
+            direction = 1
+
         canvas._leaving_page = True
         self._transition_active = True
         self.cancel_pending_render()
@@ -778,50 +808,82 @@ class EffectsMixin:
                 )
                 return
 
+        # Slide the current page completely off-screen before building and sliding in the destination page.
         def open_next_page():
+            self._outgoing_page_info = None
             self._tab_transition_direction = direction
+            self._tab_transition_distance = tab_distance
             try:
                 destination()
             finally:
                 self._tab_transition_direction = None
+                self._tab_transition_distance = 1
 
-        self.slide_page(canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page)
+        self.slide_page(
+            canvas, window, -direction * max(1, canvas.winfo_width()), 12, open_next_page,
+            frame_ms=10, complete_delay_ms=16,
+        )
 
-    def animate_page_entry(self, canvas, canvas_window, direction):
-        """Slide a newly built page horizontally into view from the given direction."""
+    def _prerender_initial_batch(self, max_items=6):
+        """Render the first visible row of queued cards off-screen so pages slide in already populated."""
+        rendered = 0
+        while self._render_queue and rendered < max_items:
+            items_iter, render_item = self._render_queue[0]
+            try:
+                item = next(items_iter)
+            except StopIteration:
+                self._render_queue.pop(0)
+                continue
+            render_item(item)
+            rendered += 1
+
+    def animate_page_entry(self, canvas, canvas_window, direction, outgoing_info=None):
+        """Slide the new page into view across guaranteed frames so it never cuts mid-transition."""
         self._transition_active = True
+        tab_distance = max(1, getattr(self, "_tab_transition_distance", 1))
+        max_span = max(1, len(getattr(self, "_tab_order", [])) - 2)
+        ratio = min(1.0, (tab_distance - 1) / max_span)
+        # Smooth, seamless frame-stepped elastic slide: 18 frames for adjacent tabs up to 28 for Home <-> Profile.
+        # Kept within ~2%..8% overshoot so far-away jumps feel clearly elastic without cutting off page content.
+        entry_frames = round(18 + 10 * ratio)
+        damping = 6.8 - 1.8 * ratio
+        frequency = 0.95 + 0.30 * ratio
 
-        def on_entry_done():
+        def finish_entry():
+            if canvas.winfo_exists():
+                canvas.coords(canvas_window, 0, 0)
+                canvas.yview_moveto(0)
+                if self.current_page is not None and self.current_page.winfo_exists():
+                    canvas.configure(
+                        scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
+                    )
             self._finish_transition()
-            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
-                self.apply_interface_scaling(force=True, target_widget=self.current_page)
 
-        width = canvas.winfo_width()
-        if width > 1:
-            canvas.itemconfigure(canvas_window, width=width)
-            canvas.coords(canvas_window, direction * width, 0)
-            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
-            return
-
-        canvas.itemconfigure(canvas_window, state="hidden")
-
-        def reveal_page():
+        def begin_slide():
             if not canvas.winfo_exists():
                 self._finish_transition()
                 return
-            canvas.itemconfigure(canvas_window, state="normal")
-            self.slide_page(canvas, canvas_window, 0, 200, on_entry_done)
+            # Pre-render the first row of cards off-screen so the page glides in looking complete.
+            self._prerender_initial_batch(6)
+            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
+                self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+            width = max(1, canvas.winfo_width())
+            canvas.itemconfigure(canvas_window, width=width)
+            canvas.coords(canvas_window, direction * width, 0)
+            canvas.update_idletasks()
+            self.slide_page(
+                canvas, canvas_window, 0, entry_frames, finish_entry,
+                damping=damping, frequency=frequency, frame_ms=12, complete_delay_ms=16,
+            )
 
-        def start_entry(event):
-            canvas.unbind("<Configure>", configure_binding)
-            canvas.itemconfigure(canvas_window, width=event.width)
-            canvas.coords(canvas_window, direction * event.width, 0)
-            canvas.after_idle(reveal_page)
+        # Wait one idle tick so the destination page finishes building off-screen before sliding in.
+        canvas.after_idle(begin_slide)
 
-        configure_binding = canvas.bind("<Configure>", start_entry, add="+")
-
-    def slide_page(self, canvas, canvas_window, end_x, duration_ms, on_complete=None):
-        """Animate the scrollable content window horizontally to end_x."""
+    def slide_page(
+        self, canvas, canvas_window, end_x, total_frames, on_complete=None, *,
+        damping=5.4, frequency=1.15, frame_ms=10, complete_delay_ms=10,
+    ):
+        """Step through every frame (1..total_frames) so the slide finishes completely without cutting."""
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
             try:
@@ -830,26 +892,30 @@ class EffectsMixin:
                 pass
         coords = canvas.coords(canvas_window)
         start_x = coords[0] if coords else 0
+        total_frames = max(1, int(total_frames))
+        step = 0
         last_x = round(start_x)
-        started = monotonic()
         self._transition_active = True
 
         def draw_frame():
-            nonlocal last_x
+            nonlocal last_x, step
             canvas._slide_frame = None
             if not canvas.winfo_exists():
                 self._transition_active = False
                 return
-            progress = min(1.0, (monotonic() - started) * 1000 / duration_ms)
-            eased = progress ** 2 if end_x else 1 - (1 - progress) ** 3
+            step += 1
+            progress = min(1.0, step / float(total_frames))
+            # Outgoing pages accelerate cleanly off-screen; incoming pages stretch and settle elastically.
+            eased = progress ** 3 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
                 canvas.coords(canvas_window, new_x, 0)
                 last_x = new_x
-            if progress < 1.0:
-                canvas._slide_frame = canvas.after(12, draw_frame)
+            if step < total_frames:
+                canvas._slide_frame = canvas.after(frame_ms, draw_frame)
             elif on_complete:
-                on_complete()
+                # Hold briefly after the final frame paints before handing off to the next page.
+                canvas._slide_frame = canvas.after(complete_delay_ms, on_complete)
             else:
                 self._finish_transition()
 
@@ -970,7 +1036,7 @@ class EffectsMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        duration = 0.200
+        duration = 0.420
         started = monotonic()
         last_bg = start_bg
 
@@ -981,12 +1047,12 @@ class EffectsMixin:
                 self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - started) / duration)
-            eased = 1.0 - (1.0 - progress) ** 3
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y + (target_y - start_y) * eased)
-            cur_w = round(start_w + (target_w - start_w) * eased)
-            cur_h = round(start_h + (target_h - start_h) * eased)
-            cur_bg = blend_colour(start_bg, DARK_BG, eased)
+            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            cur_x = max(0, round(start_x * (1.0 - eased)))
+            cur_y = max(target_y, round(start_y + (target_y - start_y) * eased))
+            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_bg = blend_colour(start_bg, DARK_BG, progress)
             if cur_bg != last_bg:
                 expander.configure(bg=cur_bg)
                 preview_box.configure(bg=cur_bg)
@@ -995,12 +1061,45 @@ class EffectsMixin:
                 last_bg = cur_bg
             expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
             if progress < 1.0:
-                self.after(12, draw_expand)
+                self.after(8, draw_expand)
             else:
-                shell._expanding_bar = False
-                expander.destroy()
-                self._finish_transition()
-                self.show_detail(podcast_id)
+                def start_detail_reveal():
+                    if not expander.winfo_exists() or not shell.winfo_exists():
+                        shell._expanding_bar = False
+                        self._finish_transition()
+                        return
+                    # Build the detail page underneath the overlay, then glide the curtain upward to reveal it.
+                    self.show_detail(podcast_id)
+                    if not expander.winfo_exists() or not shell.winfo_exists():
+                        shell._expanding_bar = False
+                        self._finish_transition()
+                        return
+                    tk.Misc.lift(expander)
+                    reveal_frames = 18
+                    reveal_step = 0
+
+                    def draw_detail_reveal():
+                        nonlocal reveal_step
+                        if not expander.winfo_exists() or not shell.winfo_exists():
+                            shell._expanding_bar = False
+                            self._finish_transition()
+                            return
+                        reveal_step += 1
+                        r_prog = min(1.0, reveal_step / float(reveal_frames))
+                        r_eased = 1.0 - (1.0 - r_prog) ** 3
+                        cur_top = round(target_y - target_h * r_eased)
+                        expander.place(x=0, y=cur_top, width=target_w, height=target_h)
+                        tk.Misc.lift(expander)
+                        if reveal_step < reveal_frames:
+                            self.after(10, draw_detail_reveal)
+                        else:
+                            shell._expanding_bar = False
+                            expander.destroy()
+                            self._finish_transition()
+
+                    self.after(10, draw_detail_reveal)
+
+                self.after(80, start_detail_reveal)
 
         draw_expand()
 
@@ -1050,15 +1149,17 @@ class EffectsMixin:
         shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
 
-        duration = 0.220
-        started = monotonic()
+        duration = 0.440
+        started = None
         last_bg = DARK_BG
 
         def draw_shrink():
-            nonlocal last_bg
+            nonlocal last_bg, started
             if not shrinker.winfo_exists() or not self.winfo_exists():
                 self._finish_transition()
                 return
+            if started is None:
+                started = monotonic()
             if self._bottom_bar_info is not None:
                 dest_footer = self._bottom_bar_info[1]
                 if dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
@@ -1068,12 +1169,12 @@ class EffectsMixin:
                     target_box[3] = dest_footer.winfo_height()
             target_x, target_y, target_w, target_h = target_box
             progress = min(1.0, (monotonic() - started) / duration)
-            eased = 1.0 - (1.0 - progress) ** 3
+            eased = ease_out_elastic(progress, damping=5.2, frequency=1.10)
             cur_x = round(start_x + (target_x - start_x) * eased)
             cur_y = round(start_y + (target_y - start_y) * eased)
             cur_w = max(1, round(start_w + (target_w - start_w) * eased))
             cur_h = max(1, round(start_h + (target_h - start_h) * eased))
-            cur_bg = blend_colour(DARK_BG, target_bg, eased)
+            cur_bg = blend_colour(DARK_BG, target_bg, progress)
 
             if cur_bg != last_bg or progress > 0.55:
                 shrinker.configure(bg=cur_bg)
@@ -1095,12 +1196,12 @@ class EffectsMixin:
             shrinker.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
 
             if progress < 1.0:
-                self.after(12, draw_shrink)
+                self.after(8, draw_shrink)
             else:
                 shrinker.destroy()
                 self._finish_transition()
 
-        self.after(12, draw_shrink)
+        self.after(8, draw_shrink)
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
@@ -1123,11 +1224,11 @@ class EffectsMixin:
         def draw_frame(start, started):
             nonlocal pending_frame, target
             pending_frame = None
-            progress = min(1.0, (monotonic() - started) / 0.065)
-            position = round(start + (target - start) * (1 - (1 - progress) ** 2))
+            progress = min(1.0, (monotonic() - started) / 0.165)
+            position = round(start + (target - start) * (1 - (1 - progress) ** 4))
             canvas.yview_scroll(position - round(canvas.canvasy(0)), "units")
             if progress < 1 and position != target:
-                pending_frame = canvas.after(10, draw_frame, start, started)
+                pending_frame = canvas.after(8, draw_frame, start, started)
             else:
                 target = None
 
