@@ -1050,6 +1050,7 @@ class WidgetsMixin:
         )
         rendered_cards = []
         current_columns = [0]
+        max_configured_cols = [0]
         current_cover_size = [0]
         cover_resize_job = [None]
 
@@ -1057,9 +1058,11 @@ class WidgetsMixin:
             available_width = grid_container.winfo_width()
             if available_width <= 1:
                 available_width = max(1, self.winfo_width() - 110)
-            responsive_columns = max(2, min(columns_count, available_width // 260))
+            # Grow card width only modestly on wide monitors so extra space adds more cards per row.
+            target_card_w = min(330, max(255, round(255 + max(0, available_width - 1100) * 0.025)))
+            responsive_columns = max(2, min(16, available_width // target_card_w))
             col_width = available_width // responsive_columns
-            # Fill card box width (subtract 10px card padx and 18px cover padx) with no artificial upper cap.
+            # Fill card box width (subtract 10px card padx and 18px cover padx) with no side gaps.
             target_cover = max(160, col_width - 28)
             return responsive_columns, target_cover
 
@@ -1103,7 +1106,9 @@ class WidgetsMixin:
                 return
             current_columns[0] = responsive_columns
             if columns_changed:
-                for col_idx in range(columns_count):
+                span = max(max_configured_cols[0], responsive_columns)
+                max_configured_cols[0] = span
+                for col_idx in range(span):
                     grid_container.grid_columnconfigure(
                         col_idx, weight=1 if col_idx < responsive_columns else 0,
                         uniform="programme" if col_idx < responsive_columns else "",

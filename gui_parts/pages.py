@@ -61,7 +61,7 @@ class PagesMixin:
                     "h.TimesListened, h.RatingGiven "
                     "FROM listening_history h JOIN podcasts p ON p.PodcastID = h.PodcastID "
                     "WHERE h.ListenerID = ? ORDER BY COALESCE(h.TimesListened, 0) DESC, "
-                    "p.Title COLLATE NOCASE LIMIT 8",
+                    "p.Title COLLATE NOCASE LIMIT 16",
                     (self.current_user,),
                 ).fetchall()
                 favourite_count = 0
@@ -119,7 +119,7 @@ class PagesMixin:
             promo_art = self.render_decorative_panel(banner_card, "1.svg", 0, (150, 138), 155, 138)
             promo_art.pack(side="right", padx=12, pady=10)
 
-            rec_list = self.get_custom_recommendations(8)
+            rec_list = self.get_custom_recommendations(16)
             if rec_list:
                 self.render_section_title(
                     page, "Made for you", "A match for your favourite genres and episode length.",
@@ -127,7 +127,7 @@ class PagesMixin:
                 )
                 self.render_podcast_grid(
                     page, rec_list, columns_count=6, show_play=True,
-                    max_count=8, single_row=True,
+                    max_count=16, single_row=True,
                 )
             elif not self.get_row_field(listener_info, "CompleteSurvey", 0):
                 self.render_section_title(page, "Make recommendations personal")
@@ -149,13 +149,13 @@ class PagesMixin:
                 )
                 self.render_podcast_grid(
                     page, history_rows, columns_count=6, show_play=True,
-                    max_count=8, single_row=True,
+                    max_count=16, single_row=True,
                 )
             else:
                 self.render_section_title(page, "Explore the catalogue")
                 self.render_podcast_grid(
-                    page, self.query_podcasts(item_limit=8), columns_count=6,
-                    show_play=True, max_count=8, single_row=True,
+                    page, self.query_podcasts(item_limit=16), columns_count=6,
+                    show_play=True, max_count=16, single_row=True,
                 )
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load BBC Sounds", err)
@@ -602,22 +602,27 @@ class PagesMixin:
         self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
 
     def render_ratings_page(self, parent, rating_rows, last_page):
-        """Render one page of 4-column rated podcast cards."""
+        """Render one page of responsive rated podcast cards."""
         ratings_grid = tk.Frame(parent, bg=DARK_BG)
         ratings_grid.pack(fill="x")
-        for column_idx in range(4):
-            ratings_grid.grid_columnconfigure(column_idx, weight=1, uniform="rating-cards")
 
+        end_message = self.create_label(
+            ratings_grid, "No more results", 15, "#777b83", "bold", anchor="center",
+        )
         rendered_cards = []
+        current_columns = [0]
+        max_configured_cols = [0]
         current_cover_size = [0]
         cover_resize_job = [None]
 
-        def compute_rating_cover_size():
+        def compute_rating_metrics():
             available_width = ratings_grid.winfo_width()
             if available_width <= 1:
                 available_width = max(1, self.winfo_width() - 110)
-            col_width = available_width // 4
-            return max(160, col_width - 30)
+            target_card_w = min(355, max(280, round(280 + max(0, available_width - 1100) * 0.025)))
+            cols = max(2, min(14, available_width // target_card_w))
+            col_width = available_width // cols
+            return cols, max(160, col_width - 30)
 
         def refresh_rating_covers():
             cover_resize_job[0] = None
@@ -639,8 +644,9 @@ class PagesMixin:
                 )
                 meta[5] = target_size
 
-        def on_ratings_resize(_event=None):
-            target_size = compute_rating_cover_size()
+        def reflow_ratings(_event=None):
+            cols, target_size = compute_rating_metrics()
+            columns_changed = cols != current_columns[0]
             if current_cover_size[0] == 0 or abs(target_size - current_cover_size[0]) >= 2:
                 current_cover_size[0] = target_size
                 if rendered_cards:
@@ -650,16 +656,39 @@ class PagesMixin:
                         except tk.TclError:
                             pass
                     cover_resize_job[0] = self.after(50, refresh_rating_covers)
+            if not columns_changed and _event is not None:
+                return
+            current_columns[0] = cols
+            if columns_changed:
+                span = max(max_configured_cols[0], cols)
+                max_configured_cols[0] = span
+                for column_idx in range(span):
+                    ratings_grid.grid_columnconfigure(
+                        column_idx, weight=1 if column_idx < cols else 0,
+                        uniform="rating-cards" if column_idx < cols else "",
+                    )
+            first_card = 0 if columns_changed else len(rendered_cards) - 1
+            for idx in range(first_card, len(rendered_cards)):
+                rendered_cards[idx].grid(
+                    row=idx // cols, column=idx % cols, sticky="nsew", padx=6, pady=6,
+                )
+            item_count = len(rendered_cards)
+            final_row, used_columns = divmod(item_count, cols)
+            if last_page and item_count == len(rating_rows) and used_columns:
+                end_message.grid(
+                    row=final_row, column=used_columns, columnspan=cols - used_columns,
+                    sticky="nsew", padx=6, pady=6,
+                )
+            else:
+                end_message.grid_remove()
 
-        ratings_grid.bind("<Configure>", on_ratings_resize)
+        ratings_grid.bind("<Configure>", reflow_ratings)
 
         def render_rating_card(row):
             if current_cover_size[0] == 0:
-                current_cover_size[0] = compute_rating_cover_size()
+                _, current_cover_size[0] = compute_rating_metrics()
             cover_size = current_cover_size[0]
             card = self.create_card_frame(ratings_grid)
-            idx = len(ratings_grid.winfo_children()) - 1
-            card.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=6, pady=6)
             cover_box = tk.Frame(card, bg=CARD_BG, height=cover_size)
             cover_box.pack_propagate(False)
             cover_box.pack(fill="x", padx=9, pady=(9, 0))
@@ -687,14 +716,7 @@ class PagesMixin:
             self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
                 side="right"
             )
-            final_row, used_columns = divmod(len(rating_rows), 4)
-            if last_page and idx == len(rating_rows) - 1 and used_columns:
-                self.create_label(
-                    ratings_grid, "No more results", 15, "#777b83", "bold", anchor="center",
-                ).grid(
-                    row=final_row, column=used_columns, columnspan=4 - used_columns,
-                    sticky="nsew", padx=6, pady=6,
-                )
+            reflow_ratings()
         self.render_in_batches(rating_rows, render_rating_card)
 
     def show_genres(self):

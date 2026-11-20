@@ -247,7 +247,7 @@ TITLEBAR_DARK_MODE = THEME_PALETTES["dark"]["TITLEBAR_DARK_MODE"]
 TITLEBAR_TEXT = THEME_PALETTES["dark"]["TITLEBAR_TEXT"]
 
 DEFAULT_FONT = load_bundled_reith_font()  # Bundled BBC Reith Sans (falls back to Segoe UI).
-PODCASTS_PER_PAGE = 12       # Number of podcast cards rendered per paginated page.
+PODCASTS_PER_PAGE = 24       # Number of podcast cards rendered per paginated page.
 
 
 def apply_theme_palette(theme_name):
