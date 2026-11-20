@@ -253,7 +253,8 @@ class DetailViewMixin:
                     return
                 last_layout["cover"] = cover_size
                 play_size = round(max(74, min(124, 82 * scale)))
-                font_scale = scale
+                # Apply the user's accessibility text-size multiplier to detail-page typography.
+                font_scale = scale * getattr(self, "_text_scale", 1.0)
 
                 for child in cover_holder.winfo_children():
                     child.destroy()
@@ -312,21 +313,26 @@ class DetailViewMixin:
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
         try:
             with self.get_db_connection() as conn:
+                # Check if this listener already has a listening_history row for this podcast.
                 existing_entry = conn.execute(
                     "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
                 if existing_entry:
+                    # Increment the existing play counter safely even if TimesListened was NULL.
                     conn.execute(
                         "UPDATE listening_history SET TimesListened = COALESCE(TimesListened, 0) + 1 "
                         "WHERE ListenerID = ? AND PodcastID = ?", (self.current_user, podcast_id),
                     )
                 else:
+                    # Create a new listening_history record starting at 1 play.
                     conn.execute(
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened) VALUES (?, ?, 1)",
                         (podcast_id, self.current_user),
                     )
+                # Update recency tables in the same transaction so the bottom mini-bar reflects this play.
                 record_last_listened(conn, self.current_user, podcast_id)
+            # Clear any prior dismissal so the newly played podcast appears in the mini-bar.
             self._dismissed_last_listened = None
             messagebox.showinfo("Now playing", "Listening to this programme…\n\nPlayback is simulated in this prototype.", parent=self)
             self.show_detail(podcast_id)
@@ -337,6 +343,7 @@ class DetailViewMixin:
         """Persist a 1-5 rating for the active listener and refresh the current view."""
         try:
             with self.get_db_connection() as conn:
+                # Update the listener's rating in place, or insert a row if one doesn't exist yet.
                 prior_record = conn.execute(
                     "SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
@@ -351,6 +358,7 @@ class DetailViewMixin:
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened, RatingGiven) "
                         "VALUES (?, ?, 0, ?)", (podcast_id, self.current_user, new_score),
                     )
+            # Invalidate the cached community rating averages so the new score is reflected immediately.
             self._podcast_averages = None
             if callback_func:
                 callback_func()
@@ -454,11 +462,13 @@ class DetailViewMixin:
         if not messagebox.askyesno("Remove rating", "Remove your rating for this programme?", parent=self):
             return
         try:
+            # Set RatingGiven to NULL rather than deleting the row so play counts are preserved.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 )
+            # Clear cached average ratings so community scores recalculate on next render.
             self._podcast_averages = None
             self.show_ratings()
         except sqlite3.Error as err:
@@ -468,12 +478,14 @@ class DetailViewMixin:
         """Add or remove a podcast from the active listener's FavoritePodcasts CSV."""
         try:
             with self.get_db_connection() as conn:
+                # Read the current comma-separated list of favourited PodcastIDs.
                 record = conn.execute(
                     "SELECT FavoritePodcasts FROM listeners WHERE ListenerID = ?", (self.current_user,)
                 ).fetchone()
                 current_str = str((record[0] if record else "") or "")
                 id_tokens = [item.strip() for item in current_str.split(",") if item.strip()]
                 target_str = str(podcast_id)
+                # Toggle membership: remove if already saved, otherwise append.
                 if target_str in id_tokens:
                     id_tokens.remove(target_str)
                     message_text = "Removed from your favourites."
@@ -494,6 +506,7 @@ class DetailViewMixin:
         if not messagebox.askyesno("Remove from history", "Remove this programme from your listening history?", parent=self):
             return
         try:
+            # Delete only the matching (ListenerID, PodcastID) row from listening_history.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "DELETE FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
@@ -508,6 +521,7 @@ class DetailViewMixin:
         if not messagebox.askyesno("Clear listening history", "Remove all programmes from your listening history?", parent=self):
             return
         try:
+            # Remove every listening_history record belonging to the current listener.
             with self.get_db_connection() as conn:
                 conn.execute("DELETE FROM listening_history WHERE ListenerID = ?", (self.current_user,))
             self.show_history()

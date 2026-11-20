@@ -443,6 +443,7 @@ class WidgetsMixin:
             container, width=size, height=size, bg=container.cget("bg"),
             highlightthickness=0,
         )
+        # Outer grey circular badge with a crisp light border ring.
         centre = size / 2
         outer_margin = size * 0.06
         avatar.create_oval(
@@ -451,6 +452,7 @@ class WidgetsMixin:
             fill="#55585e", outline="#e7e8ea", width=3,
         )
 
+        # Draw a minimal white head-and-shoulders silhouette and mask the bottom edge.
         head_radius = size * 0.16
         head_y = size * 0.38
         shoulder_top = size * 0.57

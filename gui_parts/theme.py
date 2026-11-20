@@ -7,28 +7,29 @@ ROOT_PATH = Path(__file__).resolve().parent.parent
 DATABASE_PATH = ROOT_PATH / "database.db"
 CANVA_DIR = ROOT_PATH / "canva design"
 
-# Shared dark-theme palette and typography constants.
-DARK_BG = "#101113"
-SIDEBAR_BG = "#17181b"
-CARD_BG = "#1b1d21"
-INPUT_BG = "#22252a"
-BORDER_LINE = "#303339"
-ORANGE_ACCENT = "#ff751f"
-ORANGE_HL = "#ff914d"
-TEXT_WHITE = "#f7f7f7"
-TEXT_GRAY = "#a8abb1"
-TEXT_LIGHT = "#d6d8dc"
-GOLD_STAR = "#ffd166"
-DEFAULT_FONT = "Segoe UI"
-PODCASTS_PER_PAGE = 12
+# Shared dark-theme palette and typography constants used across every screen.
+DARK_BG = "#101113"          # Primary application background.
+SIDEBAR_BG = "#17181b"       # Secondary chrome / scrollbar background.
+CARD_BG = "#1b1d21"          # Default rounded card surface colour.
+INPUT_BG = "#22252a"         # Text inputs and secondary button background.
+BORDER_LINE = "#303339"      # Subtle 1px card/button border outline.
+ORANGE_ACCENT = "#ff751f"    # Official BBC Sounds signature orange.
+ORANGE_HL = "#ff914d"        # Lighter orange highlight for hover states and labels.
+TEXT_WHITE = "#f7f7f7"       # High-contrast primary body and heading text.
+TEXT_GRAY = "#a8abb1"        # Muted secondary captions and metadata text.
+TEXT_LIGHT = "#d6d8dc"       # Medium-contrast text for secondary buttons.
+GOLD_STAR = "#ffd166"        # Warm gold colour for filled rating stars.
+DEFAULT_FONT = "Segoe UI"    # Standard Windows UI font family.
+PODCASTS_PER_PAGE = 12       # Number of podcast cards rendered per paginated page.
 
-# Genre metadata and episode-length filter ranges.
+# Supported podcast genres, duration buckets (in minutes), and visual tile metadata.
 GENRE_LIST = [
     "News", "Travel", "History", "Comedy", "True Crime", "Technology",
     "Science", "Business", "Gaming", "Entertainment", "Sport", "Health",
 ]
 DURATION_RANGES = {"Short": (0, 30), "Medium": (25, 45), "Long": (45, 60)}
 PALETTE_SWATCHES = ["#5b315e", "#185a70", "#7a3d2d", "#2e6654", "#6c5631", "#373e79"]
+# Maps each genre name to (card_colour, icon_glyph, short_tagline) for the Genres tab and cover art.
 GENRE_TILE_DETAILS = {
     "News": ("#7a2838", "N", "Headlines, investigations and current affairs"),
     "Travel": ("#176c78", "✈", "Journeys, places and stories from around the world"),
@@ -43,6 +44,7 @@ GENRE_TILE_DETAILS = {
     "Sport": ("#39713b", "⚽", "Matches, athletes and expert sporting analysis"),
     "Health": ("#8a4b35", "♥", "Wellbeing, medicine and healthier living"),
 }
+# Concentric (light, mid, dark_outline) ring palettes for circular genre badges.
 GENRE_CIRCLE_COLOURS = [
     ("#b79cff", "#5e17eb", "#2e0b70"), ("#9cecff", "#38b6ff", "#0b4f78"),
     ("#ffb7ad", "#e84a5f", "#7c1f2c"), ("#b9f4c7", "#43aa8b", "#175b49"),

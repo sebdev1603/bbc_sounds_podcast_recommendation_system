@@ -15,9 +15,11 @@ class DatabaseMixin:
         """Return a persistent SQLite connection tuned for low-latency desktop queries."""
         conn = getattr(self, "_db_conn", None)
         if conn is None:
+            # Open a single reused connection with Row factory so columns can be accessed by name.
             conn = sqlite3.connect(str(DATABASE_PATH), timeout=8)
             conn.row_factory = sqlite3.Row
             try:
+                # Apply lightweight SQLite pragmas: balanced durability, in-memory temp tables, ~8MB cache.
                 conn.execute("PRAGMA synchronous = NORMAL")
                 conn.execute("PRAGMA temp_store = MEMORY")
                 conn.execute("PRAGMA cache_size = -8000")
@@ -31,6 +33,7 @@ class DatabaseMixin:
         """Close the cached SQLite connection cleanly on shutdown."""
         conn = getattr(self, "_db_conn", None)
         if conn is not None:
+            # Clear cached state first so subsequent calls never reuse a closed handle.
             self._db_conn = None
             self._db_depth = 0
             try:
@@ -42,12 +45,14 @@ class DatabaseMixin:
     def get_db_connection(self):
         """Reuse the persistent SQLite connection, auto-committing or rolling back on exit."""
         conn = self._ensure_db_connection()
+        # Track nesting depth so nested `with self.get_db_connection()` blocks commit only at the outermost level.
         self._db_depth = getattr(self, "_db_depth", 0) + 1
         try:
             yield conn
             if self._db_depth == 1 and conn.in_transaction:
                 conn.commit()
         except Exception:
+            # Roll back any uncommitted writes if an error occurs inside the outermost block.
             if self._db_depth == 1 and conn.in_transaction:
                 conn.rollback()
             raise
@@ -68,6 +73,7 @@ class DatabaseMixin:
         """Perform a case-insensitive field lookup on a sqlite3.Row object."""
         if row is None:
             return default_val
+        # Normalize column names to lowercase so schema casing differences do not break lookups.
         lookup_dict = {k.lower(): row[k] for k in row.keys()}
         return lookup_dict.get(key_name.lower(), default_val)
 
@@ -75,6 +81,7 @@ class DatabaseMixin:
         """Detect an average-rating column if present in podcasts, otherwise sort alphabetically."""
         if self._sort_sql is not None:
             return self._sort_sql
+        # Inspect the podcasts table schema once and cache the resulting ORDER BY clause.
         with self.get_db_connection() as conn:
             columns_map = {row[1].lower(): row[1] for row in conn.execute("PRAGMA table_info(podcasts)")}
         for candidate in ("averagerating", "average_rating", "ratingaverage"):
@@ -82,6 +89,7 @@ class DatabaseMixin:
                 self._sort_sql = sanitize_column_name(columns_map[candidate]) + " DESC"
                 break
         else:
+            # Fall back to case-insensitive alphabetical ordering by title.
             self._sort_sql = "Title COLLATE NOCASE ASC"
         return self._sort_sql
 
@@ -98,10 +106,12 @@ class DatabaseMixin:
         """Search podcasts by title or category, optionally returning a weighted shuffle."""
         query_str = "SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts"
         params = []
+        # Add a parameterized LIKE filter when a non-empty search keyword is supplied.
         if search_term.strip():
             pattern = f"%{search_term.strip()}%"
             query_str += " WHERE Title LIKE ? OR Category LIKE ?"
             params.extend([pattern, pattern])
+        # When not shuffling, let SQLite sort and cap the result set directly.
         if not shuffle:
             query_str += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
             params.append(item_limit)
@@ -112,6 +122,7 @@ class DatabaseMixin:
     def fetch_user_history(self):
         """Return the active listener's listening history ordered newest-played first."""
         with self.get_db_connection() as conn:
+            # Load all listened programmes ordered by play count as a fallback tie-breaker.
             rows = conn.execute(
                 "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins, "
                 "h.TimesListened, h.RatingGiven "
@@ -120,15 +131,18 @@ class DatabaseMixin:
                 "p.Title COLLATE NOCASE",
                 (self.current_user,),
             ).fetchall()
+            # Re-order using listening_recency so the most recently played shows appear first.
             return order_listening_history(conn, self.current_user, rows, 0, 4)
 
     def fetch_user_favourites(self):
         """Return podcast rows corresponding to the listener's FavoritePodcasts CSV."""
         listener_row = self.get_listener_data()
         raw_favs = self.get_row_field(listener_row, "FavoritePodcasts", "") or ""
+        # Split the comma-separated FavoritePodcasts string into clean ID tokens.
         id_list = [item.strip() for item in str(raw_favs).split(",") if item.strip()]
         if not id_list:
             return []
+        # Build a parameterized IN (...) query to fetch all favourited podcasts in one round trip.
         placeholders = ",".join("?" for _ in id_list)
         with self.get_db_connection() as conn:
             return conn.execute(
@@ -151,6 +165,7 @@ class DatabaseMixin:
     def get_custom_recommendations(self, count_limit=8, *, shuffle=False):
         """Return podcasts matching the listener's favourite genres and episode length preference."""
         listener_row = self.get_listener_data()
+        # Extract the listener's saved genres and preferred duration bucket (Short/Medium/Long).
         user_genres = [
             g.strip()
             for g in str(self.get_row_field(listener_row, "FavoriteGenres", "") or "").split(",")
@@ -159,6 +174,7 @@ class DatabaseMixin:
         preferred_len = self.get_row_field(listener_row, "LengthPreference", None)
         if not user_genres or preferred_len not in DURATION_RANGES:
             return []
+        # Convert the length label into (min_minutes, max_minutes) bounds.
         low_limit, high_limit = DURATION_RANGES[preferred_len]
         marks = ",".join("?" for _ in user_genres)
         query = (
@@ -186,6 +202,7 @@ class DatabaseMixin:
     def get_podcast_averages(self):
         """Return a cached dict mapping PodcastID -> average user rating."""
         if self._podcast_averages is None:
+            # Aggregate all valid 1-5 community ratings once and cache until a rating is changed.
             with self.get_db_connection() as conn:
                 self._podcast_averages = dict(conn.execute(
                     "SELECT PodcastID, AVG(RatingGiven) FROM listening_history "
@@ -198,7 +215,7 @@ class DatabaseMixin:
         averages = self.get_podcast_averages()
 
         def draw_priority(row):
-            # Exponential draws give higher weights earlier positions without duplicates.
+            # Exponential draws give higher-rated podcasts smaller keys (earlier positions) without duplicates.
             score = averages.get(row[0], 2.5)
             return random.expovariate(score)
 

@@ -368,7 +368,7 @@ class EffectsMixin:
         self._resize_after_id = self.after(60, self.apply_interface_scaling)
 
     def apply_interface_scaling(self, force=False, target_widget=None):
-        """Scale UI fonts, buttons, and wrap widths immediately when the window resizes."""
+        """Scale UI fonts, buttons, and wrap widths immediately when the window resizes or text size changes."""
         self._resize_after_id = None
         if not self.winfo_exists():
             return
@@ -378,7 +378,10 @@ class EffectsMixin:
             return
         width_factor = win_w / 1320
         height_factor = win_h / 850
-        new_scale_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
+        # Combine responsive window scaling with the user's accessibility text-size multiplier.
+        window_factor = max(0.84, min(1.25, min(width_factor, height_factor)))
+        text_scale = getattr(self, "_text_scale", 1.0)
+        new_scale_factor = max(0.70, min(1.75, window_factor * text_scale))
         if not force and abs(new_scale_factor - self._ui_scale_factor) < 0.025:
             return
         if force and abs(new_scale_factor - 1.0) < 0.025 and abs(self._ui_scale_factor - 1.0) < 0.025:
@@ -386,6 +389,22 @@ class EffectsMixin:
         self._ui_scale_factor = new_scale_factor
         root = target_widget if (target_widget is not None and target_widget.winfo_exists()) else self
         self._scale_widget_tree(root, new_scale_factor)
+
+    def set_text_scale(self, new_scale):
+        """Set the accessibility text-size multiplier (0.80..1.40) and immediately rescale the UI."""
+        clamped = round(max(0.80, min(1.40, float(new_scale))), 2)
+        if abs(clamped - getattr(self, "_text_scale", 1.0)) < 0.001:
+            return
+        self._text_scale = clamped
+        self.apply_interface_scaling(force=True)
+
+    def adjust_text_scale(self, delta):
+        """Increase or decrease the accessibility text size by delta (e.g. +0.10 or -0.10)."""
+        self.set_text_scale(getattr(self, "_text_scale", 1.0) + delta)
+
+    def reset_accessibility_settings(self):
+        """Restore all accessibility settings (including text size) back to their defaults."""
+        self.set_text_scale(1.0)
 
     def _scale_widget_tree(self, root_widget, scale_factor):
         """Walk the widget tree and scale point-sized fonts, rounded buttons, and wraplengths."""
@@ -471,7 +490,7 @@ class EffectsMixin:
         reusing_shell = shell_box is not None and shell_box.winfo_exists()
 
         if reusing_shell:
-            # Update only the nav buttons whose active highlight changed.
+            # Fast path: keep the topbar, search box, and scroll canvas alive, swapping only the page content.
             for label_text, btn in self._shell_nav_buttons.items():
                 selected_flag = label_text == active_nav_tab
                 if getattr(btn, "_nav_selected", None) != selected_flag:
@@ -486,6 +505,7 @@ class EffectsMixin:
                     )
             self.update_search_prompt()
             canvas_pane = self._shell_canvas
+            # Cancel any in-flight horizontal slide animation before destroying the old page frame.
             previous_frame = getattr(canvas_pane, "_slide_frame", None)
             if previous_frame is not None:
                 try:
@@ -503,6 +523,7 @@ class EffectsMixin:
                     canvas_pane.delete(old_win)
                 except tk.TclError:
                     pass
+            # Reset scroll position to the top and sync the bottom mini-bar (hidden on detail view).
             canvas_pane.yview_moveto(0)
             self._active_detail_podcast = None
             self._sync_bottom_bar(
@@ -511,6 +532,7 @@ class EffectsMixin:
                 show_average=not profile_tab_active,
             )
         else:
+            # Cold start: clear the login screen and construct the persistent header, search box, and scroll viewport.
             self.unbind_all("<MouseWheel>")
             for widget in self.winfo_children():
                 widget.destroy()

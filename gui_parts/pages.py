@@ -489,6 +489,7 @@ class PagesMixin:
             self.render_section_title(page, "Explore the catalogue while you decide")
             self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
             return
+        # Show a 2-column summary card of the listener's active genre and episode-length preferences.
         prefs_bar = tk.Frame(page, bg=DARK_BG)
         prefs_bar.pack(fill="x", pady=(0, 12))
         prefs_bar.grid_columnconfigure(0, weight=2, uniform="for-you-prefs")
@@ -513,6 +514,7 @@ class PagesMixin:
         self.create_label(length_card, length_caption, 11, ORANGE_HL, "bold").pack(
             anchor="w", padx=16, pady=(0, 12)
         )
+        # Fetch up to 40 weighted-shuffled recommendations matching those preferences.
         rec_results = self.get_custom_recommendations(40, shuffle=True)
         if rec_results:
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
@@ -665,6 +667,7 @@ class PagesMixin:
     def show_report(self):
         """Render the Listening Report tab with play totals, top programme, and rated shows."""
         page = self.build_shell("Listening report")
+        # Query aggregate play counts, most-played programme, average rating, and rated programmes in one connection.
         with self.get_db_connection() as conn:
             history_summary = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(COALESCE(h.TimesListened, 0)), 0) "
@@ -697,6 +700,7 @@ class PagesMixin:
         total_plays = history_summary[1]
         mean_rating = rating_summary[1]
 
+        # Display 3 equal-width KPI cards: total plays, distinct programmes played, and mean rating.
         stats_grid = tk.Frame(page, bg=DARK_BG)
         stats_grid.pack(fill="x", pady=6)
         stat_cards = [
@@ -798,6 +802,60 @@ class PagesMixin:
         ).pack(side="left")
         if survey_done:
             self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
+
+        # Accessibility settings section for adjusting and resetting text size across the app.
+        self.render_section_title(
+            page, "Accessibility settings",
+            "Increase or decrease text size across BBC Sounds for comfortable reading.",
+        )
+        access_card = self.create_card_frame(page)
+        access_card.pack(fill="x", pady=5)
+        access_row = tk.Frame(access_card, bg=CARD_BG)
+        access_row.pack(fill="x", padx=18, pady=16)
+
+        size_info = tk.Frame(access_row, bg=CARD_BG)
+        size_info.pack(side="left", fill="x", expand=True)
+        self.create_label(size_info, "TEXT SIZE", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        size_status_label = self.create_label(size_info, "", 13, TEXT_WHITE, "bold")
+        size_status_label.pack(anchor="w", pady=(4, 0))
+
+        size_controls = tk.Frame(access_row, bg=CARD_BG)
+        size_controls.pack(side="right")
+
+        def format_text_scale_label(scale_val):
+            pct = round(scale_val * 100)
+            if pct == 100:
+                return "100%  ·  Default"
+            return f"{pct}%  ·  {'Larger' if pct > 100 else 'Smaller'}"
+
+        def refresh_accessibility_controls():
+            scale_val = getattr(self, "_text_scale", 1.0)
+            size_status_label.configure(text=format_text_scale_label(scale_val))
+            smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
+            larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
+            reset_access_btn.configure(state="disabled" if abs(scale_val - 1.0) < 0.005 else "normal")
+
+        def on_adjust_text(delta):
+            self.adjust_text_scale(delta)
+            refresh_accessibility_controls()
+
+        def on_reset_accessibility():
+            self.reset_accessibility_settings()
+            refresh_accessibility_controls()
+
+        smaller_btn = self.create_button(
+            size_controls, "A−  Smaller", lambda: on_adjust_text(-0.10), compact=True,
+        )
+        smaller_btn.pack(side="left", padx=(0, 8))
+        larger_btn = self.create_button(
+            size_controls, "A+  Larger", lambda: on_adjust_text(0.10), primary=True, compact=True,
+        )
+        larger_btn.pack(side="left", padx=(0, 8))
+        reset_access_btn = self.create_button(
+            size_controls, "Reset accessibility settings", on_reset_accessibility, compact=True,
+        )
+        reset_access_btn.pack(side="left")
+        refresh_accessibility_controls()
 
     def show_preferences(self):
         """Render the interactive preference survey to pick up to 5 genres and episode length."""
@@ -915,16 +973,19 @@ class PagesMixin:
 
     def save_user_preferences(self):
         """Persist the selected genres and episode-length preference to SQLite."""
+        # Require at least one genre before saving so the For You recommendations query is non-empty.
         if not self.active_genres:
             messagebox.showinfo("Choose a genre", "Select at least one favourite genre to continue.", parent=self)
             return
         try:
+            # Mark CompleteSurvey = 1 and store genres as a comma-separated string.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "UPDATE listeners SET CompleteSurvey = 1, FavoriteGenres = ?, LengthPreference = ? "
                     "WHERE ListenerID = ?",
                     (",".join(self.active_genres), self.active_length, self.current_user),
                 )
+            # Navigate straight to the newly personalised "For you" tab.
             self.transition_to(self.show_recommendations, "For you")
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your preferences", err)
@@ -934,6 +995,7 @@ class PagesMixin:
         if not messagebox.askyesno("Reset survey", "Clear your favourite genres and episode-length preference?", parent=self):
             return
         try:
+            # Reset CompleteSurvey to 0 and clear FavoriteGenres and LengthPreference in SQLite.
             with self.get_db_connection() as conn:
                 conn.execute(
                     "UPDATE listeners SET CompleteSurvey = 0, FavoriteGenres = '', LengthPreference = NULL "

@@ -158,6 +158,7 @@ def remove_rating(podcast_id, username):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
+    # Set RatingGiven to NULL instead of deleting the row so the user's play history stays intact.
     cursor.execute(
         "UPDATE listening_history SET RatingGiven = NULL WHERE ListenerID = ? AND PodcastID = ?",
         (username, podcast_id)

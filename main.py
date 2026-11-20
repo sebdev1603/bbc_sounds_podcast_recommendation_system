@@ -66,6 +66,7 @@ def main(username):
         9. Exit
         ''')
 
+        # Route the chosen menu number to the corresponding feature module.
         choice = input("Enter your choice: ").strip()
         if choice == "1":
             Search.search_programmes(username)
@@ -82,6 +83,7 @@ def main(username):
         elif choice == "7":
             Rating.view_ratings(username)
         elif choice == "8":
+            # Either reset existing survey answers or launch the onboarding survey.
             if Survey.is_survey_complete(username):
                 Survey.delete_survey(username)
             else:

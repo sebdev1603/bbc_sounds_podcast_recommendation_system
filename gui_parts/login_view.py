@@ -22,6 +22,7 @@ class LoginViewMixin:
 
     def show_login(self, error_message=""):
         """Render the sign-in screen with listener ID authentication and spinning vinyl art."""
+        # Cancel any background rendering, search timers, and mouse-wheel hooks from a prior session.
         self.cancel_pending_render()
         self._dismissed_last_listened = None
         if self._search_after_id is not None:
@@ -30,6 +31,8 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
+
+        # Clear any existing widgets and match the window/titlebar background to DARK_BG.
         for child_widget in self.winfo_children():
             child_widget.destroy()
         self.configure(bg=DARK_BG)
@@ -38,11 +41,13 @@ class LoginViewMixin:
         main_box = tk.Frame(self, bg=DARK_BG)
         main_box.pack(fill="both", expand=True, padx=58, pady=38)
 
+        # Header row with the BBC Sounds logo on the left and tagline on the right.
         top_header = tk.Frame(main_box, bg=DARK_BG)
         top_header.pack(fill="x")
         self.draw_app_logo(top_header, 1.25).pack(side="left")
         self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold").pack(side="right")
 
+        # Two-column split: hero copy + sign-in card on the left, animated vinyl turntable on the right.
         content_split = tk.Frame(main_box, bg=DARK_BG)
         content_split.pack(fill="both", expand=True, pady=(36, 0))
 
@@ -57,6 +62,7 @@ class LoginViewMixin:
             14, TEXT_GRAY, justify="left",
         ).pack(anchor="w", pady=(0, 30))
 
+        # Rounded sign-in card containing the listener ID input field, error label, and Continue button.
         login_panel = self.create_card_frame(left_side)
         login_panel.pack(anchor="w", fill="x", padx=(0, 8), pady=(2, 0))
         self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold").pack(anchor="w", padx=20, pady=(19, 4))
@@ -75,6 +81,7 @@ class LoginViewMixin:
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         def handle_login(_event=None):
+            # Ignore duplicate clicks or Enter presses while the transition animation is already running.
             if getattr(login_button, "_expanding_login", False):
                 return
             username_input = id_var.get().strip()
@@ -82,6 +89,7 @@ class LoginViewMixin:
                 status_label.config(text="Enter your listener ID to continue.")
                 return
             try:
+                # Verify the entered listener ID exists in SQLite.
                 with self.get_db_connection() as conn:
                     found_record = conn.execute(
                         "SELECT ListenerID, CompleteSurvey FROM listeners WHERE ListenerID = ?",
@@ -92,6 +100,7 @@ class LoginViewMixin:
                     if not found_record["CompleteSurvey"]:
                         self.active_genres = []
                         self.active_length = "Medium"
+                    # Lock the form, stop the vinyl spin loop, and expand the Continue button into Home.
                     login_button._expanding_login = True
                     text_entry.configure(state="disabled")
                     cancel_record_jobs()
@@ -106,12 +115,14 @@ class LoginViewMixin:
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
+        # Right-hand canvas hosting the rotating BBC Sounds vinyl turntable graphic.
         right_side = tk.Frame(content_split, bg=DARK_BG, width=460)
         right_side.pack(side="right", fill="both", expand=True, padx=(16, 0))
         disc_canvas = tk.Canvas(right_side, bg=DARK_BG, highlightthickness=0)
         disc_canvas.pack(fill="both", expand=True)
 
         def cancel_record_jobs(_event=None):
+            # Cleanly cancel pending repaint and spin animation callbacks on exit or destroy.
             for attr in ("_paint_job", "_spin_job"):
                 job = getattr(disc_canvas, attr, None)
                 if job is not None:
@@ -122,6 +133,7 @@ class LoginViewMixin:
                     setattr(disc_canvas, attr, None)
 
         def queue_record_paint(event):
+            # Debounce resize redraws so dragging the window edge does not rebuild the canvas every pixel.
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
@@ -138,6 +150,7 @@ class LoginViewMixin:
 
     def expand_login_button_to_home(self, login_button):
         """Expand the rounded Continue button to fill the window, then lift a curtain to reveal Home."""
+        # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
         self.cancel_button_hover(login_button)
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
         hover_t = getattr(login_button, "_hover_step", 0) / 5.0
@@ -158,6 +171,7 @@ class LoginViewMixin:
             self.show_home()
             return
 
+        # Overlay Canvas that morphs from the rounded orange pill into a full-window dark backdrop.
         start_radius = min(10, start_h // 2, start_w // 2)
         expander = tk.Canvas(self, bg=button_bg, bd=0, highlightthickness=0)
         text_item = expander.create_text(
@@ -166,6 +180,7 @@ class LoginViewMixin:
         )
 
         def draw_rounded_fill(w, h, radius, fill_colour):
+            # Redraw the pill silhouette using two overlapping rectangles and four corner ovals.
             expander.delete("pill")
             r = min(radius, w // 2, h // 2)
             if r <= 1:
@@ -181,6 +196,7 @@ class LoginViewMixin:
             expander.tag_raise(text_item)
 
         def reveal_home():
+            # Phase 2: build the Home page underneath, then slide a dark curtain upward to uncover it.
             if not self.winfo_exists():
                 return
             win_w = max(1, self.winfo_width())
@@ -201,6 +217,7 @@ class LoginViewMixin:
             def draw_reveal():
                 if not curtain.winfo_exists() or not self.winfo_exists():
                     return
+                # Cubic ease-out lifts the curtain smoothly while fading its bottom orange edge.
                 progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
                 eased = 1.0 - (1.0 - progress) ** 3
                 cur_y = round(-win_h * eased)
@@ -220,6 +237,7 @@ class LoginViewMixin:
         expand_started = monotonic()
 
         def draw_expand():
+            # Phase 1: cubic ease-in-out expands the button to fill the window and shifts orange -> DARK_BG.
             if not expander.winfo_exists() or not self.winfo_exists():
                 return
             progress = min(1.0, (monotonic() - expand_started) / expand_duration)
@@ -245,6 +263,7 @@ class LoginViewMixin:
                 expander.configure(bg=cur_bg)
             draw_rounded_fill(cur_w, cur_h, cur_r, cur_bg)
 
+            # Fade out the "Continue ->" label during the first 42% of the expansion.
             if progress < 0.42:
                 text_fade = progress / 0.42
                 expander.coords(text_item, cur_w / 2, cur_h / 2)
@@ -257,6 +276,7 @@ class LoginViewMixin:
                 expander.itemconfigure(text_item, state="hidden")
 
             expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            # Canvas.lift() aliases tag_raise(); call tk.Misc.lift() to raise the widget above siblings.
             tk.Misc.lift(expander)
 
             if progress < 1.0:
@@ -408,10 +428,12 @@ class LoginViewMixin:
         def animate_spin():
             if not canvas_obj.winfo_exists():
                 return
+            # Advance the shared frame counter (~30 fps) and wrap periodically to avoid float drift.
             state["tick"] = (state["tick"] + 1.0) % 36000.0
             canvas_obj._spin_tick = state["tick"]
             t = state["tick"]
 
+            # Rotate each letter along its concentric ring and keep its angle tangent to the circle.
             for item_id, base_deg, radius, speed in ring_items:
                 deg = (base_deg + t * speed) % 360.0
                 rad = math.radians(deg - 90.0)
@@ -422,12 +444,14 @@ class LoginViewMixin:
                 )
                 canvas_obj.itemconfigure(item_id, angle=(-deg) % 360.0)
 
+            # Rotate the vinyl highlights and specular glints clockwise.
             vinyl_deg = (t * 2.2) % 360.0
             canvas_obj.itemconfigure(sheen_1, start=(25.0 - vinyl_deg) % 360.0)
             canvas_obj.itemconfigure(sheen_2, start=(205.0 - vinyl_deg) % 360.0)
             canvas_obj.itemconfigure(glint_1, start=(35.0 - vinyl_deg) % 360.0)
             canvas_obj.itemconfigure(glint_2, start=(215.0 - vinyl_deg) % 360.0)
 
+            # Orbit the centre label dot and "BBC / SOUNDS" text around the spindle.
             v_rad = math.radians(vinyl_deg - 90.0)
             mx = center_x + label_dot_r * math.cos(v_rad)
             my = center_y + label_dot_r * math.sin(v_rad)
@@ -448,6 +472,7 @@ class LoginViewMixin:
             )
             canvas_obj.itemconfigure(label_bottom, angle=(180.0 - vinyl_deg) % 360.0)
 
+            # Schedule the next rotation frame (~33ms -> 30 fps).
             canvas_obj._spin_job = self.after(33, animate_spin)
 
         animate_spin()
