@@ -547,18 +547,18 @@ class EffectsMixin:
             ("Home", self.show_home), ("Genres", self.show_search),
             ("For you", self.show_recommendations), ("Favourites", self.show_favourites),
             ("History", self.show_history), ("Ratings", self.show_ratings),
-            ("Report", self.show_report), ("Profile", self.show_profile),
+            ("Report", self.show_report), ("Settings", self.show_profile),
         ]
         profile_tab_active = active_tab_title in ("Your genres", "Profile & survey")
         active_nav_tab = (
-            "Profile" if profile_tab_active else
+            "Settings" if profile_tab_active else
             "Report" if active_tab_title == "Listening report" else active_tab_title
         )
         # Remember the last non-detail page so Programme details' Back button returns there.
         if active_tab_title != "Programme details":
             nav_map = dict(nav_links)
             if active_tab_title == "Your genres":
-                self._last_non_detail_tab = ("Profile", self.show_genres, "your genres")
+                self._last_non_detail_tab = ("Settings", self.show_genres, "your genres")
             elif active_nav_tab in nav_map:
                 self._last_non_detail_tab = (active_nav_tab, nav_map[active_nav_tab], active_nav_tab.lower())
 

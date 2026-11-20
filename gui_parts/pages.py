@@ -137,7 +137,7 @@ class PagesMixin:
                                   10, TEXT_GRAY).pack(anchor="w", padx=17, pady=(0, 12))
                 self.create_button(
                     survey_prompt, "Choose your genres  →",
-                    lambda: self.transition_to(self.show_preferences, "Profile"),
+                    lambda: self.transition_to(self.show_preferences, "Settings"),
                     primary=True, compact=True,
                 ).pack(anchor="w", padx=17, pady=(0, 15))
 
@@ -568,7 +568,7 @@ class PagesMixin:
                                       "Choose your favourite genres and episode length to unlock tailored recommendations.")
             self.create_button(
                 page, "Set up your preferences  →",
-                lambda: self.transition_to(self.show_preferences, "Profile"), primary=True,
+                lambda: self.transition_to(self.show_preferences, "Settings"), primary=True,
             ).pack(anchor="w", pady=7)
             self.render_section_title(page, "Explore the catalogue while you decide")
             self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
@@ -606,7 +606,7 @@ class PagesMixin:
             self.render_empty_message(page, "No exact matches yet", "Try another genre or episode length to see more programmes.")
             self.create_button(
                 page, "Edit preferences",
-                lambda: self.transition_to(self.show_preferences, "Profile"), compact=True,
+                lambda: self.transition_to(self.show_preferences, "Settings"), compact=True,
             ).pack(anchor="w", pady=8)
 
     def show_favourites(self):
@@ -810,7 +810,7 @@ class PagesMixin:
             self.render_section_title(page, "Episode length", str(self.get_row_field(listener_info, "LengthPreference", "Not selected") or "Not selected"))
             self.create_button(
                 page, "Edit preferences",
-                lambda: self.transition_to(self.show_preferences, "Profile", direction=1),
+                lambda: self.transition_to(self.show_preferences, "Settings", direction=1),
                 primary=True, compact=True,
             ).pack(anchor="w", pady=7)
             self.render_section_title(page, "Programmes in your genres")
@@ -826,7 +826,7 @@ class PagesMixin:
             self.render_empty_message(page, "No favourite genres selected", "Choose up to five genres to shape your recommendations.")
             self.create_button(
                 page, "Choose genres",
-                lambda: self.transition_to(self.show_preferences, "Profile", direction=1), primary=True,
+                lambda: self.transition_to(self.show_preferences, "Settings", direction=1), primary=True,
             ).pack(anchor="w", pady=6)
 
     def show_report(self):
@@ -968,7 +968,7 @@ class PagesMixin:
         profile_actions.pack(pady=8)
         self.create_button(
             profile_actions, "Edit survey answers",
-            lambda: self.transition_to(self.show_preferences, "Profile", direction=1), primary=True,
+            lambda: self.transition_to(self.show_preferences, "Settings", direction=1), primary=True,
         ).pack(side="left")
         if survey_done:
             self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
@@ -1060,6 +1060,128 @@ class PagesMixin:
         )
         reset_access_btn.pack(side="left")
         refresh_accessibility_controls()
+
+        # Interactive Q&A accordion section answering common questions about the app.
+        self.render_section_title(
+            page, "Q&A",
+            "Select a question below to see how BBC Sounds features work.",
+        )
+        qa_items = [
+            (
+                "How are my recommendations chosen?",
+                "Recommendations on the For you tab match your saved favourite genres and preferred "
+                "episode length (Short, Medium, or Long), weighted toward higher-rated programmes.",
+            ),
+            (
+                "How do I rate a programme?",
+                "Open any podcast by clicking its picture or Details button, press Listen now at least once, "
+                "and then click Rate this programme to choose a 1 to 5 star score.",
+            ),
+            (
+                "Why does it say playback is simulated?",
+                "This desktop prototype simulates audio playback so you can explore recommendations, "
+                "track your listening history, and rate programmes without streaming live audio.",
+            ),
+            (
+                "How do I save or remove favourites?",
+                "Click any podcast picture to open its details page, then click Save to favourites. "
+                "Saved shows appear in the Favourites tab and can be removed at any time.",
+            ),
+            (
+                "How do I change text size or switch themes?",
+                "Use the Accessibility settings above to adjust text size (80%–140%) or switch between "
+                "Dark, Light, and High contrast themes. Your choices are saved automatically to your Listener ID.",
+            ),
+            (
+                "Can I update or reset my listening survey?",
+                "Yes — click Edit survey answers above to update your favourite genres (up to five) or "
+                "preferred episode length, or click Reset survey to clear your saved preferences.",
+            ),
+        ]
+        qa_card = self.create_card_frame(page)
+        qa_card.pack(fill="x", pady=(5, 14))
+        for q_idx, (question_text, answer_text) in enumerate(qa_items):
+            if q_idx > 0:
+                tk.Frame(qa_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+            item_box = tk.Frame(qa_card, bg=CARD_BG)
+            item_box.pack(fill="x", padx=18, pady=12)
+            header_row = tk.Frame(item_box, bg=CARD_BG, cursor="hand2")
+            header_row.pack(fill="x")
+            arrow_lbl = self.create_label(
+                header_row, "▸", 11, ORANGE_HL, "bold", bg=CARD_BG, cursor="hand2",
+            )
+            arrow_lbl.pack(side="left", padx=(0, 10))
+            question_lbl = self.create_label(
+                header_row, question_text, 11, TEXT_WHITE, "bold",
+                bg=CARD_BG, cursor="hand2", wraplength=820,
+            )
+            question_lbl.pack(side="left", fill="x", expand=True)
+            answer_drawer = tk.Frame(item_box, bg=CARD_BG, height=0)
+            answer_drawer.pack_propagate(False)
+            answer_lbl = self.create_label(
+                answer_drawer, answer_text, 10, CARD_BG,
+                bg=CARD_BG, wraplength=820,
+            )
+            answer_lbl.pack(anchor="nw", fill="x", padx=(22, 8), pady=(8, 4))
+            qa_state = {"open": False, "progress": 0.0, "target": 0.0, "job": None}
+
+            def cancel_qa_anim(_event=None, state=qa_state):
+                if state["job"] is not None:
+                    try:
+                        self.after_cancel(state["job"])
+                    except tk.TclError:
+                        pass
+                    state["job"] = None
+
+            def toggle_answer(
+                _event=None,
+                state=qa_state,
+                drawer=answer_drawer,
+                ans=answer_lbl,
+                arr=arrow_lbl,
+                q_lbl=question_lbl,
+            ):
+                if not drawer.winfo_exists():
+                    return
+                state["open"] = not state["open"]
+                state["target"] = 1.0 if state["open"] else 0.0
+                arr.configure(text="▾" if state["open"] else "▸")
+                if state["open"] and not drawer.winfo_ismapped():
+                    drawer.pack(fill="x")
+                drawer.update_idletasks()
+                full_h = max(24, ans.winfo_reqheight() + 14)
+
+                def step_qa():
+                    state["job"] = None
+                    if not drawer.winfo_exists() or not ans.winfo_exists():
+                        return
+                    cur = state["progress"]
+                    tgt = state["target"]
+                    step_delta = 1.0 / 12.0
+                    if cur < tgt:
+                        cur = min(tgt, cur + step_delta)
+                    elif cur > tgt:
+                        cur = max(tgt, cur - step_delta)
+                    state["progress"] = cur
+
+                    # Smooth cubic ease-out when opening, smooth ease-in-out when closing.
+                    eased = 1.0 - (1.0 - cur) ** 3 if tgt > 0.5 else cur * cur * (3.0 - 2.0 * cur)
+                    cur_h = max(0, round(full_h * eased))
+                    drawer.configure(height=cur_h)
+                    ans.configure(fg=blend_colour(CARD_BG, TEXT_GRAY, eased))
+                    q_lbl.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.65))
+
+                    if cur != tgt:
+                        state["job"] = self.after(14, step_qa)
+                    elif tgt <= 0.0:
+                        drawer.pack_forget()
+
+                if state["job"] is None:
+                    step_qa()
+
+            item_box.bind("<Destroy>", cancel_qa_anim)
+            for clickable in (header_row, arrow_lbl, question_lbl):
+                clickable.bind("<Button-1>", toggle_answer)
 
     def show_preferences(self):
         """Render the interactive preference survey to pick up to 5 genres and episode length."""
