@@ -264,6 +264,11 @@ class PagesMixin:
                     pixels.extend(row)
                 return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
 
+            is_light_mode = getattr(self, "_theme_name", "dark") == "light"
+            card_title_fg = "#ffffff"
+            card_desc_fg = "#f4f6f9" if is_light_mode else "#f0f0f0"
+            card_act_hover_fg = "#fff1a8" if is_light_mode else GOLD_STAR
+
             for idx, category_name in enumerate(all_categories):
                 tile_colour, tile_icon, tile_description = GENRE_TILE_DETAILS.get(
                     category_name,
@@ -281,6 +286,20 @@ class PagesMixin:
                         ORANGE_HL,
                     ),
                 )
+                if is_light_mode:
+                    # Lift dark gradients into richer, brighter mid-tones that pop cleanly on a light page.
+                    top_col = blend_colour(top_col, accent_col, 0.24)
+                    bot_col = blend_colour(bot_col, top_col, 0.42)
+                    ico_base_bg = "#ffffff"
+                    ico_hover_bg = blend_colour("#ffffff", accent_col, 0.22)
+                    ico_txt_fg = blend_colour(bot_col, "#000000", 0.25)
+                    border_base = blend_colour(bot_col, BORDER_LINE, 0.35)
+                else:
+                    ico_base_bg = "#17181b"
+                    ico_hover_bg = accent_col
+                    ico_txt_fg = "#ffffff"
+                    border_base = BORDER_LINE
+
                 card_canvas = tk.Canvas(
                     category_row, bg=DARK_BG, height=166, bd=0,
                     highlightthickness=0, cursor="hand2",
@@ -292,17 +311,17 @@ class PagesMixin:
 
                 bg_item = card_canvas.create_image(0, 0, anchor="nw")
                 accent_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=accent_col, outline="")
-                ico_bg_item = card_canvas.create_rectangle(0, 0, 0, 0, fill="#17181b", outline="")
+                ico_bg_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=ico_base_bg, outline="")
                 ico_txt_item = card_canvas.create_text(
-                    0, 0, text=tile_icon, fill=TEXT_WHITE,
+                    0, 0, text=tile_icon, fill=ico_txt_fg,
                     font=(DEFAULT_FONT, 14, "bold"), anchor="center",
                 )
                 title_item = card_canvas.create_text(
-                    0, 0, text=category_name.upper(), fill=TEXT_WHITE,
+                    0, 0, text=category_name.upper(), fill=card_title_fg,
                     font=(DEFAULT_FONT, 11, "bold"), anchor="w",
                 )
                 desc_item = card_canvas.create_text(
-                    0, 0, text=tile_description, fill="#f0f0f0",
+                    0, 0, text=tile_description, fill=card_desc_fg,
                     font=(DEFAULT_FONT, 9), anchor="nw", justify="left", width=225,
                 )
                 act_item = card_canvas.create_text(
@@ -310,8 +329,8 @@ class PagesMixin:
                     font=(DEFAULT_FONT, 8, "bold"), anchor="sw",
                 )
 
-                hi_top = blend_colour(top_col, "#ffffff", 0.16)
-                hi_bot = blend_colour(bot_col, "#ffffff", 0.16)
+                hi_top = blend_colour(top_col, "#ffffff", 0.14 if is_light_mode else 0.16)
+                hi_bot = blend_colour(bot_col, "#ffffff", 0.14 if is_light_mode else 0.16)
                 card_state = {"step": 0, "target": 0, "job": None, "w": 0, "h": 0, "cache": {}}
 
                 def paint_gradient_card(
@@ -322,6 +341,10 @@ class PagesMixin:
                     t_hi=hi_top,
                     b_hi=hi_bot,
                     acc=accent_col,
+                    ib_base=ico_base_bg,
+                    ib_hi=ico_hover_bg,
+                    bd_base=border_base,
+                    act_hi=card_act_hover_fg,
                     bi=bg_item,
                     ai=accent_item,
                     ib=ico_bg_item,
@@ -347,9 +370,9 @@ class PagesMixin:
                     inset = max(0, min(3, round(3.0 - 2.0 * eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
                     cur_bot = blend_colour(b_base, b_hi, eased)
-                    cur_border = blend_colour(BORDER_LINE, acc, eased)
-                    cur_ico_bg = blend_colour("#17181b", acc, eased)
-                    cur_act_fg = blend_colour("#ffffff", GOLD_STAR, eased)
+                    cur_border = blend_colour(bd_base, acc, eased)
+                    cur_ico_bg = blend_colour(ib_base, ib_hi, eased)
+                    cur_act_fg = blend_colour("#ffffff", act_hi, eased)
 
                     cache_key = (step, state["target"] > 0)
                     photo = state["cache"].get(cache_key)
@@ -453,6 +476,12 @@ class PagesMixin:
             apply_filter()
             return
 
+        is_light_mode = getattr(self, "_theme_name", "dark") == "light"
+        badge_bg = "#ffffff" if is_light_mode else ORANGE_ACCENT
+        badge_fg = blend_colour(start_col, "#000000", 0.20) if is_light_mode else "#ffffff"
+        overlay_title_fg = "#ffffff"
+        overlay_desc_fg = "#f4f6f9" if is_light_mode else "#f0f0f0"
+
         expander = tk.Frame(area_frame, bg=start_col, bd=0, highlightthickness=0)
         accent_top = tk.Frame(expander, bg=ORANGE_HL, height=3)
         accent_top.pack(fill="x")
@@ -460,16 +489,16 @@ class PagesMixin:
         preview_box.place(relx=0.5, rely=0.5, anchor="center")
         icon_badge = tk.Label(
             preview_box, text=genre_icon, width=3, height=1,
-            font=(DEFAULT_FONT, 18, "bold"), bg=ORANGE_ACCENT, fg=TEXT_WHITE,
+            font=(DEFAULT_FONT, 18, "bold"), bg=badge_bg, fg=badge_fg,
         )
         icon_badge.pack(pady=(0, 8))
         title_lbl = self.create_label(
-            preview_box, genre_name.upper(), 24, TEXT_WHITE, "bold",
+            preview_box, genre_name.upper(), 24, overlay_title_fg, "bold",
             anchor="center", bg=start_col,
         )
         title_lbl.pack()
         desc_lbl = self.create_label(
-            preview_box, genre_desc, 11, "#f0f0f0",
+            preview_box, genre_desc, 11, overlay_desc_fg,
             anchor="center", justify="center", bg=start_col,
         )
         desc_lbl.pack(pady=(6, 0))
@@ -529,16 +558,16 @@ class PagesMixin:
             if progress > 0.45:
                 fade = (progress - 0.45) / 0.55
                 cur_bg = blend_colour(start_col, DARK_BG, fade)
-                cur_title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
-                cur_desc_fg = blend_colour("#f0f0f0", cur_bg, fade)
-                cur_ico_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
-                cur_ico_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
+                cur_title_fg = blend_colour(overlay_title_fg, cur_bg, fade)
+                cur_desc_fg = blend_colour(overlay_desc_fg, cur_bg, fade)
+                cur_ico_bg = blend_colour(badge_bg, cur_bg, fade)
+                cur_ico_fg = blend_colour(badge_fg, cur_bg, fade)
             else:
                 cur_bg = start_col
-                cur_title_fg = TEXT_WHITE
-                cur_desc_fg = "#f0f0f0"
-                cur_ico_bg = ORANGE_ACCENT
-                cur_ico_fg = TEXT_WHITE
+                cur_title_fg = overlay_title_fg
+                cur_desc_fg = overlay_desc_fg
+                cur_ico_bg = badge_bg
+                cur_ico_fg = badge_fg
 
             expander.configure(bg=cur_bg)
             preview_box.configure(bg=cur_bg)
