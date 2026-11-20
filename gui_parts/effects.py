@@ -374,9 +374,19 @@ class EffectsMixin:
             pass
 
     def schedule_interface_scaling(self, event):
-        """Debounce window resize events before applying live UI scaling."""
+        """Track window drags to pause heavy animations and debounce resize-only scaling."""
         if event.widget is not self:
             return
+        pos = (event.x, event.y)
+        size = (event.width, event.height)
+        prev_pos = getattr(self, "_last_win_pos", None)
+        prev_size = getattr(self, "_last_win_size", None)
+        if prev_pos is not None and (pos != prev_pos or size != prev_size):
+            self._window_moving_until = monotonic() + 0.16
+        self._last_win_pos = pos
+        if size == prev_size:
+            return
+        self._last_win_size = size
         if self._resize_after_id is not None:
             self.after_cancel(self._resize_after_id)
         self._resize_after_id = self.after(60, self.apply_interface_scaling)

@@ -151,10 +151,16 @@ class LoginViewMixin:
 
         self._login_disc_canvas = disc_canvas
 
+        last_disc_size = [None]
+
         def queue_record_paint(event):
-            # Debounce resize redraws so dragging the window edge does not rebuild the canvas every pixel.
+            # Debounce resize redraws and ignore move-only Configure events with unchanged size.
             if getattr(self, "_signing_out", False):
                 return
+            size = (event.width, event.height)
+            if size == last_disc_size[0]:
+                return
+            last_disc_size[0] = size
             pending = getattr(disc_canvas, "_paint_job", None)
             if pending is not None:
                 self.after_cancel(pending)
@@ -883,7 +889,7 @@ class LoginViewMixin:
         inner_r = outer_r * 0.65
         vinyl_r = outer_r * 0.50
 
-        # 1. Three concentric rotating circles of text (matching 1.svg).
+        # 1. Three concentric rotating circles of text (matching 1.svg), skipping blank spaces.
         ring_text = "LISTEN · DISCOVER · STREAM · SHARE · BBC SOUND · "
         ring_specs = [
             (outer_r, "#d2d5db", max(11, round(unit * 0.032)), 0.45),
@@ -894,15 +900,18 @@ class LoginViewMixin:
         for radius, colour, font_size, speed in ring_specs:
             step = 360.0 / len(ring_text)
             for idx, char in enumerate(ring_text):
+                if char == " ":
+                    continue
                 base_deg = idx * step
                 rad = math.radians(base_deg - 90)
+                init_ang = round((-base_deg) % 360) % 360
                 item_id = canvas_obj.create_text(
                     center_x + radius * math.cos(rad),
                     center_y + radius * math.sin(rad),
                     text=char, fill=colour, font=("Arial Black", font_size, "bold"),
-                    angle=(-base_deg) % 360,
+                    angle=init_ang,
                 )
-                ring_items.append((item_id, base_deg, radius, speed))
+                ring_items.append([item_id, base_deg, radius, speed, init_ang])
 
         # 2. Rotating Vinyl CD / Record in the centre.
         canvas_obj.create_oval(
@@ -997,61 +1006,87 @@ class LoginViewMixin:
             fill=ORANGE_ACCENT, outline="",
         )
 
-        # Continuous 360-degree rotation loop for vinyl CD and all 3 text circles.
-        state = {"tick": getattr(canvas_obj, "_spin_tick", 0.0)}
+        # Continuous time-based 60fps rotation loop batched into a single Tcl eval per frame,
+        # automatically pausing while the user drags/resizes the window so dragging stays lag-free.
+        state = {
+            "tick": getattr(canvas_obj, "_spin_tick", 0.0),
+            "last_t": None,
+            "last_top_ang": None,
+            "last_bot_ang": None,
+        }
+        canvas_path = str(canvas_obj)
+        tk_eval = canvas_obj.tk.eval
+        cos = math.cos
+        sin = math.sin
+        deg2rad = math.pi / 180.0
+        top_r = label_r * 0.45
+        bot_r = label_r * 0.48
 
         def animate_spin():
             canvas_obj._spin_job = None
             if not canvas_obj.winfo_exists():
                 return
             if getattr(self, "_signing_out", False):
+                state["last_t"] = None
                 return
-            # Advance the shared frame counter (~30 fps) and wrap periodically to avoid float drift.
-            state["tick"] = (state["tick"] + 1.0) % 36000.0
+            now = monotonic()
+            if now < getattr(self, "_window_moving_until", 0.0):
+                state["last_t"] = None
+                canvas_obj._spin_job = self.after(40, animate_spin)
+                return
+
+            # Advance in real elapsed time (30 ticks/sec matches the original speed at 60fps).
+            dt = 0.016 if state["last_t"] is None else min(0.05, now - state["last_t"])
+            state["last_t"] = now
+            state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
             canvas_obj._spin_tick = state["tick"]
             t = state["tick"]
 
-            # Rotate each letter along its concentric ring and keep its angle tangent to the circle.
-            for item_id, base_deg, radius, speed in ring_items:
+            cmds = []
+            append = cmds.append
+
+            # Rotate each letter smoothly along its concentric ring; only update GDI font angle on 1-deg steps.
+            for item in ring_items:
+                item_id, base_deg, radius, speed, last_ang = item
                 deg = (base_deg + t * speed) % 360.0
-                rad = math.radians(deg - 90.0)
-                canvas_obj.coords(
-                    item_id,
-                    center_x + radius * math.cos(rad),
-                    center_y + radius * math.sin(rad),
-                )
-                canvas_obj.itemconfigure(item_id, angle=(-deg) % 360.0)
+                rad = (deg - 90.0) * deg2rad
+                append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.2f} {center_y + radius * sin(rad):.2f}")
+                ang = round((-deg) % 360.0) % 360
+                if ang != last_ang:
+                    item[4] = ang
+                    append(f"{canvas_path} itemconfigure {item_id} -angle {ang}")
 
             # Rotate the vinyl highlights and specular glints clockwise.
             vinyl_deg = (t * 2.2) % 360.0
-            canvas_obj.itemconfigure(sheen_1, start=(25.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(sheen_2, start=(205.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(glint_1, start=(35.0 - vinyl_deg) % 360.0)
-            canvas_obj.itemconfigure(glint_2, start=(215.0 - vinyl_deg) % 360.0)
+            append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.2f}")
+            append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.2f}")
 
             # Orbit the centre label dot and "BBC / SOUNDS" text around the spindle.
-            v_rad = math.radians(vinyl_deg - 90.0)
-            mx = center_x + label_dot_r * math.cos(v_rad)
-            my = center_y + label_dot_r * math.sin(v_rad)
-            canvas_obj.coords(label_marker, mx - 3, my - 3, mx + 3, my + 3)
+            v_rad = (vinyl_deg - 90.0) * deg2rad
+            cv, sv = cos(v_rad), sin(v_rad)
+            mx = center_x + label_dot_r * cv
+            my = center_y + label_dot_r * sv
+            append(f"{canvas_path} coords {label_marker} {mx - 3:.2f} {my - 3:.2f} {mx + 3:.2f} {my + 3:.2f}")
+            append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.2f} {center_y + top_r * sv:.2f}")
+            append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.2f} {center_y - bot_r * sv:.2f}")
 
-            top_rad = math.radians(vinyl_deg - 90.0)
-            bot_rad = math.radians(vinyl_deg + 90.0)
-            canvas_obj.coords(
-                label_top,
-                center_x + label_r * 0.45 * math.cos(top_rad),
-                center_y + label_r * 0.45 * math.sin(top_rad),
-            )
-            canvas_obj.itemconfigure(label_top, angle=(-vinyl_deg) % 360.0)
-            canvas_obj.coords(
-                label_bottom,
-                center_x + label_r * 0.48 * math.cos(bot_rad),
-                center_y + label_r * 0.48 * math.sin(bot_rad),
-            )
-            canvas_obj.itemconfigure(label_bottom, angle=(180.0 - vinyl_deg) % 360.0)
+            top_ang = round((-vinyl_deg) % 360.0) % 360
+            if top_ang != state["last_top_ang"]:
+                state["last_top_ang"] = top_ang
+                append(f"{canvas_path} itemconfigure {label_top} -angle {top_ang}")
+            bot_ang = round((180.0 - vinyl_deg) % 360.0) % 360
+            if bot_ang != state["last_bot_ang"]:
+                state["last_bot_ang"] = bot_ang
+                append(f"{canvas_path} itemconfigure {label_bottom} -angle {bot_ang}")
 
-            # Schedule the next rotation frame (~33ms -> 30 fps).
-            canvas_obj._spin_job = self.after(33, animate_spin)
+            try:
+                tk_eval("\n".join(cmds))
+            except tk.TclError:
+                return
+
+            canvas_obj._spin_job = self.after(14, animate_spin)
 
         canvas_obj._resume_spin = animate_spin
         if not getattr(self, "_signing_out", False):
