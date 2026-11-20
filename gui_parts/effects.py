@@ -554,6 +554,13 @@ class EffectsMixin:
             "Profile" if profile_tab_active else
             "Report" if active_tab_title == "Listening report" else active_tab_title
         )
+        # Remember the last non-detail page so Programme details' Back button returns there.
+        if active_tab_title != "Programme details":
+            nav_map = dict(nav_links)
+            if active_tab_title == "Your genres":
+                self._last_non_detail_tab = ("Profile", self.show_genres, "your genres")
+            elif active_nav_tab in nav_map:
+                self._last_non_detail_tab = (active_nav_tab, nav_map[active_nav_tab], active_nav_tab.lower())
 
         shell_box = getattr(self, "_shell_box", None)
         reusing_shell = shell_box is not None and shell_box.winfo_exists()
@@ -1034,6 +1041,25 @@ class EffectsMixin:
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
+    def open_podcast_detail(self, podcast_id, title=None, category=None):
+        """Open a podcast's detail page by expanding upward via the bottom mini-bar."""
+        if title is None or category is None:
+            try:
+                rec = self.get_single_podcast(podcast_id)
+                if rec:
+                    title = title if title is not None else rec[1]
+                    category = category if category is not None else rec[2]
+            except sqlite3.Error:
+                pass
+        shell = getattr(self, "_shell_box", None)
+        footer = getattr(self, "_shell_bottom_bar", None)
+        if shell is not None and shell.winfo_exists():
+            self.expand_bottom_bar_to_detail(
+                shell, footer, podcast_id, str(title or "Programme"), category or "",
+            )
+            return
+        self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
+
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
         """Expand the bottom mini-bar smoothly upward to open the podcast detail page."""
         if getattr(shell, "_expanding_bar", False):
@@ -1047,10 +1073,18 @@ class EffectsMixin:
         self.cancel_pending_render()
 
         area_frame = canvas.master
-        start_x = footer.winfo_x()
-        start_y = footer.winfo_y()
-        start_w = max(1, footer.winfo_width())
-        start_h = max(1, footer.winfo_height())
+        if footer is not None and footer.winfo_exists() and footer.winfo_width() > 1 and footer.winfo_height() > 1:
+            start_x = footer.winfo_x()
+            start_y = footer.winfo_y()
+            start_w = max(1, footer.winfo_width())
+            start_h = max(1, footer.winfo_height())
+        else:
+            shell_w = max(1, shell.winfo_width())
+            shell_h = max(1, shell.winfo_height())
+            start_x = 18
+            start_w = max(1, shell_w - 36)
+            start_h = 80
+            start_y = max(0, shell_h - 90)
         target_y = area_frame.winfo_y()
         target_w = max(1, shell.winfo_width())
         target_h = max(1, shell.winfo_height() - target_y)

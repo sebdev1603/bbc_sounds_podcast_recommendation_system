@@ -968,6 +968,7 @@ class WidgetsMixin:
             card_frame.pack(fill="x", pady=5)
             cover = self.generate_podcast_cover(card_frame, pid, title, category, 92, 92)
             cover.pack(side="left", padx=11, pady=10)
+            cover.bind("<Button-1>", lambda _e, tid=pid, t=title, c=category: self.open_podcast_detail(tid, t, c))
             details_pane = tk.Frame(card_frame, bg=CARD_BG)
             details_pane.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=12)
             self.create_label(details_pane, title, 12, TEXT_WHITE, "bold").pack(anchor="w")
@@ -975,7 +976,7 @@ class WidgetsMixin:
             self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w")
             self.create_button(
                 details_pane, "View details",
-                lambda target_id=pid: self.transition_to(lambda: self.show_detail(target_id), "Programme details", direction=1),
+                lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
                 compact=True,
             ).pack(anchor="w", pady=(9, 0))
             if show_play_btn:
@@ -988,7 +989,7 @@ class WidgetsMixin:
                 )
             return card_frame
 
-        cover_box = tk.Frame(card_frame, bg=CARD_BG, height=cover_size)
+        cover_box = tk.Frame(card_frame, bg=CARD_BG, height=cover_size, cursor="hand2")
         cover_box.pack_propagate(False)
         cover_box.pack(fill="x", padx=9, pady=(9, 0))
         cover = self.generate_podcast_cover(
@@ -996,6 +997,9 @@ class WidgetsMixin:
             corner_radius=8, backdrop=CARD_BG,
         )
         cover.pack(fill="both", expand=True)
+        open_cmd = lambda _e=None, tid=pid, t=title, c=category: self.open_podcast_detail(tid, t, c)
+        cover_box.bind("<Button-1>", open_cmd)
+        cover.bind("<Button-1>", open_cmd)
         card_frame._cover_meta = [cover_box, cover, pid, title, category, cover_size]
 
         details_pane = tk.Frame(card_frame, bg=CARD_BG)
@@ -1012,7 +1016,7 @@ class WidgetsMixin:
         button_strip.pack(fill="x", side="bottom")
         self.create_button(
             button_strip, "Details",
-            lambda target_id=pid: self.transition_to(lambda: self.show_detail(target_id), "Programme details", direction=1),
+            lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
             compact=True,
         ).pack(side="left")
         if show_remove_btn:

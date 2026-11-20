@@ -33,7 +33,7 @@ from gui_parts.theme import (
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
 
-    def show_detail(self, podcast_id):
+    def show_detail(self, podcast_id, *, show_simulated_notice=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
@@ -49,11 +49,14 @@ class DetailViewMixin:
 
             page = self.build_shell("Programme details")
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
+            back_tab, back_handler, back_name = getattr(
+                self, "_last_non_detail_tab", ("Genres", self.show_search, "genres"),
+            )
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 12))
             self.create_button(
-                back_row, "←  Back to discover",
-                lambda: self.transition_to(self.show_search, "Genres", direction=-1), compact=True,
+                back_row, f"←  Back to {back_name}",
+                lambda: self.transition_to(back_handler, back_tab, direction=-1), compact=True,
             ).pack(side="left")
             self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
 
@@ -161,7 +164,7 @@ class DetailViewMixin:
             is_fav = self.check_if_favourited(podcast_id)
             fav_button = self.create_button(
                 actions_box,
-                "♥  Remove from favourites" if is_fav else "♡  Save to favourites",
+                "♥  Remove from favourites" if is_fav else "♥  Save to favourites",
                 lambda: self.toggle_favourite(podcast_id),
                 primary=is_fav,
                 compact=True,
@@ -182,6 +185,49 @@ class DetailViewMixin:
                 (fav_button, ORANGE_ACCENT if is_fav else ACTION_BTN_BG, ORANGE_HL if is_fav else SECONDARY_HOVER_BG),
                 (rate_button, ACTION_BTN_BG, SECONDARY_HOVER_BG),
             ]
+
+            # Subtle background notice that appears when Play is clicked and slowly fades away.
+            sim_notice_label = tk.Label(
+                right_pane,
+                text="Playback is simulated" if show_simulated_notice else "",
+                font=(DEFAULT_FONT, 10, "italic"),
+                fg=TEXT_GRAY if show_simulated_notice else DARK_BG,
+                bg=DARK_BG,
+                anchor="w",
+                justify="left",
+            )
+            sim_notice_label.pack(anchor="w", pady=(12, 0))
+            sim_fade_job = [None]
+
+            def cancel_sim_fade(_event=None):
+                if sim_fade_job[0] is not None:
+                    try:
+                        self.after_cancel(sim_fade_job[0])
+                    except tk.TclError:
+                        pass
+                    sim_fade_job[0] = None
+
+            sim_notice_label.bind("<Destroy>", cancel_sim_fade)
+
+            if show_simulated_notice:
+                fade_steps = 36
+                fade_step = [0]
+
+                def step_sim_fade():
+                    sim_fade_job[0] = None
+                    if not sim_notice_label.winfo_exists():
+                        return
+                    fade_step[0] += 1
+                    frac = min(1.0, fade_step[0] / float(fade_steps))
+                    eased = frac * frac * (3.0 - 2.0 * frac)
+                    sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, DARK_BG, eased))
+                    if fade_step[0] < fade_steps:
+                        sim_fade_job[0] = self.after(40, step_sim_fade)
+                    else:
+                        sim_notice_label.configure(text="")
+
+                # Hold readable for ~1.1s before slowly fading into the background over ~1.45s.
+                sim_fade_job[0] = self.after(1100, step_sim_fade)
 
             bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             bottom_rule.pack(fill="x", pady=(0, 22))
@@ -297,6 +343,7 @@ class DetailViewMixin:
                 meta_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 avg_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
+                sim_notice_label.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "italic"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
                 summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 rating_caption.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "bold"))
@@ -345,8 +392,7 @@ class DetailViewMixin:
                 record_last_listened(conn, self.current_user, podcast_id)
             # Clear any prior dismissal so the newly played podcast appears in the mini-bar.
             self._dismissed_last_listened = None
-            messagebox.showinfo("Now playing", "Listening to this programme…\n\nPlayback is simulated in this prototype.", parent=self)
-            self.show_detail(podcast_id)
+            self.show_detail(podcast_id, show_simulated_notice=True)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
 

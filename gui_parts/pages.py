@@ -111,14 +111,12 @@ class PagesMixin:
             hint_msg = "Search thousands of programmes and explore by genre."
             if genres_str:
                 hint_msg = "Picked for " + genres_str + (" · " + length_str + " episodes" if length_str else "")
-            self.create_label(banner_text, hint_msg, 10, TEXT_GRAY, wraplength=520).pack(anchor="w", pady=(5, 13))
+            self.create_label(banner_text, hint_msg, 10, TEXT_GRAY, wraplength=520).pack(anchor="w", pady=(5, 0))
             self.create_button(
-                banner_text, "Explore programmes  →",
+                banner_card, "Explore programmes  →",
                 lambda: self.transition_to(self.show_search, "Genres"),
                 primary=True, compact=True,
-            ).pack(anchor="w")
-            promo_art = self.render_decorative_panel(banner_card, "1.svg", 0, (150, 138), 155, 138)
-            promo_art.pack(side="right", padx=12, pady=10)
+            ).pack(side="right", padx=18, pady=12)
 
             rec_list = self.get_custom_recommendations(16)
             if rec_list:
@@ -762,7 +760,7 @@ class PagesMixin:
                 _, current_cover_size[0] = compute_rating_metrics()
             cover_size = current_cover_size[0]
             card = self.create_card_frame(ratings_grid)
-            cover_box = tk.Frame(card, bg=CARD_BG, height=cover_size)
+            cover_box = tk.Frame(card, bg=CARD_BG, height=cover_size, cursor="hand2")
             cover_box.pack_propagate(False)
             cover_box.pack(fill="x", padx=9, pady=(9, 0))
             cover = self.generate_podcast_cover(
@@ -770,6 +768,9 @@ class PagesMixin:
                 corner_radius=8, backdrop=CARD_BG,
             )
             cover.pack(fill="both", expand=True)
+            open_cmd = lambda _e=None, tid=row[0], t=row[1], c=row[2]: self.open_podcast_detail(tid, t, c)
+            cover_box.bind("<Button-1>", open_cmd)
+            cover.bind("<Button-1>", open_cmd)
             card._cover_meta = [cover_box, cover, row[0], row[1], row[2], cover_size]
             rendered_cards.append(card)
             details_pane = tk.Frame(card, bg=CARD_BG)
@@ -892,6 +893,10 @@ class PagesMixin:
                 corner_radius=8, backdrop=CARD_BG,
             )
             highlight_cover.pack(side="left", padx=12, pady=12)
+            highlight_cover.bind(
+                "<Button-1>",
+                lambda _e, tid=top_programme[0], t=top_programme[1], c=top_programme[2]: self.open_podcast_detail(tid, t, c),
+            )
             highlight_details = tk.Frame(highlight_card, bg=CARD_BG)
             highlight_details.pack(side="left", fill="both", expand=True, pady=16)
             self.create_label(highlight_details, "MOST PLAYED", 8, ORANGE_ACCENT, "bold").pack(anchor="w", pady=(0, 5))
