@@ -122,20 +122,147 @@ def load_bundled_reith_font():
     return "BBC Reith Sans" if registered_any else "Segoe UI"
 
 
-# Shared dark-theme palette and typography constants used across every screen.
-DARK_BG = "#101113"          # Primary application background.
-SIDEBAR_BG = "#17181b"       # Secondary chrome / scrollbar background.
-CARD_BG = "#1b1d21"          # Default rounded card surface colour.
-INPUT_BG = "#22252a"         # Text inputs and secondary button background.
-BORDER_LINE = "#303339"      # Subtle 1px card/button border outline.
-ORANGE_ACCENT = "#ff751f"    # Official BBC Sounds signature orange.
-ORANGE_HL = "#ff914d"        # Lighter orange highlight for hover states and labels.
-TEXT_WHITE = "#f7f7f7"       # High-contrast primary body and heading text.
-TEXT_GRAY = "#a8abb1"        # Muted secondary captions and metadata text.
-TEXT_LIGHT = "#d6d8dc"       # Medium-contrast text for secondary buttons.
-GOLD_STAR = "#ffd166"        # Warm gold colour for filled rating stars.
+# Theme palettes supporting Dark (default), Light, and High Contrast accessibility modes.
+THEME_PALETTES = {
+    "dark": {
+        "DARK_BG": "#101113",
+        "SIDEBAR_BG": "#17181b",
+        "TOPBAR_BG": "#080808",
+        "CARD_BG": "#1b1d21",
+        "SUBCARD_BG": "#1d1e22",
+        "BANNER_BG": "#26201e",
+        "MINI_BAR_BG": "#262228",
+        "SELECTED_BG": "#38251d",
+        "INPUT_BG": "#22252a",
+        "BORDER_LINE": "#303339",
+        "DIVIDER_LINE": "#575756",
+        "ORANGE_ACCENT": "#ff751f",
+        "ORANGE_HL": "#ff914d",
+        "TEXT_WHITE": "#f7f7f7",
+        "TEXT_GRAY": "#a8abb1",
+        "TEXT_LIGHT": "#d6d8dc",
+        "GOLD_STAR": "#ffd166",
+        "STAR_EMPTY": "#444851",
+        "ACTION_BTN_BG": "#23262d",
+        "ACTION_BTN_FG": "#f7f7f7",
+        "PRIMARY_BTN_FG": "#f7f7f7",
+        "SECONDARY_HOVER_BG": "#303339",
+        "SECONDARY_HOVER_FG": "#f7f7f7",
+        "LOGO_TILE_BG": "#ffffff",
+        "LOGO_TILE_FG": "#000000",
+        "TITLEBAR_DARK_MODE": 1,
+        "TITLEBAR_TEXT": "#f7f7f7",
+    },
+    "light": {
+        "DARK_BG": "#f4f5f7",
+        "SIDEBAR_BG": "#e2e5ea",
+        "TOPBAR_BG": "#ffffff",
+        "CARD_BG": "#ffffff",
+        "SUBCARD_BG": "#eceef2",
+        "BANNER_BG": "#fff1e6",
+        "MINI_BAR_BG": "#ffffff",
+        "SELECTED_BG": "#ffe3cf",
+        "INPUT_BG": "#e6e8ec",
+        "BORDER_LINE": "#cfd4dc",
+        "DIVIDER_LINE": "#c5cad3",
+        "ORANGE_ACCENT": "#e85d04",
+        "ORANGE_HL": "#c94b00",
+        "TEXT_WHITE": "#141518",
+        "TEXT_GRAY": "#525760",
+        "TEXT_LIGHT": "#25282e",
+        "GOLD_STAR": "#d48806",
+        "STAR_EMPTY": "#c4c9d1",
+        "ACTION_BTN_BG": "#e6e8ec",
+        "ACTION_BTN_FG": "#141518",
+        "PRIMARY_BTN_FG": "#ffffff",
+        "SECONDARY_HOVER_BG": "#cfd4dc",
+        "SECONDARY_HOVER_FG": "#141518",
+        "LOGO_TILE_BG": "#000000",
+        "LOGO_TILE_FG": "#ffffff",
+        "TITLEBAR_DARK_MODE": 0,
+        "TITLEBAR_TEXT": "#141518",
+    },
+    "high_contrast": {
+        "DARK_BG": "#000000",
+        "SIDEBAR_BG": "#000000",
+        "TOPBAR_BG": "#000000",
+        "CARD_BG": "#000000",
+        "SUBCARD_BG": "#000000",
+        "BANNER_BG": "#000000",
+        "MINI_BAR_BG": "#000000",
+        "SELECTED_BG": "#2b2200",
+        "INPUT_BG": "#121212",
+        "BORDER_LINE": "#ffffff",
+        "DIVIDER_LINE": "#ffffff",
+        "ORANGE_ACCENT": "#ffae00",
+        "ORANGE_HL": "#ffd500",
+        "TEXT_WHITE": "#ffffff",
+        "TEXT_GRAY": "#e8e8e8",
+        "TEXT_LIGHT": "#ffffff",
+        "GOLD_STAR": "#ffe600",
+        "STAR_EMPTY": "#767676",
+        "ACTION_BTN_BG": "#1a1a1a",
+        "ACTION_BTN_FG": "#ffffff",
+        "PRIMARY_BTN_FG": "#000000",
+        "SECONDARY_HOVER_BG": "#ffffff",
+        "SECONDARY_HOVER_FG": "#000000",
+        "LOGO_TILE_BG": "#ffffff",
+        "LOGO_TILE_FG": "#000000",
+        "TITLEBAR_DARK_MODE": 1,
+        "TITLEBAR_TEXT": "#ffffff",
+    },
+}
+
+CURRENT_THEME = "dark"
+
+# Active theme colour tokens (updated in-place across loaded GUI modules by apply_theme_palette).
+DARK_BG = THEME_PALETTES["dark"]["DARK_BG"]
+SIDEBAR_BG = THEME_PALETTES["dark"]["SIDEBAR_BG"]
+TOPBAR_BG = THEME_PALETTES["dark"]["TOPBAR_BG"]
+CARD_BG = THEME_PALETTES["dark"]["CARD_BG"]
+SUBCARD_BG = THEME_PALETTES["dark"]["SUBCARD_BG"]
+BANNER_BG = THEME_PALETTES["dark"]["BANNER_BG"]
+MINI_BAR_BG = THEME_PALETTES["dark"]["MINI_BAR_BG"]
+SELECTED_BG = THEME_PALETTES["dark"]["SELECTED_BG"]
+INPUT_BG = THEME_PALETTES["dark"]["INPUT_BG"]
+BORDER_LINE = THEME_PALETTES["dark"]["BORDER_LINE"]
+DIVIDER_LINE = THEME_PALETTES["dark"]["DIVIDER_LINE"]
+ORANGE_ACCENT = THEME_PALETTES["dark"]["ORANGE_ACCENT"]
+ORANGE_HL = THEME_PALETTES["dark"]["ORANGE_HL"]
+TEXT_WHITE = THEME_PALETTES["dark"]["TEXT_WHITE"]
+TEXT_GRAY = THEME_PALETTES["dark"]["TEXT_GRAY"]
+TEXT_LIGHT = THEME_PALETTES["dark"]["TEXT_LIGHT"]
+GOLD_STAR = THEME_PALETTES["dark"]["GOLD_STAR"]
+STAR_EMPTY = THEME_PALETTES["dark"]["STAR_EMPTY"]
+ACTION_BTN_BG = THEME_PALETTES["dark"]["ACTION_BTN_BG"]
+ACTION_BTN_FG = THEME_PALETTES["dark"]["ACTION_BTN_FG"]
+PRIMARY_BTN_FG = THEME_PALETTES["dark"]["PRIMARY_BTN_FG"]
+SECONDARY_HOVER_BG = THEME_PALETTES["dark"]["SECONDARY_HOVER_BG"]
+SECONDARY_HOVER_FG = THEME_PALETTES["dark"]["SECONDARY_HOVER_FG"]
+LOGO_TILE_BG = THEME_PALETTES["dark"]["LOGO_TILE_BG"]
+LOGO_TILE_FG = THEME_PALETTES["dark"]["LOGO_TILE_FG"]
+TITLEBAR_DARK_MODE = THEME_PALETTES["dark"]["TITLEBAR_DARK_MODE"]
+TITLEBAR_TEXT = THEME_PALETTES["dark"]["TITLEBAR_TEXT"]
+
 DEFAULT_FONT = load_bundled_reith_font()  # Bundled BBC Reith Sans (falls back to Segoe UI).
 PODCASTS_PER_PAGE = 12       # Number of podcast cards rendered per paginated page.
+
+
+def apply_theme_palette(theme_name):
+    """Switch the active colour palette across theme.py and all loaded GUI modules."""
+    global CURRENT_THEME
+    key = theme_name if theme_name in THEME_PALETTES else "dark"
+    CURRENT_THEME = key
+    palette = THEME_PALETTES[key]
+    for mod_name, mod in list(sys.modules.items()):
+        if mod is None:
+            continue
+        if mod_name == "__main__" or mod_name == "gui" or mod_name.startswith("gui_parts"):
+            mod_dict = mod.__dict__
+            for token, value in palette.items():
+                if token in mod_dict:
+                    mod_dict[token] = value
+    return palette
 
 # Supported podcast genres, duration buckets (in minutes), and visual tile metadata.
 GENRE_LIST = [
@@ -192,8 +319,10 @@ def blend_colour(hex_colour, target_colour, amount):
 class RoundedPanel(tk.Frame):
     """Frame backed by a smooth rounded-rectangle Canvas polygon with optional hover inset."""
 
-    def __init__(self, parent, surface, border=BORDER_LINE, **kwargs):
+    def __init__(self, parent, surface, border=None, **kwargs):
         super().__init__(parent, bg=parent.cget("bg"), **kwargs)
+        if border is None:
+            border = BORDER_LINE
         self.surface = surface
         self.border = border
         self._inset = 0

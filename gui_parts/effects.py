@@ -14,12 +14,20 @@ from gui_parts.theme import (
     DARK_BG,
     DEFAULT_FONT,
     INPUT_BG,
+    MINI_BAR_BG,
     ORANGE_ACCENT,
     ORANGE_HL,
+    PRIMARY_BTN_FG,
     ROOT_PATH,
+    SECONDARY_HOVER_BG,
+    SECONDARY_HOVER_FG,
     SIDEBAR_BG,
     TEXT_GRAY,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
+    TITLEBAR_TEXT,
+    TOPBAR_BG,
+    apply_theme_palette,
     blend_colour,
 )
 
@@ -321,11 +329,16 @@ class EffectsMixin:
                 pass
         return False
 
-    def set_windows_titlebar_colour(self, bg_hex=DARK_BG, text_hex=TEXT_WHITE):
-        """Apply Windows DWM dark mode and custom caption/text/border colours to the titlebar."""
+    def set_windows_titlebar_colour(self, bg_hex=None, text_hex=None):
+        """Apply Windows DWM light/dark mode and custom caption/text/border colours to the titlebar."""
         if sys.platform != "win32":
             return
-        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex):
+        if bg_hex is None:
+            bg_hex = DARK_BG
+        if text_hex is None:
+            text_hex = TITLEBAR_TEXT
+        dark_mode_flag = int(TITLEBAR_DARK_MODE)
+        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex, dark_mode_flag):
             return
         try:
             hwnd = getattr(self, "_win_hwnd", None)
@@ -342,8 +355,8 @@ class EffectsMixin:
                 return r | (g << 8) | (b << 16)
 
             for attr, value in (
-                (20, 1),
-                (19, 1),
+                (20, dark_mode_flag),
+                (19, dark_mode_flag),
                 (35, to_colorref(bg_hex)),
                 (36, to_colorref(text_hex)),
                 (34, to_colorref(bg_hex)),
@@ -355,7 +368,7 @@ class EffectsMixin:
                     ctypes.byref(val),
                     ctypes.sizeof(val),
                 )
-            self._titlebar_colour = (bg_hex, text_hex)
+            self._titlebar_colour = (bg_hex, text_hex, dark_mode_flag)
         except Exception:
             pass
 
@@ -390,21 +403,71 @@ class EffectsMixin:
         root = target_widget if (target_widget is not None and target_widget.winfo_exists()) else self
         self._scale_widget_tree(root, new_scale_factor)
 
-    def set_text_scale(self, new_scale):
-        """Set the accessibility text-size multiplier (0.80..1.40) and immediately rescale the UI."""
+    def set_text_scale(self, new_scale, persist=True):
+        """Set the accessibility text-size multiplier (0.80..1.40), persist per user, and rescale."""
         clamped = round(max(0.80, min(1.40, float(new_scale))), 2)
         if abs(clamped - getattr(self, "_text_scale", 1.0)) < 0.001:
             return
         self._text_scale = clamped
+        if persist and self.current_user is not None:
+            self.save_user_accessibility(self.current_user, self._text_scale, getattr(self, "_theme_name", "dark"))
         self.apply_interface_scaling(force=True)
 
     def adjust_text_scale(self, delta):
         """Increase or decrease the accessibility text size by delta (e.g. +0.10 or -0.10)."""
         self.set_text_scale(getattr(self, "_text_scale", 1.0) + delta)
 
+    def set_theme(self, theme_name, refresh=True, persist=True):
+        """Switch between 'dark', 'light', and 'high_contrast' themes, save per user, and update titlebar."""
+        if theme_name not in ("dark", "light", "high_contrast"):
+            theme_name = "dark"
+        if getattr(self, "_theme_name", "dark") == theme_name and not refresh:
+            return
+        self._theme_name = theme_name
+        apply_theme_palette(theme_name)
+        if persist and self.current_user is not None:
+            self.save_user_accessibility(self.current_user, getattr(self, "_text_scale", 1.0), self._theme_name)
+        # Clear cached pill buttons and rounded covers so they re-rasterize for the new theme.
+        self.button_images.clear()
+        self.cover_images.clear()
+        self._titlebar_colour = None
+        self.configure(bg=DARK_BG)
+        if refresh:
+            # Tear down the persistent shell so topbar, scrollbar, and mini-bar rebuild in the new theme.
+            shell_box = getattr(self, "_shell_box", None)
+            if shell_box is not None and shell_box.winfo_exists():
+                shell_box.destroy()
+            self._shell_box = None
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+            if self.current_user is not None:
+                self.set_windows_titlebar_colour(TOPBAR_BG, TITLEBAR_TEXT)
+                self.show_profile()
+            else:
+                self.set_windows_titlebar_colour(DARK_BG, TITLEBAR_TEXT)
+                self.show_login()
+
+    def apply_user_accessibility(self, listener_id):
+        """Load and apply the signed-in listener's saved text size and theme from database.db."""
+        saved_scale, saved_theme = self.load_user_accessibility(listener_id)
+        self._text_scale = saved_scale
+        self._theme_name = saved_theme
+        apply_theme_palette(saved_theme)
+        self.button_images.clear()
+        self.cover_images.clear()
+        self._titlebar_colour = None
+
     def reset_accessibility_settings(self):
-        """Restore all accessibility settings (including text size) back to their defaults."""
-        self.set_text_scale(1.0)
+        """Restore all accessibility settings (text size and theme) to defaults and save to database.db."""
+        theme_changed = getattr(self, "_theme_name", "dark") != "dark"
+        self._text_scale = 1.0
+        if self.current_user is not None:
+            self.save_user_accessibility(self.current_user, 1.0, "dark")
+        if theme_changed:
+            self.set_theme("dark", refresh=True, persist=False)
+            self.apply_interface_scaling(force=True)
+        else:
+            self.apply_interface_scaling(force=True)
 
     def _scale_widget_tree(self, root_widget, scale_factor):
         """Walk the widget tree and scale point-sized fonts, rounded buttons, and wraplengths."""
@@ -495,13 +558,14 @@ class EffectsMixin:
                 selected_flag = label_text == active_nav_tab
                 if getattr(btn, "_nav_selected", None) != selected_flag:
                     btn._nav_selected = selected_flag
-                    new_fg = TEXT_WHITE if selected_flag else TEXT_GRAY
+                    new_fg = PRIMARY_BTN_FG if selected_flag else TEXT_GRAY
                     btn._hover_base_fg = new_fg
+                    btn._hover_target_fg = PRIMARY_BTN_FG if selected_flag else SECONDARY_HOVER_FG
                     btn.configure(fg=new_fg)
                     self.style_rounded_button(
                         btn,
-                        ORANGE_ACCENT if selected_flag else "#080808",
-                        ORANGE_HL if selected_flag else BORDER_LINE,
+                        ORANGE_ACCENT if selected_flag else TOPBAR_BG,
+                        ORANGE_HL if selected_flag else SECONDARY_HOVER_BG,
                     )
             self.update_search_prompt()
             canvas_pane = self._shell_canvas
@@ -537,19 +601,19 @@ class EffectsMixin:
             for widget in self.winfo_children():
                 widget.destroy()
             self.configure(bg=DARK_BG)
-            self.set_windows_titlebar_colour("#080808")
+            self.set_windows_titlebar_colour(TOPBAR_BG, TITLEBAR_TEXT)
             shell_box = tk.Frame(self, bg=DARK_BG)
             shell_box.pack(fill="both", expand=True)
             self._shell_box = shell_box
             self._shell_bottom_bar = None
             self._shell_bottom_bar_key = None
 
-            topbar = tk.Frame(shell_box, bg="#080808", height=84)
+            topbar = tk.Frame(shell_box, bg=TOPBAR_BG, height=84)
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
             self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
 
-            nav_row = tk.Frame(topbar, bg="#080808")
+            nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
             nav_row.pack(side="left", padx=35, pady=18)
             self._shell_nav_buttons = {}
             for label_text, handler in nav_links:
@@ -557,8 +621,8 @@ class EffectsMixin:
                 btn = self.create_button(
                     nav_row, label_text.upper(), lambda go=handler, tab=label_text: self.transition_to(go, tab),
                     compact=True, primary=selected_flag, font=(DEFAULT_FONT, 9, "bold"),
-                    face=ORANGE_ACCENT if selected_flag else "#080808",
-                    fg=TEXT_WHITE if selected_flag else TEXT_GRAY,
+                    face=ORANGE_ACCENT if selected_flag else TOPBAR_BG,
+                    fg=PRIMARY_BTN_FG if selected_flag else TEXT_GRAY,
                 )
                 btn._nav_selected = selected_flag
                 btn.pack(side="left", padx=1)
@@ -635,7 +699,7 @@ class EffectsMixin:
 
         if self._tab_transition_direction is not None:
             self.animate_page_entry(canvas_pane, canvas_window, self._tab_transition_direction)
-        elif abs(self._ui_scale_factor - 1.0) >= 0.025:
+        elif abs(self._ui_scale_factor - 1.0) >= 0.025 or abs(getattr(self, "_text_scale", 1.0) - 1.0) >= 0.025:
             target = content_pane if reusing_shell else self
             self.after_idle(lambda t=target: self.apply_interface_scaling(force=True, target_widget=t))
         return content_pane
@@ -820,7 +884,7 @@ class EffectsMixin:
         if podcast_id == self._dismissed_last_listened:
             return
 
-        footer = self.create_card_frame(shell, bg="#262228")
+        footer = self.create_card_frame(shell, bg=MINI_BAR_BG)
         area_frame = getattr(self, "_shell_area_frame", None)
         if area_frame is not None and area_frame.winfo_exists() and area_frame.master is shell:
             footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10), before=area_frame)
@@ -887,7 +951,7 @@ class EffectsMixin:
         target_w = max(1, shell.winfo_width())
         target_h = max(1, shell.winfo_height() - target_y)
 
-        start_bg = "#262228"
+        start_bg = MINI_BAR_BG
         expander = tk.Frame(shell, bg=start_bg, bd=0, highlightthickness=0)
         accent_top = tk.Frame(expander, bg=ORANGE_ACCENT, height=3)
         accent_top.pack(fill="x")
@@ -966,7 +1030,7 @@ class EffectsMixin:
             self._transition_active = False
             return
 
-        target_bg = "#262228"
+        target_bg = MINI_BAR_BG
         shrinker = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
         accent_top = tk.Frame(shrinker, bg=ORANGE_ACCENT, height=3)
         accent_top.pack(fill="x")

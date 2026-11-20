@@ -225,3 +225,56 @@ class DatabaseMixin:
         """Format a podcast's community average rating for display."""
         average = self.get_podcast_averages().get(podcast_id)
         return f"★ {average:.1f} / 5 average" if average is not None else "Not yet rated"
+
+    @staticmethod
+    def _ensure_accessibility_table(conn):
+        """Create the per-user accessibility settings table in database.db if it does not exist."""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_accessibility ("
+            "ListenerID PRIMARY KEY NOT NULL, "
+            "TextScale REAL NOT NULL DEFAULT 1.0, "
+            "Theme TEXT NOT NULL DEFAULT 'dark')"
+        )
+
+    def load_user_accessibility(self, listener_id):
+        """Load (text_scale, theme_name) for a listener from SQLite, defaulting to (1.0, 'dark')."""
+        if listener_id is None:
+            return 1.0, "dark"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                row = conn.execute(
+                    "SELECT TextScale, Theme FROM user_accessibility WHERE ListenerID = ?",
+                    (listener_id,),
+                ).fetchone()
+            if not row:
+                return 1.0, "dark"
+            try:
+                scale = round(max(0.80, min(1.40, float(row[0]))), 2)
+            except (TypeError, ValueError):
+                scale = 1.0
+            theme = str(row[1] or "dark").strip().lower()
+            if theme not in ("dark", "light", "high_contrast"):
+                theme = "dark"
+            return scale, theme
+        except sqlite3.Error:
+            return 1.0, "dark"
+
+    def save_user_accessibility(self, listener_id, text_scale, theme_name):
+        """Persist a listener's text size and theme preference in database.db."""
+        if listener_id is None:
+            return
+        scale = round(max(0.80, min(1.40, float(text_scale))), 2)
+        theme = theme_name if theme_name in ("dark", "light", "high_contrast") else "dark"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                conn.execute(
+                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(ListenerID) DO UPDATE SET "
+                    "TextScale = excluded.TextScale, Theme = excluded.Theme",
+                    (listener_id, scale, theme),
+                )
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save accessibility settings", err)

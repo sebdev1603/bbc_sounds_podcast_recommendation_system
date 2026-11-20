@@ -31,6 +31,12 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
+        # Reset the login screen visually to default dark theme and 100% text size without changing DB rows.
+        self._text_scale = 1.0
+        self.set_theme("dark", refresh=False, persist=False)
+        self._shell_box = None
+        self._shell_bottom_bar = None
+        self._shell_bottom_bar_key = None
 
         # Clear any existing widgets and match the window/titlebar background to DARK_BG.
         for child_widget in self.winfo_children():
@@ -100,6 +106,8 @@ class LoginViewMixin:
                     if not found_record["CompleteSurvey"]:
                         self.active_genres = []
                         self.active_length = "Medium"
+                    # Load this listener's saved theme and text size before animating into Home.
+                    self.apply_user_accessibility(self.current_user)
                     # Lock the form, stop the vinyl spin loop, and expand the Continue button into Home.
                     login_button._expanding_login = True
                     text_entry.configure(state="disabled")

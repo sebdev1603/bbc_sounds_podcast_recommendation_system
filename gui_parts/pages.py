@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from gui_parts.theme import (
+    BANNER_BG,
     BORDER_LINE,
     CARD_BG,
     DARK_BG,
@@ -17,6 +18,11 @@ from gui_parts.theme import (
     ORANGE_ACCENT,
     ORANGE_HL,
     PALETTE_SWATCHES,
+    PRIMARY_BTN_FG,
+    SECONDARY_HOVER_BG,
+    SECONDARY_HOVER_FG,
+    SELECTED_BG,
+    SUBCARD_BG,
     TEXT_GRAY,
     TEXT_LIGHT,
     TEXT_WHITE,
@@ -79,7 +85,7 @@ class PagesMixin:
                 self.create_label(card_box, val_str, 23, ORANGE_ACCENT, "bold").pack(anchor="w", padx=16, pady=(12, 0))
                 self.create_label(card_box, cap_str, 9, TEXT_GRAY).pack(anchor="w", padx=16, pady=(0, 12))
 
-            report_strip = self.create_card_frame(page, bg="#1d1e22")
+            report_strip = self.create_card_frame(page, bg=SUBCARD_BG)
             report_strip.pack(fill="x", pady=(0, 10))
             self.create_label(report_strip, "YOUR LISTENING, SUMMARISED", 9, ORANGE_HL, "bold").pack(
                 side="left", padx=(16, 8), pady=14
@@ -95,9 +101,9 @@ class PagesMixin:
 
             genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "").replace(",", " · ")
             length_str = self.get_row_field(listener_info, "LengthPreference", "") or ""
-            banner_card = self.create_card_frame(page, bg="#26201e")
+            banner_card = self.create_card_frame(page, bg=BANNER_BG)
             banner_card.pack(fill="x", pady=(7, 7))
-            banner_text = tk.Frame(banner_card, bg="#26201e")
+            banner_text = tk.Frame(banner_card, bg=BANNER_BG)
             banner_text.pack(side="left", fill="both", expand=True, padx=20, pady=19)
             self.create_label(banner_text, "Find your next favourite listen", 17, TEXT_WHITE, "bold").pack(anchor="w")
             hint_msg = "Search thousands of programmes and explore by genre."
@@ -495,7 +501,7 @@ class PagesMixin:
         prefs_bar.grid_columnconfigure(0, weight=2, uniform="for-you-prefs")
         prefs_bar.grid_columnconfigure(1, weight=1, uniform="for-you-prefs")
 
-        genres_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        genres_card = self.create_card_frame(prefs_bar, bg=SUBCARD_BG)
         genres_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.create_label(genres_card, "YOUR GENRES", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
         formatted_genres = "  ·  ".join(g.strip() for g in str(genres_val).split(",") if g.strip())
@@ -503,7 +509,7 @@ class PagesMixin:
             anchor="w", padx=16, pady=(0, 12)
         )
 
-        length_card = self.create_card_frame(prefs_bar, bg="#1d1e22")
+        length_card = self.create_card_frame(prefs_bar, bg=SUBCARD_BG)
         length_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.create_label(length_card, "EPISODE LENGTH", 8, TEXT_GRAY, "bold").pack(anchor="w", padx=16, pady=(12, 3))
         length_range = DURATION_RANGES.get(length_val)
@@ -576,7 +582,7 @@ class PagesMixin:
             ).pack(anchor="w", pady=6)
             return
 
-        summary_bar = self.create_card_frame(page, bg="#1d1e22")
+        summary_bar = self.create_card_frame(page, bg=SUBCARD_BG)
         summary_bar.pack(fill="x", pady=(0, 12))
         self.create_label(summary_bar, str(len(rating_rows)), 24, ORANGE_ACCENT, "bold").pack(
             side="left", padx=(18, 8), pady=12
@@ -803,10 +809,10 @@ class PagesMixin:
         if survey_done:
             self.create_button(profile_actions, "Reset survey", self.reset_survey, compact=True).pack(side="left", padx=(9, 0))
 
-        # Accessibility settings section for adjusting and resetting text size across the app.
+        # Accessibility settings section for adjusting text size, theme, and resetting defaults.
         self.render_section_title(
             page, "Accessibility settings",
-            "Increase or decrease text size across BBC Sounds for comfortable reading.",
+            "Adjust text size and switch between Dark, Light, and High contrast themes.",
         )
         access_card = self.create_card_frame(page)
         access_card.pack(fill="x", pady=5)
@@ -822,6 +828,37 @@ class PagesMixin:
         size_controls = tk.Frame(access_row, bg=CARD_BG)
         size_controls.pack(side="right")
 
+        # Divider and Theme selector row inside the same Accessibility settings card.
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        theme_row = tk.Frame(access_card, bg=CARD_BG)
+        theme_row.pack(fill="x", padx=18, pady=16)
+
+        theme_labels = {
+            "dark": "Dark  ·  Default",
+            "light": "Light",
+            "high_contrast": "High contrast",
+        }
+        active_theme = getattr(self, "_theme_name", "dark")
+
+        theme_info = tk.Frame(theme_row, bg=CARD_BG)
+        theme_info.pack(side="left", fill="x", expand=True)
+        self.create_label(theme_info, "APPEARANCE THEME", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        self.create_label(
+            theme_info, theme_labels.get(active_theme, "Dark  ·  Default"), 13, TEXT_WHITE, "bold",
+        ).pack(anchor="w", pady=(4, 0))
+
+        theme_controls = tk.Frame(theme_row, bg=CARD_BG)
+        theme_controls.pack(side="right")
+        for theme_key, theme_caption in (("dark", "Dark"), ("light", "Light"), ("high_contrast", "High contrast")):
+            is_selected = active_theme == theme_key
+            self.create_button(
+                theme_controls,
+                theme_caption,
+                lambda key=theme_key: self.set_theme(key),
+                primary=is_selected,
+                compact=True,
+            ).pack(side="left", padx=(0 if theme_key == "dark" else 8, 0))
+
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
             if pct == 100:
@@ -830,10 +867,12 @@ class PagesMixin:
 
         def refresh_accessibility_controls():
             scale_val = getattr(self, "_text_scale", 1.0)
+            cur_theme = getattr(self, "_theme_name", "dark")
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            reset_access_btn.configure(state="disabled" if abs(scale_val - 1.0) < 0.005 else "normal")
+            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark"
+            reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
             self.adjust_text_scale(delta)
@@ -841,7 +880,8 @@ class PagesMixin:
 
         def on_reset_accessibility():
             self.reset_accessibility_settings()
-            refresh_accessibility_controls()
+            if size_status_label.winfo_exists():
+                refresh_accessibility_controls()
 
         smaller_btn = self.create_button(
             size_controls, "A−  Smaller", lambda: on_adjust_text(-0.10), compact=True,
@@ -946,7 +986,7 @@ class PagesMixin:
             counter_lbl.config(text=f"{len(self.active_genres)} / 5 selected")
         for name, (tile, lbl, circle) in getattr(self, "genre_elements", {}).items():
             is_active = name in self.active_genres
-            background_color = "#38251d" if is_active else CARD_BG
+            background_color = SELECTED_BG if is_active else CARD_BG
             tile.set_surface(background_color, ORANGE_ACCENT if is_active else BORDER_LINE)
             lbl.configure(bg=background_color, fg=ORANGE_HL if is_active else TEXT_WHITE)
             circle.configure(bg=background_color)
@@ -963,12 +1003,13 @@ class PagesMixin:
         """Update visual styles for the Short / Medium / Long episode-length buttons."""
         for val_key, button_obj in getattr(self, "length_buttons", {}).items():
             active_flag = val_key == self.active_length
-            fg_colour = TEXT_WHITE if active_flag else TEXT_LIGHT
+            fg_colour = PRIMARY_BTN_FG if active_flag else TEXT_LIGHT
             button_obj._hover_base_fg = fg_colour
+            button_obj._hover_target_fg = PRIMARY_BTN_FG if active_flag else SECONDARY_HOVER_FG
             button_obj.configure(fg=fg_colour)
             self.style_rounded_button(
                 button_obj, ORANGE_ACCENT if active_flag else INPUT_BG,
-                ORANGE_HL if active_flag else BORDER_LINE,
+                ORANGE_HL if active_flag else SECONDARY_HOVER_BG,
             )
 
     def save_user_preferences(self):

@@ -8,14 +8,23 @@ from tkinter import messagebox
 
 from last_listened import record_last_listened
 from gui_parts.theme import (
+    ACTION_BTN_BG,
+    ACTION_BTN_FG,
     BORDER_LINE,
     DARK_BG,
     DEFAULT_FONT,
+    DIVIDER_LINE,
     GOLD_STAR,
     ORANGE_ACCENT,
     ORANGE_HL,
+    PRIMARY_BTN_FG,
+    SECONDARY_HOVER_BG,
+    STAR_EMPTY,
+    SUBCARD_BG,
     TEXT_GRAY,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
+    TITLEBAR_TEXT,
     blend_colour,
 )
 
@@ -52,7 +61,7 @@ class DetailViewMixin:
             detail_column._skip_auto_scale = True
             detail_column.pack(fill="x", padx=56)
 
-            top_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            top_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             top_rule.pack(fill="x", pady=(4, 34))
 
             hero_box = tk.Frame(detail_column, bg=DARK_BG)
@@ -142,7 +151,7 @@ class DetailViewMixin:
                 play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
             play_canvas.bind("<Destroy>", cancel_play_hover)
 
-            v_divider = tk.Frame(controls_row, bg="#575756", width=2, height=62)
+            v_divider = tk.Frame(controls_row, bg=DIVIDER_LINE, width=2, height=62)
             v_divider.pack(side="left", padx=(0, 22))
 
             actions_box = tk.Frame(controls_row, bg=DARK_BG)
@@ -154,8 +163,8 @@ class DetailViewMixin:
                 lambda: self.toggle_favourite(podcast_id),
                 primary=is_fav,
                 compact=True,
-                face=ORANGE_ACCENT if is_fav else "#23262d",
-                fg=TEXT_WHITE,
+                face=ORANGE_ACCENT if is_fav else ACTION_BTN_BG,
+                fg=PRIMARY_BTN_FG if is_fav else ACTION_BTN_FG,
             )
             fav_button.pack(anchor="w", pady=(0, 8))
             rate_button = self.create_button(
@@ -163,19 +172,19 @@ class DetailViewMixin:
                 "★  Rate this programme",
                 lambda: self.rate_programme(podcast_id),
                 compact=True,
-                face="#23262d",
-                fg=TEXT_WHITE,
+                face=ACTION_BTN_BG,
+                fg=ACTION_BTN_FG,
             )
             rate_button.pack(anchor="w")
             action_buttons = [
-                (fav_button, ORANGE_ACCENT if is_fav else "#23262d", ORANGE_HL if is_fav else BORDER_LINE),
-                (rate_button, "#23262d", BORDER_LINE),
+                (fav_button, ORANGE_ACCENT if is_fav else ACTION_BTN_BG, ORANGE_HL if is_fav else SECONDARY_HOVER_BG),
+                (rate_button, ACTION_BTN_BG, SECONDARY_HOVER_BG),
             ]
 
-            bottom_rule = tk.Frame(detail_column, bg="#575756", height=2)
+            bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             bottom_rule.pack(fill="x", pady=(0, 22))
 
-            sub_card = self.create_card_frame(detail_column, bg="#1d1e22")
+            sub_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
             sub_card.pack(fill="x", padx=28, pady=(0, 8))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
@@ -191,12 +200,12 @@ class DetailViewMixin:
             summary_label.pack(anchor="w", padx=18, pady=(0, 8))
 
             # Read-only 5-star polygon display aligned with the personal rating label.
-            rating_row = tk.Frame(sub_card, bg="#1d1e22")
+            rating_row = tk.Frame(sub_card, bg=SUBCARD_BG)
             rating_row.pack(anchor="w", padx=18, pady=(0, 14))
             rating_caption = self.create_label(
                 rating_row,
                 "Your rating:",
-                10, TEXT_GRAY, "bold", bg="#1d1e22",
+                10, TEXT_GRAY, "bold", bg=SUBCARD_BG,
             )
             rating_caption.pack(side="left", padx=(0, 10))
 
@@ -205,7 +214,7 @@ class DetailViewMixin:
                 rating_row,
                 width=5 * star_state["size"] + 4 * star_state["gap"],
                 height=star_state["size"],
-                bg="#1d1e22",
+                bg=SUBCARD_BG,
                 bd=0,
                 highlightthickness=0,
             )
@@ -232,7 +241,7 @@ class DetailViewMixin:
                         pts.extend((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
                     star_canvas.create_polygon(
                         pts,
-                        fill=GOLD_STAR if star_idx <= active else "#444851",
+                        fill=GOLD_STAR if star_idx <= active else STAR_EMPTY,
                         outline="",
                     )
 
@@ -393,14 +402,26 @@ class DetailViewMixin:
             dialog.transient(self)
             dialog.grab_set()
 
+            # Style the popup dialog's Windows titlebar to match the active theme.
             if sys.platform == "win32":
                 try:
                     dialog.update_idletasks()
                     dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
-                    val = ctypes.c_int(1)
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        ctypes.c_void_p(dlg_hwnd), ctypes.c_int(20), ctypes.byref(val), ctypes.sizeof(val),
-                    )
+
+                    def _to_colorref(hex_col):
+                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
+
+                    for attr, value in (
+                        (20, int(TITLEBAR_DARK_MODE)),
+                        (19, int(TITLEBAR_DARK_MODE)),
+                        (35, _to_colorref(DARK_BG)),
+                        (36, _to_colorref(TITLEBAR_TEXT)),
+                        (34, _to_colorref(DARK_BG)),
+                    ):
+                        val = ctypes.c_int(value)
+                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                        )
                 except Exception:
                     pass
 
@@ -418,7 +439,7 @@ class DetailViewMixin:
 
             def paint_dlg_stars(score):
                 for idx, lbl in enumerate(dlg_stars, start=1):
-                    lbl.configure(fg=GOLD_STAR if idx <= score else "#444851")
+                    lbl.configure(fg=GOLD_STAR if idx <= score else STAR_EMPTY)
                 score_lbl.configure(text=f"{score} / 5")
 
             def select_dlg_star(score):
@@ -428,7 +449,7 @@ class DetailViewMixin:
             for star_idx in range(1, 6):
                 star_lbl = tk.Label(
                     stars_frame, text="★", font=(DEFAULT_FONT, 30, "bold"),
-                    bg=DARK_BG, fg=GOLD_STAR if star_idx <= initial_score else "#444851",
+                    bg=DARK_BG, fg=GOLD_STAR if star_idx <= initial_score else STAR_EMPTY,
                     cursor="hand2", bd=0, padx=4,
                 )
                 star_lbl.pack(side="left")

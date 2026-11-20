@@ -49,6 +49,7 @@ class BBCSoundsGUI(
         self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
         self._ui_scale_factor = 1.0
         self._text_scale = 1.0
+        self._theme_name = "dark"
         self._resize_after_id = None
 
         self.current_user = None

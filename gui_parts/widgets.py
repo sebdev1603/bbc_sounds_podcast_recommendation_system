@@ -15,11 +15,18 @@ from gui_parts.theme import (
     GENRE_TILE_DETAILS,
     GOLD_STAR,
     INPUT_BG,
+    LOGO_TILE_BG,
+    LOGO_TILE_FG,
     ORANGE_ACCENT,
     ORANGE_HL,
     PALETTE_SWATCHES,
     PODCASTS_PER_PAGE,
+    PRIMARY_BTN_FG,
     RoundedPanel,
+    SECONDARY_HOVER_BG,
+    SECONDARY_HOVER_FG,
+    SELECTED_BG,
+    STAR_EMPTY,
     TEXT_GRAY,
     TEXT_LIGHT,
     TEXT_WHITE,
@@ -81,8 +88,10 @@ class WidgetsMixin:
             return None
 
     @staticmethod
-    def create_label(container, text_val, text_size=12, text_color=TEXT_WHITE, font_weight="normal", **kwargs):
+    def create_label(container, text_val, text_size=12, text_color=None, font_weight="normal", **kwargs):
         """Create a styled Tk label inheriting its container's background by default."""
+        if text_color is None:
+            text_color = TEXT_WHITE
         return tk.Label(
             container,
             text=text_val,
@@ -98,7 +107,8 @@ class WidgetsMixin:
         """Create a rounded pill button with smooth 5-frame hover colour and scale animation."""
         font_spec = kwargs.pop("font", (DEFAULT_FONT, 10 if compact else 11, "bold" if primary else "normal"))
         face = kwargs.pop("face", ORANGE_ACCENT if primary else INPUT_BG)
-        foreground = kwargs.pop("fg", TEXT_WHITE if primary else TEXT_LIGHT)
+        foreground = kwargs.pop("fg", PRIMARY_BTN_FG if primary else TEXT_LIGHT)
+        hover_fg = PRIMARY_BTN_FG if primary else SECONDARY_HOVER_FG
         background = container.cget("bg")
         button = tk.Button(
             container,
@@ -107,7 +117,7 @@ class WidgetsMixin:
             font=font_spec, compound="center",
             bg=background, fg=foreground,
             activebackground=background,
-            activeforeground=TEXT_WHITE,
+            activeforeground=hover_fg,
             disabledforeground=TEXT_GRAY,
             relief="flat",
             bd=0,
@@ -117,10 +127,11 @@ class WidgetsMixin:
             **kwargs,
         )
         button._rounded_padding = (24, 12) if compact else (32, 16)
+        button._hover_target_fg = hover_fg
         button._hover_job = None
         button._hover_step = 0
         button._hover_target = 0
-        self.style_rounded_button(button, face, ORANGE_HL if primary else BORDER_LINE)
+        self.style_rounded_button(button, face, ORANGE_HL if primary else SECONDARY_HOVER_BG)
         button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 5))
         button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
         button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
@@ -174,8 +185,13 @@ class WidgetsMixin:
         image = self.rounded_button_image(width, height, colour, inset=inset)
         button._current_image = image
         config = {"image": image}
+        target_fg = getattr(button, "_hover_target_fg", TEXT_WHITE)
         if isinstance(base_fg, str) and base_fg.startswith("#") and len(base_fg) == 7:
-            config["fg"] = blend_colour(base_fg, TEXT_WHITE, eased)
+            # Keep text high-contrast when swapping between white and black foregrounds on hover.
+            if base_fg.lower() != target_fg.lower() and target_fg.lower() == "#000000":
+                config["fg"] = target_fg if eased >= 0.45 else base_fg
+            else:
+                config["fg"] = blend_colour(base_fg, target_fg, eased)
         button.configure(**config)
 
     def _get_cached_font(self, font_spec):
@@ -264,12 +280,12 @@ class WidgetsMixin:
         for idx, char in enumerate("BBC"):
             x0 = idx * (tile + gap)
             x1 = x0 + tile
-            logo_canvas.create_rectangle(x0, y0, x1, y1, fill="#ffffff", outline="")
+            logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="")
             logo_canvas.create_text(
                 (x0 + x1) / 2,
                 center_y,
                 text=char,
-                fill="#000000",
+                fill=LOGO_TILE_FG,
                 font=tile_font,
                 anchor="center",
             )
@@ -421,20 +437,22 @@ class WidgetsMixin:
         row_pane = tk.Frame(container, bg=background_col or container.cget("bg"))
         numeric_score = int(score_val or 0)
         for val in range(1, 6):
-            star_color = GOLD_STAR if val <= numeric_score else "#53575d"
+            star_color = GOLD_STAR if val <= numeric_score else STAR_EMPTY
             self.create_label(row_pane, "★", star_size, star_color, bg=row_pane.cget("bg")).pack(
                 side="left", padx=1
             )
         return row_pane
 
-    def create_genre_circle(self, container, genre_name, idx, size=54, background_col=CARD_BG):
+    def create_genre_circle(self, container, genre_name, idx, size=54, background_col=None):
         """Draw a concentric coloured circular badge with the genre's initial."""
+        if background_col is None:
+            background_col = CARD_BG
         light_col, middle_col, outline_col = GENRE_CIRCLE_COLOURS[idx % len(GENRE_CIRCLE_COLOURS)]
         circle_canvas = tk.Canvas(container, width=size, height=size, bg=background_col, highlightthickness=0, cursor="hand2")
         for inset, fill_col in [(2, outline_col), (5, middle_col), (10, light_col), (16, middle_col)]:
             circle_canvas.create_oval(inset, inset, size - inset, size - inset, fill=fill_col, outline="")
         circle_canvas.create_oval(2, 2, size - 2, size - 2, outline=outline_col, width=2)
-        circle_canvas.create_text(size / 2, size / 2, text=genre_name[:1].upper(), fill=TEXT_WHITE, font=(DEFAULT_FONT, 14, "bold"))
+        circle_canvas.create_text(size / 2, size / 2, text=genre_name[:1].upper(), fill="#ffffff", font=(DEFAULT_FONT, 14, "bold"))
         return circle_canvas
 
     def create_default_profile_avatar(self, container, size=112):
@@ -475,7 +493,7 @@ class WidgetsMixin:
 
     def build_genre_tile(self, parent_widget, genre_name, idx, selected=False):
         """Create a compact selectable genre card with a coloured circular badge."""
-        bg_col = "#38251d" if selected else CARD_BG
+        bg_col = SELECTED_BG if selected else CARD_BG
         border_col = ORANGE_ACCENT if selected else BORDER_LINE
         tile_box = RoundedPanel(parent_widget, bg_col, border_col)
         canvas_marker = self.create_genre_circle(tile_box, genre_name, idx, 45, bg_col)
