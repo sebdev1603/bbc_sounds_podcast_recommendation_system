@@ -1,9 +1,11 @@
 """Entry point for the BBC Sounds Podcast Recommendation System desktop GUI."""
+# Standard library imports for LRU caches, Windows taskbar ID, and Tkinter GUI.
 from collections import OrderedDict
 import ctypes
 import sys
 import tkinter as tk
 
+# Feature mixins split across gui_parts/ to keep the application modular.
 from gui_parts.db_queries import DatabaseMixin
 from gui_parts.detail_view import DetailViewMixin
 from gui_parts.effects import EffectsMixin
@@ -39,6 +41,7 @@ class BBCSoundsGUI(
 
         self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
         self._ui_scale_factor = 1.0
+        self._text_scale = 1.0
         self._resize_after_id = None
 
         self.current_user = None
