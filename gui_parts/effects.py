@@ -403,6 +403,9 @@ class EffectsMixin:
         self._ui_scale_factor = new_scale_factor
         root = target_widget if (target_widget is not None and target_widget.winfo_exists()) else self
         self._scale_widget_tree(root, new_scale_factor)
+        resize_search = getattr(self, "_resize_search_bar", None)
+        if resize_search is not None:
+            resize_search()
 
     def set_text_scale(self, new_scale, persist=True):
         """Set the accessibility text-size multiplier (0.80..1.40), persist per user, and rescale."""
@@ -630,10 +633,11 @@ class EffectsMixin:
             topbar = tk.Frame(shell_box, bg=TOPBAR_BG, height=84)
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
-            self.draw_app_logo(topbar, 1.1).pack(side="left", padx=30, pady=22)
+            logo_widget = self.draw_app_logo(topbar, 1.1)
+            logo_widget.pack(side="left", padx=(26, 18), pady=22)
 
             nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
-            nav_row.pack(side="left", padx=35, pady=18)
+            nav_row.pack(side="left", padx=(12, 16), pady=18)
             self._shell_nav_buttons = {}
             for label_text, handler in nav_links:
                 selected_flag = label_text == active_nav_tab
@@ -646,10 +650,40 @@ class EffectsMixin:
                 btn._nav_selected = selected_flag
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
-            self.create_button(topbar, "Sign out", self.show_login, compact=True).pack(side="right", padx=(6, 9), pady=20)
+            sign_out_btn = self.create_button(topbar, "Sign out", self.show_login, compact=True)
+            sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
             search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
-            search_container.pack(side="right", padx=(0, 14), pady=23)
+            search_container.pack(side="right", padx=(8, 12), pady=23)
             search_container.pack_propagate(False)
+            self._search_container = search_container
+
+            last_search_size = [230, 38]
+
+            def resize_search_bar(_event=None):
+                if not topbar.winfo_exists() or not search_container.winfo_exists():
+                    return
+                bar_w = topbar.winfo_width()
+                if bar_w <= 1:
+                    return
+                # Calculate remaining space between the nav links and Sign out button.
+                used_w = (
+                    logo_widget.winfo_reqwidth() + 44
+                    + nav_row.winfo_reqwidth() + 28
+                    + sign_out_btn.winfo_reqwidth() + 44
+                )
+                available = bar_w - used_w
+                # Grow longer on wider windows (up to 480px) and shrink cleanly on smaller windows (down to 135px).
+                target_w = max(135, min(480, available))
+                target_h = max(34, min(44, round(38 * getattr(self, "_ui_scale_factor", 1.0))))
+                if abs(target_w - last_search_size[0]) >= 2 or target_h != last_search_size[1]:
+                    last_search_size[0] = target_w
+                    last_search_size[1] = target_h
+                    search_container.configure(width=target_w, height=target_h)
+
+            topbar.bind("<Configure>", resize_search_bar)
+            nav_row.bind("<Configure>", resize_search_bar)
+            self._resize_search_bar = resize_search_bar
+            self.after_idle(resize_search_bar)
             self._search_entry = tk.Entry(
                 search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
                 bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
