@@ -654,7 +654,7 @@ class EffectsMixin:
                 btn._nav_selected = selected_flag
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
-            sign_out_btn = self.create_button(topbar, "Sign out", self.show_login, compact=True)
+            sign_out_btn = self.create_button(topbar, "Sign out", self.sign_out_to_login, compact=True)
             sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
             search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
             search_container.pack(side="right", padx=(8, 12), pady=23)

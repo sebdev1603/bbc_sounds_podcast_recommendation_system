@@ -44,6 +44,8 @@ class LoginViewMixin:
 
         # Clear any existing widgets and match the window/titlebar background to DARK_BG.
         for child_widget in self.winfo_children():
+            if getattr(child_widget, "_preserve_during_shell_build", False):
+                continue
             child_widget.destroy()
         self.configure(bg=DARK_BG)
         self.set_windows_titlebar_colour(DARK_BG)
@@ -126,6 +128,7 @@ class LoginViewMixin:
         login_button = self.create_button(login_panel, "Continue  →", handle_login, primary=True)
         login_button.configure(highlightthickness=0, takefocus=0)
         login_button.pack(anchor="w", padx=20, pady=(5, 20))
+        self._login_button = login_button
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
@@ -233,6 +236,25 @@ class LoginViewMixin:
         except Exception:
             return None
 
+    @staticmethod
+    def _strip_dwm_border(top_win):
+        """Disable Windows 11 DWM non-client border, shadow, and corner rounding on an overlay Toplevel."""
+        if sys.platform != "win32":
+            return
+        try:
+            wid = top_win.winfo_id()
+            hwnd = ctypes.windll.user32.GetAncestor(wid, 2) or wid
+            # DWMWA_NCRENDERING_POLICY (2) = DWMNCRP_DISABLED (1)
+            # DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_DONOTROUND (1)
+            # DWMWA_BORDER_COLOR (34) = DWMWA_COLOR_NONE (0xFFFFFFFE)
+            for attr, raw_val in ((2, 1), (33, 1), (34, 0xFFFFFFFE)):
+                val = ctypes.c_uint32(raw_val)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                )
+        except Exception:
+            pass
+
     def expand_login_button_to_home(self, login_button):
         """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
         # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
@@ -273,22 +295,6 @@ class LoginViewMixin:
         login_button.configure(text="")
         # Use a dark unique chroma key (#010203) instead of bright magenta so any 1px edge never looks bright/white.
         key_colour = "#010203"
-
-        def strip_dwm_border(top_win):
-            """Remove the Windows 11 1px DWM border/rounding on borderless overlay Toplevels."""
-            if sys.platform != "win32":
-                return
-            try:
-                hwnd = ctypes.windll.user32.GetParent(top_win.winfo_id()) or top_win.winfo_id()
-                # DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_DONOTROUND (1)
-                # DWMWA_BORDER_COLOR (34) = DWMWA_COLOR_NONE (0xFFFFFFFE)
-                for attr, raw_val in ((33, 1), (34, 0xFFFFFFFE)):
-                    val = ctypes.c_uint32(raw_val)
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                    )
-            except Exception:
-                pass
 
         # Two fixed-size full-window Toplevels kept withdrawn until fully painted so Windows
         # never flashes a default white/grey window frame before the dark canvas appears.
@@ -383,10 +389,12 @@ class LoginViewMixin:
         # Layout both canvases while still withdrawn, strip Windows 11 DWM border, then reveal.
         backdrop_win.update_idletasks()
         pill_win.update_idletasks()
-        strip_dwm_border(backdrop_win)
-        strip_dwm_border(pill_win)
+        self._strip_dwm_border(backdrop_win)
+        self._strip_dwm_border(pill_win)
         backdrop_win.deiconify()
         pill_win.deiconify()
+        self._strip_dwm_border(backdrop_win)
+        self._strip_dwm_border(pill_win)
         backdrop_win.lift()
         pill_win.lift()
         try:
@@ -506,6 +514,324 @@ class LoginViewMixin:
                 finish()
 
         # Start after queued idle layout/scaling callbacks finish so the animation runs uninterrupted.
+        self.after(16, draw_frame)
+
+    def sign_out_to_login(self):
+        """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
+        if getattr(self, "_signing_out", False):
+            return
+        self._signing_out = True
+        self.focus_set()
+
+        win_x = self.winfo_rootx()
+        win_y = self.winfo_rooty()
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+
+        if win_w <= 1 or win_h <= 1:
+            self._signing_out = False
+            self.show_login()
+            return
+
+        # Capture the live current page BEFORE switching to the login screen underneath.
+        page_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
+        key_colour = "#010203"
+
+        # Two fixed-size full-window Toplevels kept withdrawn until painted (zero white flash):
+        # 1) page_win shows the captured page clipped inside a shrinking rounded rectangle.
+        # 2) pill_win draws the matching rounded pill fading in toward ORANGE_ACCENT as it lands.
+        page_win = None
+        pill_win = None
+        try:
+            page_win = tk.Toplevel(self)
+            page_win.withdraw()
+            page_win._preserve_during_shell_build = True
+            page_win.overrideredirect(True)
+            page_win.configure(bg=DARK_BG)
+            page_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            page_win.attributes("-transparentcolor", key_colour)
+            page_win.transient(self)
+
+            pill_win = tk.Toplevel(self)
+            pill_win.withdraw()
+            pill_win._preserve_during_shell_build = True
+            pill_win.overrideredirect(True)
+            pill_win.configure(bg=key_colour)
+            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+            pill_win.attributes("-transparentcolor", key_colour)
+            pill_win.attributes("-alpha", 0.0)
+            pill_win.transient(self)
+        except tk.TclError:
+            for w in (pill_win, page_win):
+                if w is not None:
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._signing_out = False
+            self.show_login()
+            return
+
+        page_canvas = tk.Canvas(page_win, bg=DARK_BG, bd=0, highlightthickness=0)
+        page_canvas.pack(fill="both", expand=True)
+        if page_snap is not None:
+            page_canvas._snap_ref = page_snap
+            page_canvas.create_image(0, 0, image=page_snap, anchor="nw")
+
+        # 4 outer chroma-key rectangles + 4 inverse-corner polygons clip page_snap to a rounded box.
+        outer_masks = tuple(
+            page_canvas.create_rectangle(0, 0, 0, 0, fill=key_colour, outline="")
+            for _ in range(4)
+        )
+        corner_masks = tuple(
+            page_canvas.create_polygon(0, 0, 0, 0, 0, 0, fill=key_colour, outline="")
+            for _ in range(4)
+        )
+
+        # Pre-compute smooth quarter-circle steps (10 segments per corner) for seamless rounded clipping.
+        arc_steps = tuple(
+            (math.cos(math.radians(a)), math.sin(math.radians(a)))
+            for a in (0, 10, 20, 30, 40, 50, 60, 70, 80, 90)
+        )
+
+        def update_page_clip(x0, y0, x1, y1, radius):
+            # Inset the clipped page snapshot 1-2px strictly inside pill_win's rounded boundary so
+            # bright pixels from page_snap can never poke past the pill's rounded corners.
+            lx = max(0, x0 + 1)
+            ly = max(0, y0 + 1)
+            rx = min(win_w, max(lx, x1 - 2))
+            by = min(win_h, max(ly, y1 - 2))
+            page_canvas.coords(outer_masks[0], 0, 0, win_w, ly)
+            page_canvas.coords(outer_masks[1], 0, by, win_w, win_h)
+            page_canvas.coords(outer_masks[2], 0, ly, lx, by)
+            page_canvas.coords(outer_masks[3], rx, ly, win_w, by)
+
+            r = max(0, min(radius + 1, (rx - lx) // 2, (by - ly) // 2))
+            if r <= 1:
+                for cm in corner_masks:
+                    page_canvas.coords(cm, 0, 0, 0, 0, 0, 0)
+                return
+
+            # Top-left, top-right, bottom-left, bottom-right inverse rounded corner masks with 2px outer overlap.
+            tl = [lx - 2, ly - 2]
+            for c, s in arc_steps:
+                tl.extend((lx + r - r * s, ly + r - r * c))
+            tr = [rx + 2, ly - 2]
+            for c, s in arc_steps:
+                tr.extend((rx - r + r * c, ly + r - r * s))
+            bl = [lx - 2, by + 2]
+            for c, s in arc_steps:
+                bl.extend((lx + r - r * c, by - r + r * s))
+            br = [rx + 2, by + 2]
+            for c, s in arc_steps:
+                br.extend((rx - r + r * s, by - r + r * c))
+            page_canvas.coords(corner_masks[0], *tl)
+            page_canvas.coords(corner_masks[1], *tr)
+            page_canvas.coords(corner_masks[2], *bl)
+            page_canvas.coords(corner_masks[3], *br)
+
+        pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
+        pill_canvas.pack(fill="both", expand=True)
+        pill_items = (
+            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+        )
+
+        def set_pill_shapes(x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
+            if r <= 1:
+                pill_canvas.coords(pill_items[0], x0, y0, x1, y1)
+                for extra in pill_items[1:]:
+                    pill_canvas.coords(extra, 0, 0, 0, 0)
+            else:
+                d = r * 2
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                pill_canvas.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
+                pill_canvas.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
+                pill_canvas.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
+                pill_canvas.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
+                pill_canvas.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
+                pill_canvas.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                pill_canvas.itemconfigure("pill", fill=fill_col)
+
+        # Reveal the full-window page snapshot BEFORE switching to the login screen underneath.
+        page_win.update_idletasks()
+        pill_win.update_idletasks()
+        self._strip_dwm_border(page_win)
+        self._strip_dwm_border(pill_win)
+        page_win.deiconify()
+        pill_win.deiconify()
+        self._strip_dwm_border(page_win)
+        self._strip_dwm_border(pill_win)
+        page_win.lift()
+        pill_win.lift()
+        try:
+            self.update()
+        except tk.TclError:
+            pass
+
+        # Build the login screen underneath while covered by page_win, and measure the Continue button.
+        self.show_login()
+        if not self.winfo_exists():
+            self._signing_out = False
+            for w in (pill_win, page_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+        self.apply_interface_scaling(force=True)
+        self.update_idletasks()
+        page_win.lift()
+        pill_win.lift()
+
+        target_btn = getattr(self, "_login_button", None)
+        if target_btn is None or not target_btn.winfo_exists():
+            self._signing_out = False
+            for w in (pill_win, page_win):
+                if w.winfo_exists():
+                    w.destroy()
+            return
+
+        end_inset = 3
+        end_x = target_btn.winfo_rootx() - win_x + end_inset
+        end_y = target_btn.winfo_rooty() - win_y + end_inset
+        end_w = max(1, target_btn.winfo_width() - end_inset * 2)
+        end_h = max(1, target_btn.winfo_height() - end_inset * 2)
+        end_r = min(10, end_h // 2, end_w // 2)
+
+        # Temporarily mask the real Continue button with its card background so its full-size edges
+        # never peek out behind the squashed/bouncing pill during the elastic rebound.
+        btn_cover = tk.Frame(target_btn.master, bg=target_btn.cget("bg"), bd=0, highlightthickness=0)
+        btn_cover.place(
+            x=target_btn.winfo_x() - 2,
+            y=target_btn.winfo_y() - 2,
+            width=target_btn.winfo_width() + 4,
+            height=target_btn.winfo_height() + 4,
+        )
+        btn_cover.lift()
+        self.update_idletasks()
+        page_win.lift()
+        pill_win.lift()
+
+        # Deeply compressed impact target when the shrinking page snaps into the Continue button,
+        # followed by a lively damped elastic spring rebound that overshoots and settles cleanly.
+        squash_w = max(24, round(end_w * 0.72))
+        squash_h = max(18, round(end_h * 0.70))
+        squash_x = end_x + (end_w - squash_w) // 2
+        squash_y = end_y + (end_h - squash_h) // 2
+        impact_colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.85)
+
+        total_duration = 0.800  # ~0.46s snappy shrink into button + ~0.34s lively elastic spring bounce.
+        max_step = 1.0 / 28.0
+        shrink_end = 0.58
+        state = {"progress": 0.0, "last_t": None}
+        last_rect = [None]
+        last_bg = [DARK_BG]
+        page_hidden = [False]
+        btn_revealed = [False]
+
+        def finish():
+            for w in (pill_win, page_win, btn_cover):
+                if w is not None and w.winfo_exists():
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            self._signing_out = False
+
+        def draw_frame():
+            if not pill_win.winfo_exists() or not page_win.winfo_exists() or not self.winfo_exists():
+                finish()
+                return
+
+            now = monotonic()
+            if state["last_t"] is None:
+                delta = max_step * 0.5
+            else:
+                delta = min(max_step, (now - state["last_t"]) / total_duration)
+            state["last_t"] = now
+            state["progress"] = min(1.0, state["progress"] + delta)
+            progress = state["progress"]
+
+            if progress < shrink_end:
+                # Phase 1: Pull the entire current page inward into the compressed Continue button.
+                t = progress / shrink_end
+                # Smooth cubic ease-in-out gathers momentum as it collapses into the button.
+                eased = (
+                    4.0 * t ** 3
+                    if t < 0.5
+                    else 1.0 - ((-2.0 * t + 2.0) ** 3) / 2.0
+                )
+                cur_x = round(squash_x * eased)
+                cur_y = round(squash_y * eased)
+                cur_w = max(1, round(win_w + (squash_w - win_w) * eased))
+                cur_h = max(1, round(win_h + (squash_h - win_h) * eased))
+                # Corners round in smoothly during the first 15%, then settle to end_r.
+                if t < 0.15:
+                    cur_r = round((end_r + 8) * (t / 0.15))
+                else:
+                    cur_r = round((end_r + 8) - 8 * ((t - 0.15) / 0.85))
+
+                # Fade the pill overlay in smoothly over the shrinking page toward bright impact orange.
+                fade_p = min(1.0, t / 0.82)
+                fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
+                cur_bg = blend_colour(DARK_BG, impact_colour, fade_eased)
+                alpha = fade_eased
+                # Hide page_win the instant pill_win is fully opaque so no snapshot edges can ever show.
+                if alpha >= 0.99 and not page_hidden[0]:
+                    page_win.withdraw()
+                    page_hidden[0] = True
+            else:
+                # Phase 2: Lively damped elastic spring bounce from compressed impact into the Continue button.
+                if not page_hidden[0]:
+                    page_win.withdraw()
+                    page_hidden[0] = True
+                u = (progress - shrink_end) / (1.0 - shrink_end)
+                spring = ease_out_elastic(u, damping=3.2, frequency=1.55)
+                cur_w = max(1, round(squash_w + (end_w - squash_w) * spring))
+                cur_h = max(1, round(squash_h + (end_h - squash_h) * spring))
+                cur_x = end_x + (end_w - cur_w) // 2
+                cur_y = end_y + (end_h - cur_h) // 2
+                cur_r = min(end_r, cur_h // 2, cur_w // 2)
+                cur_bg = blend_colour(impact_colour, ORANGE_ACCENT, min(1.0, u / 0.65))
+                # Uncover the real Continue button right as the spring settles, then fade seamlessly into its label.
+                if u >= 0.72:
+                    if not btn_revealed[0] and btn_cover.winfo_exists():
+                        btn_cover.destroy()
+                        btn_revealed[0] = True
+                    alpha = max(0.0, 1.0 - (u - 0.72) / 0.28)
+                else:
+                    alpha = 1.0
+
+            x0, y0, x1, y1 = cur_x, cur_y, cur_x + cur_w, cur_y + cur_h
+            rect_key = (x0, y0, x1, y1, cur_r)
+            fill_update = cur_bg if cur_bg != last_bg[0] else None
+            if rect_key != last_rect[0] or fill_update is not None:
+                set_pill_shapes(x0, y0, x1, y1, cur_r, fill_update)
+                if not page_hidden[0] and rect_key != last_rect[0]:
+                    update_page_clip(x0, y0, x1, y1, cur_r)
+                last_rect[0] = rect_key
+                if fill_update is not None:
+                    last_bg[0] = fill_update
+
+            try:
+                pill_win.attributes("-alpha", alpha)
+            except tk.TclError:
+                finish()
+                return
+
+            if progress < 1.0:
+                self.after(14, draw_frame)
+            else:
+                finish()
+
         self.after(16, draw_frame)
 
     def paint_vinyl_record(self, event):
