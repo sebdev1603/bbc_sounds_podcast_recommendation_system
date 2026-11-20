@@ -10,6 +10,7 @@ import tkinter as tk
 ROOT_PATH = Path(__file__).resolve().parent.parent
 DATABASE_PATH = ROOT_PATH / "database.db"
 CANVA_DIR = ROOT_PATH / "canva design"
+PODCAST_PICTURES_DIR = ROOT_PATH / "bbc_podcasts_pictures"
 
 
 def _read_font_family_name(font_path):

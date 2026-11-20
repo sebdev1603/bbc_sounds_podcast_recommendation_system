@@ -1,8 +1,13 @@
 """Reusable Tkinter widgets, animated rounded buttons, BBC logo, artwork, and batched grids."""
+import ctypes
 import math
+from pathlib import Path
+import re
+import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import font as tkfont
+import unicodedata
 import xml.etree.ElementTree as ET
 
 from gui_parts.theme import (
@@ -21,6 +26,7 @@ from gui_parts.theme import (
     ORANGE_HL,
     PALETTE_SWATCHES,
     PODCASTS_PER_PAGE,
+    PODCAST_PICTURES_DIR,
     PRIMARY_BTN_FG,
     RoundedPanel,
     SECONDARY_HOVER_BG,
@@ -355,11 +361,401 @@ class WidgetsMixin:
             )
         return frame_box
 
+    @staticmethod
+    def _normalize_title_key(text):
+        """Normalize a podcast title or image filename into (spaced_key, compact_alnum_key)."""
+        normalized = unicodedata.normalize("NFKD", str(text or ""))
+        ascii_text = normalized.encode("ascii", "ignore").decode("ascii").lower()
+        ascii_text = ascii_text.replace("&", " and ")
+        spaced = re.sub(r"[^a-z0-9]+", " ", ascii_text).strip()
+        compact = spaced.replace(" ", "")
+        return spaced, compact
+
+    @staticmethod
+    def _strip_noise_words(spaced_key):
+        """Remove common leading/trailing noise words (e.g. 'the', 'bbc', 'podcast') for looser matching."""
+        noise = {"the", "a", "an", "bbc", "sounds", "podcast", "podcasts", "radio", "show", "cover", "image"}
+        tokens = [tok for tok in spaced_key.split() if tok not in noise]
+        return tokens
+
+    def _get_podcast_picture_index(self):
+        """Scan bbc_podcasts_pictures once and build lookup maps for fast title/ID matching."""
+        cached = getattr(self, "_podcast_picture_index", None)
+        if cached is not None:
+            return cached
+
+        candidate_roots = []
+        if getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                candidate_roots.append(Path(meipass))
+            candidate_roots.append(Path(sys.executable).resolve().parent)
+        candidate_roots.append(PODCAST_PICTURES_DIR.parent)
+
+        search_dirs = []
+        seen_dirs = set()
+        for direct in (PODCAST_PICTURES_DIR, *(r / "bbc_podcasts_pictures" for r in candidate_roots)):
+            try:
+                resolved = direct.resolve()
+            except OSError:
+                continue
+            if resolved.is_dir() and resolved not in seen_dirs:
+                seen_dirs.add(resolved)
+                search_dirs.append(resolved)
+
+        # Also catch minor capitalization/spacing variants of the folder name in the project root.
+        for root in candidate_roots:
+            if not root.is_dir():
+                continue
+            try:
+                for child in root.iterdir():
+                    if not child.is_dir():
+                        continue
+                    _, cname = self._normalize_title_key(child.name)
+                    if "podcast" in cname and any(tok in cname for tok in ("picture", "pic", "image", "img", "cover")):
+                        resolved = child.resolve()
+                        if resolved not in seen_dirs:
+                            seen_dirs.add(resolved)
+                            search_dirs.append(resolved)
+            except OSError:
+                continue
+
+        supported_exts = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+        by_spaced = {}
+        by_compact = {}
+        by_stripped = {}
+        entries = []
+
+        for folder in search_dirs:
+            try:
+                for item in folder.rglob("*"):
+                    if not item.is_file() or item.suffix.lower() not in supported_exts:
+                        continue
+                    spaced, compact = self._normalize_title_key(item.stem)
+                    if not compact:
+                        continue
+                    resolved = item.resolve()
+                    by_spaced.setdefault(spaced, resolved)
+                    by_compact.setdefault(compact, resolved)
+                    core_tokens = self._strip_noise_words(spaced)
+                    core_compact = "".join(core_tokens)
+                    if core_compact:
+                        by_stripped.setdefault(core_compact, resolved)
+                    entries.append((spaced, compact, core_compact, set(core_tokens), resolved))
+            except OSError:
+                continue
+
+        index = (by_spaced, by_compact, by_stripped, entries)
+        self._podcast_picture_index = index
+        return index
+
+    def _find_podcast_picture(self, title_text, pid=None):
+        """Match a podcast title (or PodcastID) to its image file in bbc_podcasts_pictures."""
+        spaced, compact = self._normalize_title_key(title_text)
+        by_spaced, by_compact, by_stripped, entries = self._get_podcast_picture_index()
+        if not entries:
+            return None
+        if spaced in by_spaced:
+            return by_spaced[spaced]
+        if compact in by_compact:
+            return by_compact[compact]
+
+        core_tokens = self._strip_noise_words(spaced)
+        core_compact = "".join(core_tokens)
+        if core_compact and core_compact in by_stripped:
+            return by_stripped[core_compact]
+
+        # Check if a picture was named directly by PodcastID (e.g. '12.jpg').
+        if pid is not None:
+            pid_str = str(pid).strip().lower()
+            if pid_str in by_compact:
+                return by_compact[pid_str]
+
+        # Fall back to best high-confidence token/substring match.
+        title_token_set = set(core_tokens) if core_tokens else set(spaced.split())
+        best_path = None
+        best_score = 0.0
+        for file_spaced, file_compact, file_core_compact, file_tokens, path in entries:
+            if core_compact and file_core_compact and (core_compact in file_core_compact or file_core_compact in core_compact):
+                ratio = min(len(core_compact), len(file_core_compact)) / float(max(len(core_compact), len(file_core_compact)))
+                if ratio >= 0.60 and ratio > best_score:
+                    best_score = ratio
+                    best_path = path
+                    continue
+            if title_token_set and file_tokens:
+                overlap = len(title_token_set & file_tokens)
+                union = len(title_token_set | file_tokens)
+                score = overlap / float(union)
+                if score >= 0.60 and score > best_score:
+                    best_score = score
+                    best_path = path
+        return best_path
+
+    def _ensure_gdiplus(self):
+        """Initialize Windows GDI+ once so JPG/PNG/BMP/GIF covers decode natively without Pillow."""
+        if sys.platform != "win32":
+            return None
+        gdip = getattr(self, "_gdiplus_dll", None)
+        if gdip is not None:
+            return gdip if gdip is not False else None
+        try:
+            class GdiplusStartupInput(ctypes.Structure):
+                _fields_ = [
+                    ("GdiplusVersion", ctypes.c_uint32),
+                    ("DebugEventCallback", ctypes.c_void_p),
+                    ("SuppressBackgroundThread", ctypes.c_int),
+                    ("SuppressExternalCodecs", ctypes.c_int),
+                ]
+
+            class RectI(ctypes.Structure):
+                _fields_ = [
+                    ("X", ctypes.c_int),
+                    ("Y", ctypes.c_int),
+                    ("Width", ctypes.c_int),
+                    ("Height", ctypes.c_int),
+                ]
+
+            class BitmapData(ctypes.Structure):
+                _fields_ = [
+                    ("Width", ctypes.c_uint),
+                    ("Height", ctypes.c_uint),
+                    ("Stride", ctypes.c_int),
+                    ("PixelFormat", ctypes.c_int),
+                    ("Scan0", ctypes.c_void_p),
+                    ("Reserved", ctypes.c_size_t),
+                ]
+
+            dll = ctypes.windll.gdiplus
+            dll.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(GdiplusStartupInput), ctypes.c_void_p]
+            dll.GdiplusStartup.restype = ctypes.c_int
+            dll.GdipLoadImageFromFile.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+            dll.GdipLoadImageFromFile.restype = ctypes.c_int
+            dll.GdipGetImageWidth.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+            dll.GdipGetImageWidth.restype = ctypes.c_int
+            dll.GdipGetImageHeight.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+            dll.GdipGetImageHeight.restype = ctypes.c_int
+            dll.GdipCreateBitmapFromScan0.argtypes = [
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            ]
+            dll.GdipCreateBitmapFromScan0.restype = ctypes.c_int
+            dll.GdipGetImageGraphicsContext.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+            dll.GdipGetImageGraphicsContext.restype = ctypes.c_int
+            dll.GdipSetInterpolationMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            dll.GdipSetInterpolationMode.restype = ctypes.c_int
+            dll.GdipDrawImageRectRectI.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ]
+            dll.GdipDrawImageRectRectI.restype = ctypes.c_int
+            dll.GdipBitmapLockBits.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(RectI), ctypes.c_uint, ctypes.c_int, ctypes.POINTER(BitmapData),
+            ]
+            dll.GdipBitmapLockBits.restype = ctypes.c_int
+            dll.GdipBitmapUnlockBits.argtypes = [ctypes.c_void_p, ctypes.POINTER(BitmapData)]
+            dll.GdipBitmapUnlockBits.restype = ctypes.c_int
+            dll.GdipDeleteGraphics.argtypes = [ctypes.c_void_p]
+            dll.GdipDeleteGraphics.restype = ctypes.c_int
+            dll.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+            dll.GdipDisposeImage.restype = ctypes.c_int
+
+            token = ctypes.c_size_t(0)
+            startup = GdiplusStartupInput(1, None, 0, 0)
+            if dll.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup), None) != 0:
+                self._gdiplus_dll = False
+                return None
+            self._gdiplus_token = token
+            self._gdiplus_structs = (RectI, BitmapData)
+            self._gdiplus_dll = dll
+            return dll
+        except Exception:
+            self._gdiplus_dll = False
+            return None
+
+    def _load_image_via_gdiplus(self, img_path, width_px, height_px, corner_radius=0, backdrop=None):
+        """Decode and centre-crop any Windows-supported image (JPG/PNG/BMP/GIF) via GDI+ into a PPM PhotoImage."""
+        dll = self._ensure_gdiplus()
+        if dll is None:
+            return None
+        RectI, BitmapData = self._gdiplus_structs
+        src_img = ctypes.c_void_p()
+        dst_bmp = ctypes.c_void_p()
+        gfx = ctypes.c_void_p()
+        locked = False
+        bmp_data = BitmapData()
+        try:
+            if dll.GdipLoadImageFromFile(str(img_path), ctypes.byref(src_img)) != 0 or not src_img.value:
+                return None
+            sw = ctypes.c_uint(0)
+            sh = ctypes.c_uint(0)
+            dll.GdipGetImageWidth(src_img, ctypes.byref(sw))
+            dll.GdipGetImageHeight(src_img, ctypes.byref(sh))
+            src_w, src_h = int(sw.value), int(sh.value)
+            if src_w <= 0 or src_h <= 0:
+                return None
+
+            # Compute centre-crop rectangle matching target aspect ratio so artwork fills cleanly without stretching.
+            target_ratio = width_px / float(height_px)
+            src_ratio = src_w / float(src_h)
+            if src_ratio > target_ratio:
+                crop_h = src_h
+                crop_w = max(1, round(src_h * target_ratio))
+                crop_x = (src_w - crop_w) // 2
+                crop_y = 0
+            else:
+                crop_w = src_w
+                crop_h = max(1, round(src_w / target_ratio))
+                crop_x = 0
+                crop_y = (src_h - crop_h) // 2
+
+            PIXEL_FORMAT_24RGB = 0x00021808
+            if dll.GdipCreateBitmapFromScan0(width_px, height_px, 0, PIXEL_FORMAT_24RGB, None, ctypes.byref(dst_bmp)) != 0:
+                return None
+            if dll.GdipGetImageGraphicsContext(dst_bmp, ctypes.byref(gfx)) != 0:
+                return None
+            # InterpolationModeHighQualityBicubic (7), UnitPixel (2).
+            dll.GdipSetInterpolationMode(gfx, 7)
+            dll.GdipDrawImageRectRectI(
+                gfx, src_img, 0, 0, width_px, height_px,
+                crop_x, crop_y, crop_w, crop_h, 2, None, None, None,
+            )
+
+            rect = RectI(0, 0, width_px, height_px)
+            if dll.GdipBitmapLockBits(dst_bmp, ctypes.byref(rect), 1, PIXEL_FORMAT_24RGB, ctypes.byref(bmp_data)) != 0:
+                return None
+            locked = True
+
+            stride = abs(bmp_data.Stride)
+            raw_bytes = ctypes.string_at(bmp_data.Scan0, stride * height_px)
+            bg_bytes = bytes.fromhex(backdrop[1:]) if (corner_radius > 0 and backdrop and backdrop.startswith("#") and len(backdrop) == 7) else None
+            corner_r = min(corner_radius, width_px // 2, height_px // 2) if bg_bytes else 0
+
+            pixels = bytearray(f"P6\n{width_px} {height_px}\n255\n".encode("ascii"))
+            row_len = width_px * 3
+            for y in range(height_px):
+                start = y * stride
+                bgr_row = raw_bytes[start:start + row_len]
+                # Convert Windows GDI+ BGR byte order to PPM RGB order.
+                rgb_row = bytearray(row_len)
+                rgb_row[0::3] = bgr_row[2::3]
+                rgb_row[1::3] = bgr_row[1::3]
+                rgb_row[2::3] = bgr_row[0::3]
+                if corner_r > 0:
+                    if y < corner_r:
+                        dy_c = corner_r - y
+                    elif y >= height_px - corner_r:
+                        dy_c = y - (height_px - corner_r - 1)
+                    else:
+                        dy_c = 0
+                    if dy_c > 0:
+                        inset = corner_r - math.isqrt(max(0, corner_r ** 2 - dy_c ** 2))
+                        if inset > 0:
+                            rgb_row[0:inset * 3] = bg_bytes * inset
+                            rgb_row[(width_px - inset) * 3:row_len] = bg_bytes * inset
+                pixels.extend(rgb_row)
+            return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
+        except Exception:
+            return None
+        finally:
+            if locked and dst_bmp.value:
+                dll.GdipBitmapUnlockBits(dst_bmp, ctypes.byref(bmp_data))
+            if gfx.value:
+                dll.GdipDeleteGraphics(gfx)
+            if dst_bmp.value:
+                dll.GdipDisposeImage(dst_bmp)
+            if src_img.value:
+                dll.GdipDisposeImage(src_img)
+
+    def _load_podcast_picture_image(self, img_path, width_px, height_px, corner_radius=0, backdrop=None):
+        """Load, centre-crop, and optionally round-corner a podcast cover picture."""
+        # Preferred path: Pillow handles JPG/PNG/WEBP with LANCZOS centre-crop and anti-aliased rounded corners.
+        try:
+            from PIL import Image, ImageDraw, ImageOps, ImageTk
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            with Image.open(img_path) as raw_img:
+                fitted = ImageOps.fit(
+                    raw_img.convert("RGBA"),
+                    (width_px, height_px),
+                    method=resample,
+                    centering=(0.5, 0.5),
+                )
+            if corner_radius > 0:
+                radius = min(corner_radius, width_px // 2, height_px // 2)
+                # Render a 2x supersampled rounded-rectangle mask for smooth anti-aliased corners.
+                mask = Image.new("L", (width_px * 2, height_px * 2), 0)
+                draw = ImageDraw.Draw(mask)
+                draw.rounded_rectangle(
+                    (0, 0, width_px * 2 - 1, height_px * 2 - 1),
+                    radius=radius * 2,
+                    fill=255,
+                )
+                mask = mask.resize((width_px, height_px), resample)
+                if backdrop and isinstance(backdrop, str) and backdrop.startswith("#") and len(backdrop) == 7:
+                    bg_rgb = tuple(int(backdrop[p:p + 2], 16) for p in (1, 3, 5)) + (255,)
+                else:
+                    bg_rgb = (0, 0, 0, 0)
+                canvas_img = Image.new("RGBA", (width_px, height_px), bg_rgb)
+                canvas_img.paste(fitted, (0, 0), mask)
+                fitted = canvas_img
+            return ImageTk.PhotoImage(fitted, master=self)
+        except Exception:
+            pass
+
+        # Second path: native Windows GDI+ decodes JPG/JPEG/JFIF/PNG/BMP/GIF with zero pip dependencies.
+        gdi_photo = self._load_image_via_gdiplus(
+            img_path, width_px, height_px, corner_radius=corner_radius, backdrop=backdrop,
+        )
+        if gdi_photo is not None:
+            return gdi_photo
+
+        # Final fallback without Pillow/GDI+ (supports PNG/GIF natively in Tkinter).
+        if img_path.suffix.lower() in (".png", ".gif"):
+            try:
+                photo = tk.PhotoImage(master=self, file=str(img_path))
+                ratio = max(
+                    1,
+                    int(math.ceil(photo.width() / float(width_px))),
+                    int(math.ceil(photo.height() / float(height_px))),
+                )
+                if ratio > 1:
+                    photo = photo.subsample(ratio, ratio)
+                return photo
+            except tk.TclError:
+                pass
+        return None
+
     def generate_podcast_cover(
         self, container, pid, title_text, category_text, width_px, height_px,
         corner_radius=0, backdrop=None,
     ):
-        """Return a cached procedurally generated cover artwork label for a podcast."""
+        """Return a cached cover artwork label using bbc_podcasts_pictures (or procedural fallback)."""
+        container_bg = backdrop if (corner_radius > 0 and backdrop) else container.cget("bg")
+        pic_path = self._find_podcast_picture(title_text, pid=pid)
+        if pic_path is not None:
+            pic_key = ("file", str(pic_path), width_px, height_px, corner_radius, container_bg if corner_radius > 0 else "")
+            image = self.cover_images.get(pic_key)
+            if image is None:
+                image = self._load_podcast_picture_image(
+                    pic_path, width_px, height_px,
+                    corner_radius=corner_radius,
+                    backdrop=container_bg if corner_radius > 0 else None,
+                )
+                if image is not None:
+                    self.cover_images[pic_key] = image
+                    if len(self.cover_images) > 128:
+                        self.cover_images.popitem(last=False)
+            else:
+                self.cover_images.move_to_end(pic_key)
+
+            if image is not None:
+                cover = tk.Label(
+                    container, image=image, bg=container_bg,
+                    cursor="hand2", bd=0, highlightthickness=0,
+                )
+                cover.image = image
+                return cover
+
         fallback_colours = ("#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c")
         try:
             design_index = int(pid)
