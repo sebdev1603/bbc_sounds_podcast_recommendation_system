@@ -227,6 +227,31 @@ class DatabaseMixin:
         return f"★ {average:.1f} / 5 average" if average is not None else "Not yet rated"
 
     @staticmethod
+    def _ensure_listener_name_column(conn):
+        """Ensure the listeners table has a Name column for storing each listener's chosen name."""
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
+        if "name" not in cols:
+            conn.execute("ALTER TABLE listeners ADD COLUMN Name TEXT")
+
+    def save_listener_name(self, listener_id, name_value):
+        """Persist (or clear) a listener's display name in database.db."""
+        if listener_id is None:
+            return False
+        cleaned = " ".join(str(name_value or "").split()).strip()[:40]
+        stored = cleaned if cleaned else None
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_name_column(conn)
+                conn.execute(
+                    "UPDATE listeners SET Name = ? WHERE ListenerID = ?",
+                    (stored, listener_id),
+                )
+            return True
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save your name", err)
+            return False
+
+    @staticmethod
     def _ensure_accessibility_table(conn):
         """Create the per-user accessibility settings table in database.db if it does not exist."""
         conn.execute(

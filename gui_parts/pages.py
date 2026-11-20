@@ -40,9 +40,10 @@ class PagesMixin:
         try:
             page = self.build_shell("Home")
             listener_info = self.get_listener_data()
-            name_str = self.get_row_field(listener_info, "Username", None) or self.get_row_field(listener_info, "Name", None)
-            first_name = str(name_str or "there").split()[0]
-            self.render_page_title(page, f"Good to have you back!",
+            name_str = self.get_row_field(listener_info, "Name", None) or self.get_row_field(listener_info, "Username", None)
+            clean_name = str(name_str or "").strip()
+            greeting = f"Good to have you back, {clean_name}!" if clean_name else "Good to have you back!"
+            self.render_page_title(page, greeting,
                                    "Settle in and find something worth listening to.")
 
             favourite_ids = [
@@ -932,17 +933,84 @@ class PagesMixin:
         avatar = self.create_default_profile_avatar(info_card, 112)
         avatar.pack(side="left", padx=(20, 18), pady=18)
         profile_details = tk.Frame(info_card, bg=CARD_BG)
-        profile_details.pack(side="left", fill="both", expand=True, pady=20)
-        display_name = (
-            self.get_row_field(listener_info, "Username", None)
-            or self.get_row_field(listener_info, "Name", None)
-            or "BBC Sounds listener"
+        profile_details.pack(side="left", fill="both", expand=True, pady=18, padx=(0, 20))
+        saved_name = str(
+            self.get_row_field(listener_info, "Name", None)
+            or self.get_row_field(listener_info, "Username", None)
+            or ""
+        ).strip()
+        self.create_label(profile_details, "YOUR PROFILE", 8, ORANGE_HL, "bold").pack(anchor="w", pady=(2, 4))
+        name_heading_lbl = self.create_label(
+            profile_details, saved_name or "BBC Sounds listener", 19, TEXT_WHITE, "bold",
         )
-        self.create_label(profile_details, "YOUR PROFILE", 8, ORANGE_HL, "bold").pack(anchor="w", pady=(3, 5))
-        self.create_label(profile_details, str(display_name), 19, TEXT_WHITE, "bold").pack(anchor="w")
+        name_heading_lbl.pack(anchor="w")
         self.create_label(profile_details, f"Listener ID  ·  {self.current_user}", 10, TEXT_GRAY).pack(
-            anchor="w", pady=(7, 0)
+            anchor="w", pady=(5, 12)
         )
+
+        # Inline display-name editor saved to listeners.Name in database.db.
+        name_row = tk.Frame(profile_details, bg=CARD_BG)
+        name_row.pack(fill="x")
+        name_var = tk.StringVar(value=saved_name)
+        name_box = self.create_card_frame(name_row, bg=INPUT_BG, width=260, height=38)
+        name_box.pack(side="left", padx=(0, 10))
+        name_box.pack_propagate(False)
+        name_entry = tk.Entry(
+            name_box, textvariable=name_var, font=(DEFAULT_FONT, 10),
+            bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE,
+            relief="flat", highlightthickness=0,
+        )
+        name_entry.pack(fill="both", expand=True, padx=10, pady=5)
+        name_placeholder = tk.Label(
+            name_box, text="Choose your name...", font=(DEFAULT_FONT, 10),
+            bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
+        )
+        name_status_lbl = self.create_label(profile_details, "", 9, ORANGE_HL)
+        name_status_lbl.pack(anchor="w", pady=(6, 0))
+
+        def update_name_placeholder(_event=None):
+            if name_var.get().strip() or self.focus_get() is name_entry:
+                name_placeholder.place_forget()
+            else:
+                name_placeholder.place(x=10, rely=0.5, anchor="w")
+
+        def refresh_clear_btn():
+            has_saved = bool(name_heading_lbl.cget("text") != "BBC Sounds listener")
+            clear_name_btn.configure(state="normal" if has_saved else "disabled")
+
+        def on_save_name(_event=None):
+            cleaned = " ".join(name_var.get().split()).strip()[:40]
+            name_var.set(cleaned)
+            if self.save_listener_name(self.current_user, cleaned):
+                name_heading_lbl.configure(text=cleaned or "BBC Sounds listener")
+                if cleaned:
+                    name_status_lbl.configure(text=f"Saved — Home will greet you as \"Good to have you back, {cleaned}!\"")
+                else:
+                    name_status_lbl.configure(text="Name cleared.")
+                refresh_clear_btn()
+                update_name_placeholder()
+
+        def on_clear_name():
+            name_var.set("")
+            if self.save_listener_name(self.current_user, ""):
+                name_heading_lbl.configure(text="BBC Sounds listener")
+                name_status_lbl.configure(text="Name cleared.")
+                refresh_clear_btn()
+                update_name_placeholder()
+
+        name_placeholder.bind("<Button-1>", lambda _e: name_entry.focus_set())
+        name_entry.bind("<FocusIn>", lambda _e: name_placeholder.place_forget())
+        name_entry.bind("<FocusOut>", update_name_placeholder)
+        name_entry.bind("<Return>", on_save_name)
+        name_entry.bind("<KeyRelease>", lambda _e: name_status_lbl.configure(text=""))
+
+        self.create_button(name_row, "Save name", on_save_name, primary=True, compact=True).pack(
+            side="left", padx=(0, 8)
+        )
+        clear_name_btn = self.create_button(name_row, "Clear", on_clear_name, compact=True)
+        clear_name_btn.pack(side="left")
+        refresh_clear_btn()
+        update_name_placeholder()
 
         genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "")
         length_str = self.get_row_field(listener_info, "LengthPreference", "") or "Not selected"
