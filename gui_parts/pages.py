@@ -608,15 +608,71 @@ class PagesMixin:
         for column_idx in range(4):
             ratings_grid.grid_columnconfigure(column_idx, weight=1, uniform="rating-cards")
 
+        rendered_cards = []
+        current_cover_size = [0]
+        cover_resize_job = [None]
+
+        def compute_rating_cover_size():
+            available_width = ratings_grid.winfo_width()
+            if available_width <= 1:
+                available_width = max(1, self.winfo_width() - 110)
+            col_width = available_width // 4
+            return max(160, col_width - 30)
+
+        def refresh_rating_covers():
+            cover_resize_job[0] = None
+            if not ratings_grid.winfo_exists():
+                return
+            target_size = current_cover_size[0]
+            for card_widget in rendered_cards:
+                if not card_widget.winfo_exists():
+                    continue
+                meta = getattr(card_widget, "_cover_meta", None)
+                if not meta or meta[5] == target_size:
+                    continue
+                cover_box, cover_lbl, pid, title, category, _old_size = meta
+                if cover_box.winfo_exists():
+                    cover_box.configure(height=target_size)
+                self.update_podcast_cover(
+                    cover_lbl, pid, title, category, target_size, target_size,
+                    corner_radius=8, backdrop=CARD_BG,
+                )
+                meta[5] = target_size
+
+        def on_ratings_resize(_event=None):
+            target_size = compute_rating_cover_size()
+            if current_cover_size[0] == 0 or abs(target_size - current_cover_size[0]) >= 2:
+                current_cover_size[0] = target_size
+                if rendered_cards:
+                    if cover_resize_job[0] is not None:
+                        try:
+                            self.after_cancel(cover_resize_job[0])
+                        except tk.TclError:
+                            pass
+                    cover_resize_job[0] = self.after(50, refresh_rating_covers)
+
+        ratings_grid.bind("<Configure>", on_ratings_resize)
+
         def render_rating_card(row):
+            if current_cover_size[0] == 0:
+                current_cover_size[0] = compute_rating_cover_size()
+            cover_size = current_cover_size[0]
             card = self.create_card_frame(ratings_grid)
             idx = len(ratings_grid.winfo_children()) - 1
             card.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=6, pady=6)
-            cover = self.generate_podcast_cover(card, row[0], row[1], row[2], 190, 145)
-            cover.pack(fill="x", padx=9, pady=(9, 0))
+            cover_box = tk.Frame(card, bg=CARD_BG, height=cover_size)
+            cover_box.pack_propagate(False)
+            cover_box.pack(fill="x", padx=9, pady=(9, 0))
+            cover = self.generate_podcast_cover(
+                cover_box, row[0], row[1], row[2], cover_size, cover_size,
+                corner_radius=8, backdrop=CARD_BG,
+            )
+            cover.pack(fill="both", expand=True)
+            card._cover_meta = [cover_box, cover, row[0], row[1], row[2], cover_size]
+            rendered_cards.append(card)
             details_pane = tk.Frame(card, bg=CARD_BG)
             details_pane.pack(fill="both", expand=True, padx=13, pady=12)
-            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=180).pack(anchor="w")
+            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8)).pack(anchor="w")
             self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
             self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR).pack(anchor="w", pady=(3, 6))
             self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
@@ -737,7 +793,8 @@ class PagesMixin:
             highlight_card = self.create_card_frame(page)
             highlight_card.pack(fill="x", pady=5)
             highlight_cover = self.generate_podcast_cover(
-                highlight_card, top_programme[0], top_programme[1], top_programme[2], 145, 112,
+                highlight_card, top_programme[0], top_programme[1], top_programme[2], 128, 128,
+                corner_radius=8, backdrop=CARD_BG,
             )
             highlight_cover.pack(side="left", padx=12, pady=12)
             highlight_details = tk.Frame(highlight_card, bg=CARD_BG)

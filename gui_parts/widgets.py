@@ -424,7 +424,9 @@ class WidgetsMixin:
         by_spaced = {}
         by_compact = {}
         by_stripped = {}
+        by_pid = {}
         entries = []
+        pid_pattern = re.compile(r"^(?:podcast|pod|p|id)?[_\-\s]*0*(\d+)(?:[_\-\s].*)?$", re.IGNORECASE)
 
         for folder in search_dirs:
             try:
@@ -437,6 +439,12 @@ class WidgetsMixin:
                     resolved = item.resolve()
                     by_spaced.setdefault(spaced, resolved)
                     by_compact.setdefault(compact, resolved)
+                    pid_match = pid_pattern.match(item.stem)
+                    if pid_match:
+                        try:
+                            by_pid.setdefault(int(pid_match.group(1)), resolved)
+                        except ValueError:
+                            pass
                     core_tokens = self._strip_noise_words(spaced)
                     core_compact = "".join(core_tokens)
                     if core_compact:
@@ -445,14 +453,14 @@ class WidgetsMixin:
             except OSError:
                 continue
 
-        index = (by_spaced, by_compact, by_stripped, entries)
+        index = (by_spaced, by_compact, by_stripped, by_pid, entries)
         self._podcast_picture_index = index
         return index
 
     def _find_podcast_picture(self, title_text, pid=None):
         """Match a podcast title (or PodcastID) to its image file in bbc_podcasts_pictures."""
         spaced, compact = self._normalize_title_key(title_text)
-        by_spaced, by_compact, by_stripped, entries = self._get_podcast_picture_index()
+        by_spaced, by_compact, by_stripped, by_pid, entries = self._get_podcast_picture_index()
         if not entries:
             return None
         if spaced in by_spaced:
@@ -465,8 +473,14 @@ class WidgetsMixin:
         if core_compact and core_compact in by_stripped:
             return by_stripped[core_compact]
 
-        # Check if a picture was named directly by PodcastID (e.g. '12.jpg').
+        # Check if a picture was named by PodcastID (e.g. 'podcast_001_news.png' or '12.jpg').
         if pid is not None:
+            try:
+                pid_int = int(str(pid).strip())
+                if pid_int in by_pid:
+                    return by_pid[pid_int]
+            except (TypeError, ValueError):
+                pass
             pid_str = str(pid).strip().lower()
             if pid_str in by_compact:
                 return by_compact[pid_str]
@@ -725,11 +739,11 @@ class WidgetsMixin:
                 pass
         return None
 
-    def generate_podcast_cover(
+    def _get_cover_photo(
         self, container, pid, title_text, category_text, width_px, height_px,
         corner_radius=0, backdrop=None,
     ):
-        """Return a cached cover artwork label using bbc_podcasts_pictures (or procedural fallback)."""
+        """Return (PhotoImage, fallback_icon_or_None, bg_colour) for a podcast cover."""
         container_bg = backdrop if (corner_radius > 0 and backdrop) else container.cget("bg")
         pic_path = self._find_podcast_picture(title_text, pid=pid)
         if pic_path is not None:
@@ -743,18 +757,13 @@ class WidgetsMixin:
                 )
                 if image is not None:
                     self.cover_images[pic_key] = image
-                    if len(self.cover_images) > 128:
+                    if len(self.cover_images) > 256:
                         self.cover_images.popitem(last=False)
             else:
                 self.cover_images.move_to_end(pic_key)
 
             if image is not None:
-                cover = tk.Label(
-                    container, image=image, bg=container_bg,
-                    cursor="hand2", bd=0, highlightthickness=0,
-                )
-                cover.image = image
-                return cover
+                return image, None, container_bg
 
         fallback_colours = ("#6e4dbb", "#d85d43", "#178d9a", "#b44272", "#658d31", "#c47b1c")
         try:
@@ -776,9 +785,27 @@ class WidgetsMixin:
                 corner_radius=corner_radius, backdrop=bg_colour if corner_radius > 0 else None,
             )
             self.cover_images[key] = image
-            if len(self.cover_images) > 128:
+            if len(self.cover_images) > 256:
                 self.cover_images.popitem(last=False)
         self.cover_images.move_to_end(key)
+        return image, icon, bg_colour
+
+    def generate_podcast_cover(
+        self, container, pid, title_text, category_text, width_px, height_px,
+        corner_radius=0, backdrop=None,
+    ):
+        """Return a cached cover artwork label using bbc_podcasts_pictures (or procedural fallback)."""
+        image, icon, bg_colour = self._get_cover_photo(
+            container, pid, title_text, category_text, width_px, height_px,
+            corner_radius=corner_radius, backdrop=backdrop,
+        )
+        if icon is None:
+            cover = tk.Label(
+                container, image=image, bg=bg_colour,
+                cursor="hand2", bd=0, highlightthickness=0,
+            )
+            cover.image = image
+            return cover
 
         cover = tk.Label(
             container, image=image, compound="center", text=icon,
@@ -787,6 +814,27 @@ class WidgetsMixin:
         )
         cover.image = image
         return cover
+
+    def update_podcast_cover(
+        self, cover_label, pid, title_text, category_text, width_px, height_px,
+        corner_radius=0, backdrop=None,
+    ):
+        """Re-render a podcast cover label's image at a new size without rebuilding the card."""
+        if not cover_label.winfo_exists():
+            return
+        image, icon, bg_colour = self._get_cover_photo(
+            cover_label.master, pid, title_text, category_text, width_px, height_px,
+            corner_radius=corner_radius, backdrop=backdrop,
+        )
+        if icon is None:
+            cover_label.configure(image=image, text="", bg=bg_colour)
+        else:
+            cover_label.configure(
+                image=image, compound="center", text=icon,
+                font=(DEFAULT_FONT, max(11, min(width_px, height_px) // 6), "bold"),
+                bg=bg_colour,
+            )
+        cover_label.image = image
 
     def make_cover_image(self, colour, pattern, width, height, corner_radius=0, backdrop=None):
         """Rasterize a reusable cover background in PPM format with optional rounded corners."""
@@ -905,6 +953,7 @@ class WidgetsMixin:
     def render_podcast_card(
         self, parent_widget, podcast_data, compact=False,
         show_play_btn=False, show_remove_btn=False, rating_value=None,
+        cover_size=240,
     ):
         """Build a podcast card with cover art, metadata, average rating, and action buttons."""
         pid, title, category, length_mins = podcast_data[:4]
@@ -937,11 +986,19 @@ class WidgetsMixin:
                 )
             return card_frame
 
-        cover = self.generate_podcast_cover(card_frame, pid, title, category, 178, 142)
-        cover.pack(fill="x", padx=9, pady=(9, 0))
+        cover_box = tk.Frame(card_frame, bg=CARD_BG, height=cover_size)
+        cover_box.pack_propagate(False)
+        cover_box.pack(fill="x", padx=9, pady=(9, 0))
+        cover = self.generate_podcast_cover(
+            cover_box, pid, title, category, cover_size, cover_size,
+            corner_radius=8, backdrop=CARD_BG,
+        )
+        cover.pack(fill="both", expand=True)
+        card_frame._cover_meta = [cover_box, cover, pid, title, category, cover_size]
+
         details_pane = tk.Frame(card_frame, bg=CARD_BG)
         details_pane.pack(fill="both", expand=True, padx=12, pady=11)
-        self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=170).pack(anchor="w")
+        self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=max(170, cover_size - 8)).pack(anchor="w")
         self.create_label(details_pane, meta_info, 9, TEXT_GRAY).pack(anchor="w", pady=(4, 3))
         self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w", pady=(0, 9))
         if rating_value is not None:
@@ -993,13 +1050,55 @@ class WidgetsMixin:
         )
         rendered_cards = []
         current_columns = [0]
+        current_cover_size = [0]
+        cover_resize_job = [None]
 
-        def reflow_cards(_event=None):
+        def compute_grid_metrics():
             available_width = grid_container.winfo_width()
             if available_width <= 1:
                 available_width = max(1, self.winfo_width() - 110)
             responsive_columns = max(2, min(columns_count, available_width // 260))
+            col_width = available_width // responsive_columns
+            # Fill card box width (subtract 10px card padx and 18px cover padx) with no artificial upper cap.
+            target_cover = max(160, col_width - 28)
+            return responsive_columns, target_cover
+
+        def refresh_card_covers():
+            cover_resize_job[0] = None
+            if not grid_container.winfo_exists():
+                return
+            target_size = current_cover_size[0]
+            for card_widget in rendered_cards:
+                if not card_widget.winfo_exists():
+                    continue
+                meta = getattr(card_widget, "_cover_meta", None)
+                if not meta or meta[5] == target_size:
+                    continue
+                cover_box, cover_lbl, pid, title, category, _old_size = meta
+                if cover_box.winfo_exists():
+                    cover_box.configure(height=target_size)
+                self.update_podcast_cover(
+                    cover_lbl, pid, title, category, target_size, target_size,
+                    corner_radius=8, backdrop=CARD_BG,
+                )
+                meta[5] = target_size
+
+        def schedule_cover_refresh():
+            if cover_resize_job[0] is not None:
+                try:
+                    self.after_cancel(cover_resize_job[0])
+                except tk.TclError:
+                    pass
+            cover_resize_job[0] = self.after(50, refresh_card_covers)
+
+        def reflow_cards(_event=None):
+            responsive_columns, target_cover = compute_grid_metrics()
             columns_changed = responsive_columns != current_columns[0]
+            cover_changed = current_cover_size[0] == 0 or abs(target_cover - current_cover_size[0]) >= 2
+            if cover_changed:
+                current_cover_size[0] = target_cover
+                if rendered_cards:
+                    schedule_cover_refresh()
             if not columns_changed and _event is not None:
                 return
             current_columns[0] = responsive_columns
@@ -1034,10 +1133,13 @@ class WidgetsMixin:
                 end_message.grid_remove()
 
         def render_card(podcast):
+            if current_cover_size[0] == 0:
+                _, current_cover_size[0] = compute_grid_metrics()
             rating_value = podcast[rating_index] if rating_index is not None and len(podcast) > rating_index else None
             card = self.render_podcast_card(
                 grid_container, podcast, show_play_btn=show_play,
                 show_remove_btn=show_remove, rating_value=rating_value,
+                cover_size=current_cover_size[0],
             )
             rendered_cards.append(card)
             reflow_cards()
