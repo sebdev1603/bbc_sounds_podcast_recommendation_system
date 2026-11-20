@@ -5,3 +5,7 @@ __pycache__
 build
 dist
 bbc_sounds_program.spec
+bbc_sounds_program.spec
+dist
+build
+database.db
