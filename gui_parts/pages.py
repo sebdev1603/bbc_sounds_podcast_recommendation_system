@@ -1098,90 +1098,217 @@ class PagesMixin:
                 "preferred episode length, or click Reset survey to clear your saved preferences.",
             ),
         ]
-        qa_card = self.create_card_frame(page)
-        qa_card.pack(fill="x", pady=(5, 14))
+        # Render the entire Q&A card on a single Canvas (one Win32 HWND, zero child-frame pack
+        # reflows) so lower questions slide smoothly and never flicker or get hidden mid-animation.
+        qa_canvas = tk.Canvas(page, bg=DARK_BG, bd=0, highlightthickness=0, height=200)
+        qa_canvas.pack(fill="x", pady=(5, 14))
+
+        scale = getattr(self, "_ui_scale_factor", 1.0) * getattr(self, "_text_scale", 1.0)
+        q_font = (DEFAULT_FONT, max(8, round(11 * scale)), "bold")
+        a_font = (DEFAULT_FONT, max(8, round(10 * scale)), "normal")
+
+        def rounded_poly_coords(w, h, r=12):
+            m = 1
+            x1 = max(m + 2, w - 1)
+            y1 = max(m + 2, h - 1)
+            rad = min(r, (x1 - m) / 2, (y1 - m) / 2)
+            return (
+                rad + m, m, x1 - rad, m, x1, m, x1, rad + m, x1, y1 - rad, x1, y1,
+                x1 - rad, y1, rad + m, y1, m, y1, m, y1 - rad, m, rad + m, m, m,
+            )
+
+        card_fill = qa_canvas.create_polygon(0, 0, 0, 0, smooth=True, fill=CARD_BG, outline="")
+
+        qa_anim_items = []
         for q_idx, (question_text, answer_text) in enumerate(qa_items):
-            if q_idx > 0:
-                tk.Frame(qa_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-            item_box = tk.Frame(qa_card, bg=CARD_BG)
-            item_box.pack(fill="x", padx=18, pady=12)
-            header_row = tk.Frame(item_box, bg=CARD_BG, cursor="hand2")
-            header_row.pack(fill="x")
-            arrow_lbl = self.create_label(
-                header_row, "▸", 11, ORANGE_HL, "bold", bg=CARD_BG, cursor="hand2",
+            # Each row's solid CARD_BG backdrop sits above the previous row's answer text in Z-order,
+            # acting as a clean clipping curtain so lower questions never get overlapped or hidden.
+            row_bg = qa_canvas.create_rectangle(0, 0, 0, 0, fill=CARD_BG, outline="")
+            divider = (
+                qa_canvas.create_line(0, 0, 0, 0, fill=BORDER_LINE, width=1)
+                if q_idx > 0 else None
             )
-            arrow_lbl.pack(side="left", padx=(0, 10))
-            question_lbl = self.create_label(
-                header_row, question_text, 11, TEXT_WHITE, "bold",
-                bg=CARD_BG, cursor="hand2", wraplength=820,
+            arrow_id = qa_canvas.create_text(
+                0, 0, text="▸", fill=ORANGE_HL, font=q_font, anchor="nw",
             )
-            question_lbl.pack(side="left", fill="x", expand=True)
-            answer_drawer = tk.Frame(item_box, bg=CARD_BG, height=0)
-            answer_drawer.pack_propagate(False)
-            answer_lbl = self.create_label(
-                answer_drawer, answer_text, 10, CARD_BG,
-                bg=CARD_BG, wraplength=820,
+            q_id = qa_canvas.create_text(
+                0, 0, text=question_text, fill=TEXT_WHITE, font=q_font, anchor="nw", width=800,
             )
-            answer_lbl.pack(anchor="nw", fill="x", padx=(22, 8), pady=(8, 4))
-            qa_state = {"open": False, "progress": 0.0, "target": 0.0, "job": None}
+            ans_id = qa_canvas.create_text(
+                0, 0, text=answer_text, fill=CARD_BG, font=a_font, anchor="nw", width=780,
+                state="hidden",
+            )
+            qa_anim_items.append({
+                "open": False,
+                "progress": 0.0,
+                "target": 0.0,
+                "row_bg": row_bg,
+                "divider": divider,
+                "arrow_id": arrow_id,
+                "q_id": q_id,
+                "ans_id": ans_id,
+                "q_h": 22,
+                "ans_h": 36,
+                "hit_top": 0,
+                "hit_bottom": 0,
+                "last_ans_fg": CARD_BG,
+                "last_q_fg": TEXT_WHITE,
+                "ans_visible": False,
+            })
 
-            def cancel_qa_anim(_event=None, state=qa_state):
-                if state["job"] is not None:
-                    try:
-                        self.after_cancel(state["job"])
-                    except tk.TclError:
-                        pass
-                    state["job"] = None
+        # Bottom curtain masks the last item's answer cleanly inside the rounded card footer.
+        bottom_curtain = qa_canvas.create_rectangle(0, 0, 0, 0, fill=CARD_BG, outline="")
+        card_border = qa_canvas.create_polygon(0, 0, 0, 0, smooth=True, fill="", outline=BORDER_LINE)
 
-            def toggle_answer(
-                _event=None,
-                state=qa_state,
-                drawer=answer_drawer,
-                ans=answer_lbl,
-                arr=arrow_lbl,
-                q_lbl=question_lbl,
-            ):
-                if not drawer.winfo_exists():
-                    return
-                state["open"] = not state["open"]
-                state["target"] = 1.0 if state["open"] else 0.0
-                arr.configure(text="▾" if state["open"] else "▸")
-                if state["open"] and not drawer.winfo_ismapped():
-                    drawer.pack(fill="x")
-                drawer.update_idletasks()
-                full_h = max(24, ans.winfo_reqheight() + 14)
+        qa_layout = {"width": 0, "height": 0}
+        qa_loop = {"job": None, "last_t": None}
+        qa_duration = 0.220
 
-                def step_qa():
-                    state["job"] = None
-                    if not drawer.winfo_exists() or not ans.winfo_exists():
-                        return
-                    cur = state["progress"]
-                    tgt = state["target"]
-                    step_delta = 1.0 / 12.0
-                    if cur < tgt:
-                        cur = min(tgt, cur + step_delta)
-                    elif cur > tgt:
-                        cur = max(tgt, cur - step_delta)
-                    state["progress"] = cur
+        def measure_texts(canvas_w):
+            pad_x = 20
+            q_w = max(220, canvas_w - pad_x * 2 - 24)
+            a_w = max(220, canvas_w - pad_x * 2 - 28)
+            for st in qa_anim_items:
+                qa_canvas.itemconfigure(st["q_id"], width=q_w)
+                qa_canvas.itemconfigure(st["ans_id"], width=a_w)
+                qb = qa_canvas.bbox(st["q_id"])
+                st["q_h"] = max(20, (qb[3] - qb[1]) if qb else 22)
+                was_hidden = not st["ans_visible"]
+                if was_hidden:
+                    qa_canvas.itemconfigure(st["ans_id"], state="normal")
+                ab = qa_canvas.bbox(st["ans_id"])
+                st["ans_h"] = max(20, (ab[3] - ab[1]) if ab else 36)
+                if was_hidden:
+                    qa_canvas.itemconfigure(st["ans_id"], state="hidden")
 
-                    # Smooth cubic ease-out when opening, smooth ease-in-out when closing.
-                    eased = 1.0 - (1.0 - cur) ** 3 if tgt > 0.5 else cur * cur * (3.0 - 2.0 * cur)
-                    cur_h = max(0, round(full_h * eased))
-                    drawer.configure(height=cur_h)
-                    ans.configure(fg=blend_colour(CARD_BG, TEXT_GRAY, eased))
-                    q_lbl.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.65))
+        def layout_qa(canvas_w=None):
+            if not qa_canvas.winfo_exists():
+                return
+            w = canvas_w if canvas_w is not None else qa_layout["width"]
+            if w <= 1:
+                w = max(400, qa_canvas.winfo_width())
+            if w != qa_layout["width"]:
+                qa_layout["width"] = w
+                measure_texts(w)
 
-                    if cur != tgt:
-                        state["job"] = self.after(14, step_qa)
-                    elif tgt <= 0.0:
-                        drawer.pack_forget()
+            pad_x = 20
+            y = 8
+            for st in qa_anim_items:
+                cur = st["progress"]
+                tgt = st["target"]
+                eased = 1.0 - (1.0 - cur) ** 3 if tgt > 0.5 else cur * cur * (3.0 - 2.0 * cur)
+                open_h = round((st["ans_h"] + 12) * eased) if cur > 0.0 else 0
 
-                if state["job"] is None:
-                    step_qa()
+                row_top = y
+                if st["divider"] is not None:
+                    qa_canvas.coords(st["divider"], pad_x, row_top, w - pad_x, row_top)
 
-            item_box.bind("<Destroy>", cancel_qa_anim)
-            for clickable in (header_row, arrow_lbl, question_lbl):
-                clickable.bind("<Button-1>", toggle_answer)
+                q_y = row_top + 12
+                header_bottom = q_y + st["q_h"] + 12
+                row_bottom = header_bottom + open_h
+                st["hit_top"] = row_top
+                st["hit_bottom"] = header_bottom
+
+                qa_canvas.coords(st["row_bg"], 6, row_top, w - 6, row_bottom + 2)
+                qa_canvas.coords(st["arrow_id"], pad_x, q_y)
+                qa_canvas.coords(st["q_id"], pad_x + 20, q_y)
+
+                if open_h > 0:
+                    if not st["ans_visible"]:
+                        qa_canvas.itemconfigure(st["ans_id"], state="normal")
+                        st["ans_visible"] = True
+                    qa_canvas.coords(st["ans_id"], pad_x + 20, q_y + st["q_h"] + 6)
+                elif st["ans_visible"]:
+                    qa_canvas.itemconfigure(st["ans_id"], state="hidden")
+                    st["ans_visible"] = False
+
+                ans_col = blend_colour(CARD_BG, TEXT_GRAY, eased)
+                if ans_col != st["last_ans_fg"]:
+                    qa_canvas.itemconfigure(st["ans_id"], fill=ans_col)
+                    st["last_ans_fg"] = ans_col
+
+                q_col = blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.65)
+                if q_col != st["last_q_fg"]:
+                    qa_canvas.itemconfigure(st["q_id"], fill=q_col)
+                    st["last_q_fg"] = q_col
+
+                y = row_bottom
+
+            total_h = y + 10
+            qa_canvas.coords(bottom_curtain, 12, y, w - 12, total_h - 1)
+            poly = rounded_poly_coords(w, total_h)
+            qa_canvas.coords(card_fill, *poly)
+            qa_canvas.coords(card_border, *poly)
+            if total_h != qa_layout["height"]:
+                qa_layout["height"] = total_h
+                qa_canvas.configure(height=total_h)
+
+        def cancel_all_qa_anims(_event=None):
+            if qa_loop["job"] is not None:
+                try:
+                    self.after_cancel(qa_loop["job"])
+                except tk.TclError:
+                    pass
+                qa_loop["job"] = None
+            qa_loop["last_t"] = None
+
+        def tick_qa_animations():
+            qa_loop["job"] = None
+            if not qa_canvas.winfo_exists():
+                qa_loop["last_t"] = None
+                return
+            now = monotonic()
+            dt = 0.012 if qa_loop["last_t"] is None else min(0.05, now - qa_loop["last_t"])
+            qa_loop["last_t"] = now
+            step_delta = dt / qa_duration
+
+            any_active = False
+            for st in qa_anim_items:
+                cur = st["progress"]
+                tgt = st["target"]
+                if cur == tgt:
+                    continue
+                if cur < tgt:
+                    cur = min(tgt, cur + step_delta)
+                else:
+                    cur = max(tgt, cur - step_delta)
+                st["progress"] = cur
+                if cur != tgt:
+                    any_active = True
+
+            layout_qa()
+            if any_active:
+                qa_loop["job"] = self.after(10, tick_qa_animations)
+            else:
+                qa_loop["last_t"] = None
+
+        def on_qa_click(event):
+            for st in qa_anim_items:
+                if st["hit_top"] <= event.y <= st["hit_bottom"]:
+                    st["open"] = not st["open"]
+                    st["target"] = 1.0 if st["open"] else 0.0
+                    qa_canvas.itemconfigure(st["arrow_id"], text="▾" if st["open"] else "▸")
+                    if qa_loop["job"] is None:
+                        qa_loop["last_t"] = None
+                        tick_qa_animations()
+                    break
+
+        def on_qa_motion(event):
+            over_header = any(st["hit_top"] <= event.y <= st["hit_bottom"] for st in qa_anim_items)
+            desired = "hand2" if over_header else ""
+            if qa_canvas.cget("cursor") != desired:
+                qa_canvas.configure(cursor=desired)
+
+        def on_qa_configure(event):
+            if event.width > 1 and event.width != qa_layout["width"]:
+                layout_qa(event.width)
+
+        qa_canvas.bind("<Button-1>", on_qa_click)
+        qa_canvas.bind("<Motion>", on_qa_motion)
+        qa_canvas.bind("<Leave>", lambda _e: qa_canvas.configure(cursor=""))
+        qa_canvas.bind("<Configure>", on_qa_configure)
+        qa_canvas.bind("<Destroy>", cancel_all_qa_anims)
+        layout_qa(860)
 
     def show_preferences(self):
         """Render the interactive preference survey to pick up to 5 genres and episode length."""
