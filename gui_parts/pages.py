@@ -11,6 +11,7 @@ from gui_parts.theme import (
     DARK_BG,
     DEFAULT_FONT,
     DURATION_RANGES,
+    GENRE_GRADIENTS,
     GENRE_LIST,
     GENRE_TILE_DETAILS,
     GOLD_STAR,
@@ -209,6 +210,61 @@ class PagesMixin:
             for column_idx in range(columns_count):
                 category_row.grid_columnconfigure(column_idx, weight=1, uniform="genre")
 
+            import math as _math
+
+            def make_gradient_card_photo(width, height, top_hex, bot_hex, border_hex, bg_hex, inset=3):
+                """Rasterize a smooth vertical-gradient rounded card as a PPM PhotoImage."""
+                w = max(16, int(width))
+                h = max(16, int(height))
+                m = 1 + inset
+                left, top = m, m
+                right, bottom = max(left + 4, w - 1 - inset), max(top + 4, h - 1 - inset)
+                cw, ch = right - left, bottom - top
+                r = min(12, cw // 2, ch // 2)
+
+                bg_b = bytes.fromhex(bg_hex[1:])
+                bd_b = bytes.fromhex(border_hex[1:])
+                t_rgb = tuple(int(top_hex[p:p + 2], 16) for p in (1, 3, 5))
+                b_rgb = tuple(int(bot_hex[p:p + 2], 16) for p in (1, 3, 5))
+
+                pixels = bytearray(f"P6\n{w} {h}\n255\n".encode("ascii"))
+                full_bg_row = bg_b * w
+                denom = max(1, ch - 1)
+                for y in range(h):
+                    if y < top or y >= bottom:
+                        pixels.extend(full_bg_row)
+                        continue
+                    ly = y - top
+                    frac = ly / denom
+                    fill_b = bytes((
+                        round(t_rgb[0] + (b_rgb[0] - t_rgb[0]) * frac),
+                        round(t_rgb[1] + (b_rgb[1] - t_rgb[1]) * frac),
+                        round(t_rgb[2] + (b_rgb[2] - t_rgb[2]) * frac),
+                    ))
+                    if ly < r:
+                        dy = r - ly
+                        dx = r - _math.isqrt(max(0, r * r - dy * dy))
+                    elif ly >= ch - r:
+                        dy = ly - (ch - r - 1)
+                        dx = r - _math.isqrt(max(0, r * r - dy * dy))
+                    else:
+                        dx = 0
+                    x0 = left + dx
+                    x1 = right - dx
+                    if x1 <= x0:
+                        pixels.extend(full_bg_row)
+                        continue
+                    row = bytearray(full_bg_row)
+                    if ly == 0 or ly == ch - 1:
+                        row[x0 * 3:x1 * 3] = bd_b * (x1 - x0)
+                    else:
+                        row[x0 * 3:(x0 + 1) * 3] = bd_b
+                        if x1 - x0 > 2:
+                            row[(x0 + 1) * 3:(x1 - 1) * 3] = fill_b * (x1 - x0 - 2)
+                        row[(x1 - 1) * 3:x1 * 3] = bd_b
+                    pixels.extend(row)
+                return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
+
             for idx, category_name in enumerate(all_categories):
                 tile_colour, tile_icon, tile_description = GENRE_TILE_DETAILS.get(
                     category_name,
@@ -218,45 +274,102 @@ class PagesMixin:
                         f"Explore {category_name.lower()} shows and stories",
                     ),
                 )
-                category_card = self.create_card_frame(category_row, bg=tile_colour, cursor="hand2")
-                category_card._inset = 3
-                category_card.grid(
+                top_col, bot_col, accent_col = GENRE_GRADIENTS.get(
+                    category_name,
+                    (
+                        blend_colour(tile_colour, "#ffffff", 0.14),
+                        blend_colour(tile_colour, "#000000", 0.45),
+                        ORANGE_HL,
+                    ),
+                )
+                card_canvas = tk.Canvas(
+                    category_row, bg=DARK_BG, height=166, bd=0,
+                    highlightthickness=0, cursor="hand2",
+                )
+                card_canvas.grid(
                     row=idx // columns_count, column=idx % columns_count,
                     sticky="nsew", padx=5, pady=5,
                 )
-                accent_line = tk.Frame(category_card, bg=ORANGE_HL, height=3, cursor="hand2")
-                accent_line.pack(fill="x", padx=12, pady=(2, 0))
-                card_header = tk.Frame(category_card, bg=tile_colour, cursor="hand2")
-                card_header.pack(fill="x", padx=15, pady=(13, 5))
-                icon_label = tk.Label(
-                    card_header, text=tile_icon, width=3, height=1,
-                    font=(DEFAULT_FONT, 14, "bold"), bg="#17181b", fg=TEXT_WHITE,
-                    cursor="hand2",
-                )
-                icon_label.pack(side="left", padx=(0, 10))
-                title_label = tk.Label(
-                    card_header, text=category_name.upper(), font=(DEFAULT_FONT, 11, "bold"),
-                    bg=tile_colour, fg=TEXT_WHITE, anchor="w", cursor="hand2",
-                )
-                title_label.pack(side="left", fill="x", expand=True)
-                description_label = tk.Label(
-                    category_card, text=tile_description, font=(DEFAULT_FONT, 9),
-                    bg=tile_colour, fg="#f0f0f0", justify="left", anchor="nw",
-                    wraplength=225, cursor="hand2",
-                )
-                description_label.pack(fill="x", padx=15, pady=(3, 12))
-                action_label = tk.Label(
-                    category_card, text="BROWSE PROGRAMMES  →", font=(DEFAULT_FONT, 8, "bold"),
-                    bg=tile_colour, fg="#ffffff", anchor="w", cursor="hand2",
-                )
-                action_label.pack(fill="x", padx=15, pady=(0, 14))
 
-                hover_colour = blend_colour(tile_colour, "#ffffff", 0.16)
-                card_state = {"step": 0, "target": 0, "job": None}
-                card_widgets = (
-                    category_card, category_card.backdrop, accent_line, card_header, icon_label,
-                    title_label, description_label, action_label,
+                bg_item = card_canvas.create_image(0, 0, anchor="nw")
+                accent_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=accent_col, outline="")
+                ico_bg_item = card_canvas.create_rectangle(0, 0, 0, 0, fill="#17181b", outline="")
+                ico_txt_item = card_canvas.create_text(
+                    0, 0, text=tile_icon, fill=TEXT_WHITE,
+                    font=(DEFAULT_FONT, 14, "bold"), anchor="center",
                 )
+                title_item = card_canvas.create_text(
+                    0, 0, text=category_name.upper(), fill=TEXT_WHITE,
+                    font=(DEFAULT_FONT, 11, "bold"), anchor="w",
+                )
+                desc_item = card_canvas.create_text(
+                    0, 0, text=tile_description, fill="#f0f0f0",
+                    font=(DEFAULT_FONT, 9), anchor="nw", justify="left", width=225,
+                )
+                act_item = card_canvas.create_text(
+                    0, 0, text="BROWSE PROGRAMMES  →", fill="#ffffff",
+                    font=(DEFAULT_FONT, 8, "bold"), anchor="sw",
+                )
+
+                hi_top = blend_colour(top_col, "#ffffff", 0.16)
+                hi_bot = blend_colour(bot_col, "#ffffff", 0.16)
+                card_state = {"step": 0, "target": 0, "job": None, "w": 0, "h": 0, "cache": {}}
+
+                def paint_gradient_card(
+                    cvs=card_canvas,
+                    state=card_state,
+                    t_base=top_col,
+                    b_base=bot_col,
+                    t_hi=hi_top,
+                    b_hi=hi_bot,
+                    acc=accent_col,
+                    bi=bg_item,
+                    ai=accent_item,
+                    ib=ico_bg_item,
+                    it=ico_txt_item,
+                    ti=title_item,
+                    di=desc_item,
+                    acti=act_item,
+                ):
+                    if not cvs.winfo_exists():
+                        return
+                    w = cvs.winfo_width()
+                    h = cvs.winfo_height()
+                    if w <= 4 or h <= 4:
+                        return
+                    if w != state["w"] or h != state["h"]:
+                        state["w"] = w
+                        state["h"] = h
+                        state["cache"].clear()
+
+                    step = state["step"]
+                    t = step / 12.0
+                    eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
+                    inset = max(0, min(3, round(3.0 - 2.0 * eased)))
+                    cur_top = blend_colour(t_base, t_hi, eased)
+                    cur_bot = blend_colour(b_base, b_hi, eased)
+                    cur_border = blend_colour(BORDER_LINE, acc, eased)
+                    cur_ico_bg = blend_colour("#17181b", acc, eased)
+                    cur_act_fg = blend_colour("#ffffff", GOLD_STAR, eased)
+
+                    cache_key = (step, state["target"] > 0)
+                    photo = state["cache"].get(cache_key)
+                    if photo is None:
+                        photo = make_gradient_card_photo(w, h, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
+                        state["cache"][cache_key] = photo
+                    cvs._grad_img = photo
+                    cvs.itemconfigure(bi, image=photo)
+
+                    m = 1 + inset
+                    cvs.coords(ai, m + 12, m + 3, max(m + 14, w - m - 12), m + 6)
+                    cvs.coords(ib, m + 15, m + 18, m + 53, m + 50)
+                    cvs.itemconfigure(ib, fill=cur_ico_bg)
+                    cvs.coords(it, m + 34, m + 34)
+                    cvs.coords(ti, m + 65, m + 34)
+                    cvs.coords(di, m + 15, m + 62)
+                    cvs.itemconfigure(di, width=max(120, w - 2 * m - 30))
+                    cvs.coords(acti, m + 15, h - m - 14)
+                    cvs.itemconfigure(acti, fill=cur_act_fg)
 
                 def cancel_card_hover(state=card_state):
                     if state["job"] is not None:
@@ -266,37 +379,8 @@ class PagesMixin:
                             pass
                         state["job"] = None
 
-                def apply_card_hover(
-                    step,
-                    card=category_card,
-                    base_col=tile_colour,
-                    hi_col=hover_colour,
-                    hdr=card_header,
-                    ico=icon_label,
-                    ttl=title_label,
-                    dsc=description_label,
-                    act=action_label,
-                    state=card_state,
-                ):
-                    if not card.winfo_exists():
-                        return
-                    t = step / 12.0
-                    # Fluid damped elastic spring on hover; smooth cubic ease-out on leave.
-                    eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
-                    cur_bg = blend_colour(base_col, hi_col, eased)
-                    cur_border = blend_colour(BORDER_LINE, ORANGE_HL, eased)
-                    cur_ico_bg = blend_colour("#17181b", ORANGE_ACCENT, eased)
-                    cur_act_fg = blend_colour("#ffffff", GOLD_STAR, eased)
-                    card.set_inset(max(0, min(3, round(3.0 - 2.0 * eased))))
-                    card.set_surface(cur_bg, cur_border)
-                    hdr.configure(bg=cur_bg)
-                    ttl.configure(bg=cur_bg)
-                    dsc.configure(bg=cur_bg)
-                    act.configure(bg=cur_bg, fg=cur_act_fg)
-                    ico.configure(bg=cur_ico_bg)
-
-                def animate_card_hover(target, state=card_state, card=category_card, apply_fn=apply_card_hover):
-                    if not card.winfo_exists():
+                def animate_card_hover(target, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
+                    if not cvs.winfo_exists():
                         return
                     state["target"] = target
                     if state["job"] is not None:
@@ -304,7 +388,7 @@ class PagesMixin:
 
                     def step_card():
                         state["job"] = None
-                        if not card.winfo_exists():
+                        if not cvs.winfo_exists():
                             return
                         cur = state["step"]
                         tgt = state["target"]
@@ -312,31 +396,20 @@ class PagesMixin:
                             return
                         cur += 1 if tgt > cur else -1
                         state["step"] = cur
-                        apply_fn(cur)
+                        paint_fn()
                         if cur != tgt:
                             state["job"] = self.after(16, step_card)
 
                     step_card()
 
-                def on_card_leave(_event=None, card=category_card, anim_fn=animate_card_hover):
-                    if not card.winfo_exists():
-                        return
-                    hovered = self.winfo_containing(*self.winfo_pointerxy())
-                    node = hovered
-                    while node is not None:
-                        if node is card:
-                            return
-                        node = node.master
-                    anim_fn(0)
-
                 def open_genre(
                     _event=None,
-                    card=category_card,
+                    card=card_canvas,
                     name=category_name,
                     icon=tile_icon,
                     desc=tile_description,
-                    base_col=tile_colour,
-                    hi_col=hover_colour,
+                    base_col=top_col,
+                    hi_col=hi_top,
                     state=card_state,
                     cancel_fn=cancel_card_hover,
                 ):
@@ -349,11 +422,11 @@ class PagesMixin:
                         programmes_heading, page,
                     )
 
-                for clickable_widget in card_widgets:
-                    clickable_widget.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(12))
-                    clickable_widget.bind("<Leave>", on_card_leave)
-                    clickable_widget.bind("<Button-1>", open_genre)
-                category_card.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
+                card_canvas.bind("<Configure>", lambda _e, paint_fn=paint_gradient_card: paint_fn())
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(12))
+                card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
+                card_canvas.bind("<Button-1>", open_genre)
+                card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load categories", err)
 
@@ -405,7 +478,7 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.420
+        expand_duration = 0.370
         expand_started = monotonic()
 
         def start_reveal():
@@ -422,7 +495,7 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.360
+            reveal_duration = 0.320
             reveal_started = None
 
             def draw_reveal():
@@ -480,8 +553,8 @@ class PagesMixin:
             if progress < 1.0:
                 self.after(8, draw_expand)
             else:
-                # Hold briefly at full expansion before sliding the curtain up to reveal programmes.
-                self.after(120, start_reveal)
+                # Brief hold at full expansion before sliding the curtain up to reveal programmes.
+                self.after(95, start_reveal)
 
         draw_expand()
 

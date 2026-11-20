@@ -273,29 +273,50 @@ GENRE_LIST = [
 ]
 DURATION_RANGES = {"Short": (0, 30), "Medium": (25, 45), "Long": (45, 60)}
 PALETTE_SWATCHES = ["#5b315e", "#185a70", "#7a3d2d", "#2e6654", "#6c5631", "#373e79"]
-# Maps each genre name to (card_colour, icon_glyph, short_tagline) for the Genres tab and cover art.
+# Maps each genre name to (card_colour, icon_glyph, short_tagline) matching bbc_podcasts_pictures.
 GENRE_TILE_DETAILS = {
-    "News": ("#7a2838", "N", "Headlines, investigations and current affairs"),
-    "Travel": ("#176c78", "✈", "Journeys, places and stories from around the world"),
-    "History": ("#76512d", "H", "People and events that shaped our world"),
-    "Comedy": ("#7b3f91", "☺", "Stand-up, panel shows and funny conversations"),
-    "True Crime": ("#633344", "?", "Real cases, mysteries and investigations"),
-    "Technology": ("#285d8b", ">_", "Digital culture, inventions and the future"),
-    "Science": ("#23705b", "Σ", "Discoveries, nature and how things work"),
-    "Business": ("#6f5d24", "£", "Money, markets, careers and entrepreneurship"),
-    "Gaming": ("#394a91", "♧", "Games, creators and player culture"),
-    "Entertainment": ("#9a3e67", "★", "Film, television, music and celebrity stories"),
-    "Sport": ("#39713b", "⚽", "Matches, athletes and expert sporting analysis"),
-    "Health": ("#8a4b35", "♥", "Wellbeing, medicine and healthier living"),
+    "News": ("#6e0b15", "N", "Headlines, investigations and current affairs"),
+    "Travel": ("#085160", "✈", "Journeys, places and stories from around the world"),
+    "History": ("#5f3a12", "H", "People and events that shaped our world"),
+    "Comedy": ("#9b3209", "☺", "Stand-up, panel shows and funny conversations"),
+    "True Crime": ("#230c33", "?", "Real cases, mysteries and investigations"),
+    "Technology": ("#0b285e", ">_", "Digital culture, inventions and the future"),
+    "Science": ("#0d4b47", "Σ", "Discoveries, nature and how things work"),
+    "Business": ("#172d4b", "£", "Money, markets, careers and entrepreneurship"),
+    "Gaming": ("#3a1675", "♧", "Games, creators and player culture"),
+    "Entertainment": ("#7b113c", "★", "Film, television, music and celebrity stories"),
+    "Sport": ("#104f29", "⚽", "Matches, athletes and expert sporting analysis"),
+    "Health": ("#0a5b5f", "♥", "Wellbeing, medicine and healthier living"),
 }
-# Concentric (light, mid, dark_outline) ring palettes for circular genre badges.
+# Vertical (top_colour, bottom_colour, accent_colour) gradients sampled directly from bbc_podcasts_pictures.
+GENRE_GRADIENTS = {
+    "News": ("#860d19", "#3b060c", "#ff4b55"),
+    "Travel": ("#0a6272", "#052d39", "#2dd4bf"),
+    "History": ("#744717", "#341e08", "#eab308"),
+    "Comedy": ("#bc3e0b", "#541806", "#fb923c"),
+    "True Crime": ("#2c0f3f", "#10051a", "#c026d3"),
+    "Technology": ("#0e3272", "#061433", "#38bdf8"),
+    "Science": ("#105b56", "#062927", "#34d399"),
+    "Business": ("#1d385c", "#0c1829", "#94a3b8"),
+    "Gaming": ("#491b90", "#1a0a3b", "#a855f7"),
+    "Entertainment": ("#98164a", "#3f081e", "#f472b6"),
+    "Sport": ("#146132", "#072915", "#4ade80"),
+    "Health": ("#0c6f73", "#053034", "#5eead4"),
+}
+# Concentric (light, mid, dark_outline) ring palettes in GENRE_LIST order, matching bbc_podcasts_pictures.
 GENRE_CIRCLE_COLOURS = [
-    ("#b79cff", "#5e17eb", "#2e0b70"), ("#9cecff", "#38b6ff", "#0b4f78"),
-    ("#ffb7ad", "#e84a5f", "#7c1f2c"), ("#b9f4c7", "#43aa8b", "#175b49"),
-    ("#ffe8a6", "#f9c74f", "#80600b"), ("#d9bcff", "#8d1370", "#49083a"),
-    ("#9dfff0", "#1bd5d3", "#087675"), ("#ffc8f0", "#ff5cb8", "#80245d"),
-    ("#bed0ff", "#4b56d2", "#252a75"), ("#ffd4ad", "#ff914d", "#8c3b0d"),
-    ("#c4f2ff", "#56ccf2", "#1d6880"), ("#f5d0ff", "#b54dce", "#5d176d"),
+    ("#ff9aa0", "#ff4b55", "#6e0b15"),  # News
+    ("#99f6e4", "#2dd4bf", "#085160"),  # Travel
+    ("#fde047", "#eab308", "#5f3a12"),  # History
+    ("#fdba74", "#fb923c", "#9b3209"),  # Comedy
+    ("#e879f9", "#c026d3", "#230c33"),  # True Crime
+    ("#7dd3fc", "#38bdf8", "#0b285e"),  # Technology
+    ("#6ee7b7", "#34d399", "#0d4b47"),  # Science
+    ("#cbd5e1", "#94a3b8", "#172d4b"),  # Business
+    ("#d8b4fe", "#a855f7", "#3a1675"),  # Gaming
+    ("#fbcfe8", "#f472b6", "#7b113c"),  # Entertainment
+    ("#86efac", "#4ade80", "#104f29"),  # Sport
+    ("#99f6e4", "#5eead4", "#0a5b5f"),  # Health
 ]
 
 

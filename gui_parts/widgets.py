@@ -17,6 +17,7 @@ from gui_parts.theme import (
     DARK_BG,
     DEFAULT_FONT,
     GENRE_CIRCLE_COLOURS,
+    GENRE_LIST,
     GENRE_TILE_DETAILS,
     GOLD_STAR,
     INPUT_BG,
@@ -894,7 +895,8 @@ class WidgetsMixin:
         """Draw a concentric coloured circular badge with the genre's initial."""
         if background_col is None:
             background_col = CARD_BG
-        light_col, middle_col, outline_col = GENRE_CIRCLE_COLOURS[idx % len(GENRE_CIRCLE_COLOURS)]
+        palette_idx = GENRE_LIST.index(genre_name) if genre_name in GENRE_LIST else idx
+        light_col, middle_col, outline_col = GENRE_CIRCLE_COLOURS[palette_idx % len(GENRE_CIRCLE_COLOURS)]
         circle_canvas = tk.Canvas(container, width=size, height=size, bg=background_col, highlightthickness=0, cursor="hand2")
         for inset, fill_col in [(2, outline_col), (5, middle_col), (10, light_col), (16, middle_col)]:
             circle_canvas.create_oval(inset, inset, size - inset, size - inset, fill=fill_col, outline="")
