@@ -210,11 +210,22 @@ class PagesMixin:
                 category_row.grid_columnconfigure(column_idx, weight=1, uniform="genre")
 
             import math as _math
+            grad_cache = getattr(self, "_genre_grad_cache", None)
+            if grad_cache is None:
+                from collections import OrderedDict
+                grad_cache = OrderedDict()
+                self._genre_grad_cache = grad_cache
 
             def make_gradient_card_photo(width, height, top_hex, bot_hex, border_hex, bg_hex, inset=3):
-                """Rasterize a smooth vertical-gradient rounded card as a PPM PhotoImage."""
+                """Rasterize and cache a smooth vertical-gradient rounded card as a PPM PhotoImage."""
                 w = max(16, int(width))
                 h = max(16, int(height))
+                cache_key = (w, h, top_hex, bot_hex, border_hex, bg_hex, inset)
+                cached = grad_cache.get(cache_key)
+                if cached is not None:
+                    grad_cache.move_to_end(cache_key)
+                    return cached
+
                 m = 1 + inset
                 left, top = m, m
                 right, bottom = max(left + 4, w - 1 - inset), max(top + 4, h - 1 - inset)
@@ -262,7 +273,11 @@ class PagesMixin:
                             row[(x0 + 1) * 3:(x1 - 1) * 3] = fill_b * (x1 - x0 - 2)
                         row[(x1 - 1) * 3:x1 * 3] = bd_b
                     pixels.extend(row)
-                return tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
+                photo = tk.PhotoImage(master=self, data=bytes(pixels), format="PPM")
+                grad_cache[cache_key] = photo
+                if len(grad_cache) > 192:
+                    grad_cache.popitem(last=False)
+                return photo
 
             is_light_mode = getattr(self, "_theme_name", "dark") == "light"
             card_title_fg = "#ffffff"

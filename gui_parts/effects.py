@@ -875,11 +875,11 @@ class EffectsMixin:
                 self._tab_transition_distance = 1
 
         self.slide_page(
-            canvas, window, -direction * max(1, canvas.winfo_width()), 12, open_next_page,
-            frame_ms=10, complete_delay_ms=16,
+            canvas, window, -direction * max(1, canvas.winfo_width()), 145, open_next_page,
+            frame_ms=10,
         )
 
-    def _prerender_initial_batch(self, max_items=6):
+    def _prerender_initial_batch(self, max_items=4):
         """Render the first visible row of queued cards off-screen so pages slide in already populated."""
         rendered = 0
         while self._render_queue and rendered < max_items:
@@ -893,16 +893,15 @@ class EffectsMixin:
             rendered += 1
 
     def animate_page_entry(self, canvas, canvas_window, direction, outgoing_info=None):
-        """Slide the new page into view across guaranteed frames so it never cuts mid-transition."""
+        """Slide the new page smoothly into view using real-time elastic pacing."""
         self._transition_active = True
         tab_distance = max(1, getattr(self, "_tab_transition_distance", 1))
         max_span = max(1, len(getattr(self, "_tab_order", [])) - 2)
         ratio = min(1.0, (tab_distance - 1) / max_span)
-        # Smooth, seamless frame-stepped elastic slide: 18 frames for adjacent tabs up to 28 for Home <-> Profile.
-        # Kept within ~2%..8% overshoot so far-away jumps feel clearly elastic without cutting off page content.
-        entry_frames = round(18 + 10 * ratio)
-        damping = 6.8 - 1.8 * ratio
-        frequency = 0.95 + 0.30 * ratio
+        # Real-time durations (220ms adjacent up to 280ms for far jumps) with gentle elastic settle.
+        entry_ms = round(220 + 60 * ratio)
+        damping = 6.8 - 1.6 * ratio
+        frequency = 0.95 + 0.25 * ratio
 
         def finish_entry():
             if canvas.winfo_exists():
@@ -918,8 +917,8 @@ class EffectsMixin:
             if not canvas.winfo_exists():
                 self._finish_transition()
                 return
-            # Pre-render the first row of cards off-screen so the page glides in looking complete.
-            self._prerender_initial_batch(6)
+            # Pre-render the first 4 cards off-screen so the page glides in populated without excess HWND overhead.
+            self._prerender_initial_batch(4)
             if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
                 self._scale_widget_tree(self.current_page, self._ui_scale_factor)
             width = max(1, canvas.winfo_width())
@@ -927,18 +926,18 @@ class EffectsMixin:
             canvas.coords(canvas_window, direction * width, 0)
             canvas.update_idletasks()
             self.slide_page(
-                canvas, canvas_window, 0, entry_frames, finish_entry,
-                damping=damping, frequency=frequency, frame_ms=12, complete_delay_ms=16,
+                canvas, canvas_window, 0, entry_ms, finish_entry,
+                damping=damping, frequency=frequency, frame_ms=10,
             )
 
         # Wait one idle tick so the destination page finishes building off-screen before sliding in.
         canvas.after_idle(begin_slide)
 
     def slide_page(
-        self, canvas, canvas_window, end_x, total_frames, on_complete=None, *,
-        damping=5.4, frequency=1.15, frame_ms=10, complete_delay_ms=10,
+        self, canvas, canvas_window, end_x, duration_ms, on_complete=None, *,
+        damping=5.4, frequency=1.15, frame_ms=10,
     ):
-        """Step through every frame (1..total_frames) so the slide finishes completely without cutting."""
+        """Animate the scrollable content window horizontally to end_x in real elapsed time."""
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
             try:
@@ -947,30 +946,36 @@ class EffectsMixin:
                 pass
         coords = canvas.coords(canvas_window)
         start_x = coords[0] if coords else 0
-        total_frames = max(1, int(total_frames))
-        step = 0
+        duration_sec = max(0.05, float(duration_ms) / 1000.0)
+        max_step = 0.085  # Cap per-frame jump so a slow frame never teleports, while keeping real-time speed.
+        progress = 0.0
+        last_t = None
         last_x = round(start_x)
         self._transition_active = True
 
         def draw_frame():
-            nonlocal last_x, step
+            nonlocal last_x, progress, last_t
             canvas._slide_frame = None
             if not canvas.winfo_exists():
                 self._transition_active = False
                 return
-            step += 1
-            progress = min(1.0, step / float(total_frames))
-            # Outgoing pages accelerate cleanly off-screen; incoming pages stretch and settle elastically.
-            eased = progress ** 3 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
+            now = monotonic()
+            if last_t is None:
+                delta = 0.016 / duration_sec
+            else:
+                delta = min(max_step, (now - last_t) / duration_sec)
+            last_t = now
+            progress = min(1.0, progress + delta)
+            # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
+            eased = progress ** 2.4 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
                 canvas.coords(canvas_window, new_x, 0)
                 last_x = new_x
-            if step < total_frames:
+            if progress < 1.0:
                 canvas._slide_frame = canvas.after(frame_ms, draw_frame)
             elif on_complete:
-                # Hold briefly after the final frame paints before handing off to the next page.
-                canvas._slide_frame = canvas.after(complete_delay_ms, on_complete)
+                on_complete()
             else:
                 self._finish_transition()
 
