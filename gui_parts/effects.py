@@ -1012,10 +1012,58 @@ class EffectsMixin:
             self._shell_bottom_bar_key = None
             footer.destroy()
 
+        bar_bg = row.cget("bg")
+        sim_fade_job = [None]
+
+        def cancel_sim_fade(_event=None):
+            if sim_fade_job[0] is not None:
+                try:
+                    self.after_cancel(sim_fade_job[0])
+                except tk.TclError:
+                    pass
+                sim_fade_job[0] = None
+
+        def play_from_mini_bar():
+            if not self.listen(podcast_id, open_detail=False):
+                return
+            if not sim_notice_label.winfo_exists():
+                return
+            cancel_sim_fade()
+            sim_notice_label.configure(text="Playback is simulated", fg=TEXT_GRAY)
+            fade_steps = 36
+            fade_step = [0]
+
+            def step_sim_fade():
+                sim_fade_job[0] = None
+                if not sim_notice_label.winfo_exists():
+                    return
+                fade_step[0] += 1
+                frac = min(1.0, fade_step[0] / float(fade_steps))
+                eased = frac * frac * (3.0 - 2.0 * frac)
+                sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, bar_bg, eased))
+                if fade_step[0] < fade_steps:
+                    sim_fade_job[0] = self.after(40, step_sim_fade)
+                else:
+                    sim_notice_label.configure(text="")
+
+            # Hold readable for ~1.1s before smoothly fading into the mini-bar background.
+            sim_fade_job[0] = self.after(1100, step_sim_fade)
+
         self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
         self.create_button(
-            row, "▶  Play", lambda: self.listen(podcast_id), primary=True, compact=True,
+            row, "▶  Play", play_from_mini_bar, primary=True, compact=True,
         ).pack(side="right")
+        sim_notice_label = tk.Label(
+            row,
+            text="",
+            font=(DEFAULT_FONT, 10, "italic"),
+            fg=bar_bg,
+            bg=bar_bg,
+            anchor="e",
+            justify="right",
+        )
+        sim_notice_label.pack(side="right", padx=(0, 12))
+        sim_notice_label.bind("<Destroy>", cancel_sim_fade)
 
         cover = self.generate_podcast_cover(
             row, podcast_id, title, category, 62, 62,

@@ -367,7 +367,7 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
-    def listen(self, podcast_id):
+    def listen(self, podcast_id, *, open_detail=True):
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
         try:
             with self.get_db_connection() as conn:
@@ -392,9 +392,12 @@ class DetailViewMixin:
                 record_last_listened(conn, self.current_user, podcast_id)
             # Clear any prior dismissal so the newly played podcast appears in the mini-bar.
             self._dismissed_last_listened = None
-            self.show_detail(podcast_id, show_simulated_notice=True)
+            if open_detail:
+                self.show_detail(podcast_id, show_simulated_notice=True)
+            return True
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
+            return False
 
     def save_programme_rating(self, podcast_id, new_score, callback_func=None):
         """Persist a 1-5 rating for the active listener and refresh the current view."""
