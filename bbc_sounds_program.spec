@@ -5,7 +5,12 @@ a = Analysis(
     ['gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('database.db', '.')],
+    datas=[
+        ('database.db', '.'),
+        ('bbc sounds logo.png', '.'),
+        ('bbc_podcasts_pictures', 'bbc_podcasts_pictures'),
+        ('BBCReithSans/Desktop', 'BBCReithSans/Desktop'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
