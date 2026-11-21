@@ -529,7 +529,7 @@ class LoginViewMixin:
 
     def sign_out_to_login(self):
         """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
-        if getattr(self, "_signing_out", False):
+        if getattr(self, "_signing_out", False) or getattr(self, "_transition_active", False):
             return
         self._signing_out = True
         self.focus_set()

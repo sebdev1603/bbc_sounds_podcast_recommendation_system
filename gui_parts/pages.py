@@ -473,6 +473,8 @@ class PagesMixin:
 
     def expand_genre_in_tab(self, card, genre_name, genre_icon, genre_desc, start_col, apply_filter, heading_widget, page):
         """Expand a clicked genre tile within the Genres content area and scroll to its programmes."""
+        if self._is_busy_transitioning():
+            return
         canvas_pane, _window = self._page_transition_target
         area_frame = canvas_pane.master
         if getattr(area_frame, "_expanding_genre", False) or not area_frame.winfo_exists() or not card.winfo_exists():

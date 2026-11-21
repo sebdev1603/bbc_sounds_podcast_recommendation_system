@@ -382,6 +382,8 @@ class DetailViewMixin:
 
     def listen(self, podcast_id, *, open_detail=True):
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
+        if open_detail and self._is_busy_transitioning():
+            return False
         try:
             with self.get_db_connection() as conn:
                 # Check if this listener already has a listening_history row for this podcast.
@@ -442,6 +444,14 @@ class DetailViewMixin:
 
     def rate_programme(self, podcast_id, callback_func=None, *, on_unplayed=None):
         """Open a dark interactive 5-star picker dialog to rate or update a programme's score."""
+        existing_dlg = getattr(self, "_active_rating_dialog", None)
+        if existing_dlg is not None and existing_dlg.winfo_exists():
+            try:
+                existing_dlg.lift()
+                existing_dlg.focus_force()
+            except tk.TclError:
+                pass
+            return
         try:
             with self.get_db_connection() as conn:
                 prior_record = conn.execute(
@@ -457,6 +467,7 @@ class DetailViewMixin:
             dialog_title = "Rate this programme" if prior_record[1] is None else "Update your rating"
 
             dialog = tk.Toplevel(self)
+            self._active_rating_dialog = dialog
             dialog.title(dialog_title)
             dialog.configure(bg=DARK_BG)
             dialog.resizable(False, False)
@@ -558,6 +569,8 @@ class DetailViewMixin:
 
     def toggle_favourite(self, podcast_id):
         """Add or remove a podcast from the active listener's FavoritePodcasts CSV."""
+        if self._is_busy_transitioning():
+            return
         try:
             with self.get_db_connection() as conn:
                 # Read the current comma-separated list of favourited PodcastIDs.

@@ -825,10 +825,27 @@ class EffectsMixin:
         self.add_last_listened_prompt(shell, show_average=show_average, recent=recent)
         self._shell_bottom_bar_key = bar_key
 
+    def _is_busy_transitioning(self):
+        """Return True while any page, overlay, genre, or sign-out animation is in progress."""
+        if getattr(self, "_transition_active", False) or getattr(self, "_signing_out", False):
+            return True
+        shell = getattr(self, "_shell_box", None)
+        if shell is not None and shell.winfo_exists() and getattr(shell, "_expanding_bar", False):
+            return True
+        area_frame = getattr(self, "_shell_area_frame", None)
+        if area_frame is not None and area_frame.winfo_exists() and getattr(area_frame, "_expanding_genre", False):
+            return True
+        return False
+
     def transition_to(self, destination, tab=None, *, direction=None):
         """Animate out of the current page (sliding or shrinking to the mini-bar) and open destination."""
-        canvas, window = self._page_transition_target
-        if getattr(canvas, "_leaving_page", False):
+        if self._is_busy_transitioning():
+            return
+        target = getattr(self, "_page_transition_target", None)
+        if not target:
+            return
+        canvas, window = target
+        if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
             return
         current = self._active_nav_tab
         if tab is not None and tab == current and direction is None:
@@ -903,27 +920,34 @@ class EffectsMixin:
         frequency = 0.95 + 0.25 * ratio
 
         def finish_entry():
-            if canvas.winfo_exists():
-                canvas.coords(canvas_window, 0, 0)
-                canvas.yview_moveto(0)
-                if self.current_page is not None and self.current_page.winfo_exists():
-                    canvas.configure(
-                        scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
-                    )
+            if canvas.winfo_exists() and canvas_window == getattr(self, "_shell_canvas_window", None):
+                try:
+                    canvas.coords(canvas_window, 0, 0)
+                    canvas.yview_moveto(0)
+                    if self.current_page is not None and self.current_page.winfo_exists():
+                        canvas.configure(
+                            scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
+                        )
+                except tk.TclError:
+                    pass
             self._finish_transition()
 
         def begin_slide():
-            if not canvas.winfo_exists():
+            if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
                 self._finish_transition()
                 return
-            if self._active_nav_tab not in ("Genres", "Home"):
-                self._prerender_initial_batch(2)
-            if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
-                self._scale_widget_tree(self.current_page, self._ui_scale_factor)
-            width = max(1, canvas.winfo_width())
-            canvas.itemconfigure(canvas_window, width=width)
-            canvas.coords(canvas_window, direction * width, 0)
-            canvas.update_idletasks()
+            try:
+                if self._active_nav_tab not in ("Genres", "Home"):
+                    self._prerender_initial_batch(2)
+                if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
+                    self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+                width = max(1, canvas.winfo_width())
+                canvas.itemconfigure(canvas_window, width=width)
+                canvas.coords(canvas_window, direction * width, 0)
+                canvas.update_idletasks()
+            except tk.TclError:
+                self._finish_transition()
+                return
             self.slide_page(
                 canvas, canvas_window, 0, entry_ms, finish_entry,
                 damping=damping, frequency=frequency, frame_ms=16,
@@ -943,7 +967,11 @@ class EffectsMixin:
                 canvas.after_cancel(previous_frame)
             except tk.TclError:
                 pass
-        coords = canvas.coords(canvas_window)
+        try:
+            coords = canvas.coords(canvas_window)
+        except tk.TclError:
+            self._finish_transition()
+            return
         start_x = coords[0] if coords else 0
         duration_sec = max(0.05, float(duration_ms) / 1000.0)
         started = monotonic()
@@ -953,15 +981,19 @@ class EffectsMixin:
         def draw_frame():
             nonlocal last_x
             canvas._slide_frame = None
-            if not canvas.winfo_exists():
-                self._transition_active = False
+            if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
+                self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - started) / duration_sec)
             # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
             eased = progress ** 2.2 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
-                canvas.coords(canvas_window, new_x, 0)
+                try:
+                    canvas.coords(canvas_window, new_x, 0)
+                except tk.TclError:
+                    self._finish_transition()
+                    return
                 last_x = new_x
             if progress < 1.0:
                 canvas._slide_frame = canvas.after(frame_ms, draw_frame)
@@ -1104,6 +1136,8 @@ class EffectsMixin:
 
     def open_podcast_detail(self, podcast_id, title=None, category=None):
         """Open a podcast's detail page by expanding upward via the bottom mini-bar."""
+        if self._is_busy_transitioning():
+            return
         if title is None or category is None:
             try:
                 rec = self.get_single_podcast(podcast_id)
@@ -1123,10 +1157,10 @@ class EffectsMixin:
 
     def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
         """Expand the bottom mini-bar smoothly upward to open the podcast detail page."""
-        if getattr(shell, "_expanding_bar", False):
+        if self._is_busy_transitioning() or not shell.winfo_exists():
             return
         canvas, _window = self._page_transition_target
-        if getattr(canvas, "_leaving_page", False):
+        if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
             return
         shell._expanding_bar = True
         canvas._leaving_page = True

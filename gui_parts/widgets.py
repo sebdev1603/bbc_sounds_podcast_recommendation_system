@@ -1395,7 +1395,11 @@ class WidgetsMixin:
             except StopIteration:
                 self._render_queue.pop(0)
                 continue
-            render_item(item)
+            try:
+                render_item(item)
+            except tk.TclError:
+                self._render_queue.pop(0)
+                continue
             rendered_count += 1
             if monotonic() >= deadline:
                 break
@@ -1407,6 +1411,9 @@ class WidgetsMixin:
     def cancel_pending_render(self):
         """Cancel any scheduled batched rendering work when leaving a page."""
         if self._pending_render_id is not None:
-            self.after_cancel(self._pending_render_id)
+            try:
+                self.after_cancel(self._pending_render_id)
+            except tk.TclError:
+                pass
             self._pending_render_id = None
         self._render_queue.clear()
