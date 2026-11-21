@@ -175,7 +175,12 @@ class DetailViewMixin:
             rate_button = self.create_button(
                 actions_box,
                 "★  Rate this programme",
-                lambda: self.rate_programme(podcast_id),
+                lambda: self.rate_programme(
+                    podcast_id,
+                    on_unplayed=lambda: show_detail_notice(
+                        "You can't rate this programme until you've listened to it."
+                    ),
+                ),
                 compact=True,
                 face=ACTION_BTN_BG,
                 fg=ACTION_BTN_FG,
@@ -186,15 +191,16 @@ class DetailViewMixin:
                 (rate_button, ACTION_BTN_BG, SECONDARY_HOVER_BG),
             ]
 
-            # Subtle background notice that appears when Play is clicked and slowly fades away.
+            # Subtle background notice for simulated playback or unplayed rating feedback that slowly fades away.
             sim_notice_label = tk.Label(
                 right_pane,
-                text="Playback is simulated" if show_simulated_notice else "",
+                text="",
                 font=(DEFAULT_FONT, 10, "italic"),
-                fg=TEXT_GRAY if show_simulated_notice else DARK_BG,
+                fg=DARK_BG,
                 bg=DARK_BG,
                 anchor="w",
                 justify="left",
+                wraplength=360,
             )
             sim_notice_label.pack(anchor="w", pady=(12, 0))
             sim_fade_job = [None]
@@ -207,9 +213,11 @@ class DetailViewMixin:
                         pass
                     sim_fade_job[0] = None
 
-            sim_notice_label.bind("<Destroy>", cancel_sim_fade)
-
-            if show_simulated_notice:
+            def show_detail_notice(message, hold_ms=1100):
+                if not sim_notice_label.winfo_exists():
+                    return
+                cancel_sim_fade()
+                sim_notice_label.configure(text=message, fg=TEXT_GRAY)
                 fade_steps = 36
                 fade_step = [0]
 
@@ -226,8 +234,13 @@ class DetailViewMixin:
                     else:
                         sim_notice_label.configure(text="")
 
-                # Hold readable for ~1.1s before slowly fading into the background over ~1.45s.
-                sim_fade_job[0] = self.after(1100, step_sim_fade)
+                # Hold readable before slowly fading into the background over ~1.45s.
+                sim_fade_job[0] = self.after(hold_ms, step_sim_fade)
+
+            sim_notice_label.bind("<Destroy>", cancel_sim_fade)
+
+            if show_simulated_notice:
+                show_detail_notice("Playback is simulated")
 
             bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
             bottom_rule.pack(fill="x", pady=(0, 22))
@@ -427,7 +440,7 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 
-    def rate_programme(self, podcast_id, callback_func=None):
+    def rate_programme(self, podcast_id, callback_func=None, *, on_unplayed=None):
         """Open a dark interactive 5-star picker dialog to rate or update a programme's score."""
         try:
             with self.get_db_connection() as conn:
@@ -436,11 +449,8 @@ class DetailViewMixin:
                     (self.current_user, podcast_id),
                 ).fetchone()
             if not prior_record or (not prior_record[0] and prior_record[1] is None):
-                messagebox.showinfo(
-                    "Listen first",
-                    "Play this programme before adding a rating.",
-                    parent=self,
-                )
+                if on_unplayed is not None:
+                    on_unplayed()
                 return
 
             initial_score = int(prior_record[1]) if prior_record[1] is not None else 5
@@ -560,15 +570,12 @@ class DetailViewMixin:
                 # Toggle membership: remove if already saved, otherwise append.
                 if target_str in id_tokens:
                     id_tokens.remove(target_str)
-                    message_text = "Removed from your favourites."
                 else:
                     id_tokens.append(target_str)
-                    message_text = "Added to your favourites."
                 conn.execute(
                     "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
                     (",".join(id_tokens), self.current_user),
                 )
-            messagebox.showinfo("Favourites updated", message_text, parent=self)
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
