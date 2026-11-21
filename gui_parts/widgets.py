@@ -10,6 +10,7 @@ from tkinter import font as tkfont
 import unicodedata
 import xml.etree.ElementTree as ET
 
+from gui_parts.i18n import translate
 from gui_parts.theme import (
     BORDER_LINE,
     CANVA_DIR,
@@ -102,7 +103,7 @@ class WidgetsMixin:
             text_color = TEXT_WHITE
         return tk.Label(
             container,
-            text=text_val,
+            text=translate(text_val),
             font=(DEFAULT_FONT, text_size, font_weight),
             fg=text_color,
             bg=kwargs.pop("bg", container.cget("bg")),
@@ -120,7 +121,7 @@ class WidgetsMixin:
         background = container.cget("bg")
         button = tk.Button(
             container,
-            text=text_val,
+            text=translate(text_val),
             command=command_func,
             font=font_spec, compound="center",
             bg=background, fg=foreground,

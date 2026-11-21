@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from last_listened import get_last_listened
+from gui_parts.i18n import set_active_language, translate
 from gui_parts.theme import (
     BORDER_LINE,
     DARK_BG,
@@ -461,12 +462,36 @@ class EffectsMixin:
                 self.set_windows_titlebar_colour(DARK_BG, TITLEBAR_TEXT)
                 self.show_login()
 
+    def set_language(self, lang_code, refresh=True, persist=True):
+        """Switch between English ('en') and Welsh ('cy'), persist per user, and refresh UI."""
+        lang = "cy" if str(lang_code or "").lower() == "cy" else "en"
+        if getattr(self, "_language", "en") == lang and not refresh:
+            return
+        self._language = lang
+        set_active_language(lang)
+        if persist and self.current_user is not None:
+            self.save_user_language(self.current_user, lang)
+        if refresh:
+            shell_box = getattr(self, "_shell_box", None)
+            if shell_box is not None and shell_box.winfo_exists():
+                shell_box.destroy()
+            self._shell_box = None
+            self._shell_bottom_bar = None
+            self._shell_bottom_bar_key = None
+            if self.current_user is not None:
+                self.show_profile()
+            else:
+                self.show_login()
+
     def apply_user_accessibility(self, listener_id):
-        """Load and apply the signed-in listener's saved text size and theme from database.db."""
+        """Load and apply the signed-in listener's saved text size, theme, and language from database.db."""
         saved_scale, saved_theme = self.load_user_accessibility(listener_id)
+        saved_lang = self.load_user_language(listener_id)
         theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
         self._text_scale = saved_scale
         self._theme_name = saved_theme
+        self._language = saved_lang
+        set_active_language(saved_lang)
         if theme_changed:
             apply_theme_palette(saved_theme)
             self.button_images.clear()
@@ -474,13 +499,20 @@ class EffectsMixin:
             self._titlebar_colour = None
 
     def reset_accessibility_settings(self):
-        """Restore all accessibility settings (text size and theme) to defaults and save to database.db."""
+        """Restore all accessibility settings (text size, theme, language) to defaults and save."""
         theme_changed = getattr(self, "_theme_name", "dark") != "dark"
+        lang_changed = getattr(self, "_language", "en") != "en"
         self._text_scale = 1.0
+        self._language = "en"
+        set_active_language("en")
         if self.current_user is not None:
             self.save_user_accessibility(self.current_user, 1.0, "dark")
+            self.save_user_language(self.current_user, "en")
         if theme_changed:
             self.set_theme("dark", refresh=True, persist=False)
+            self.apply_interface_scaling(force=True)
+        elif lang_changed:
+            self.set_language("en", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
         else:
             self.apply_interface_scaling(force=True)
@@ -712,7 +744,7 @@ class EffectsMixin:
             )
             self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
             self._search_prompt = tk.Label(
-                search_container, text="Search programmes...", font=(DEFAULT_FONT, 10),
+                search_container, text=translate("Search programmes..."), font=(DEFAULT_FONT, 10),
                 bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
             )
             self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
@@ -1067,7 +1099,7 @@ class EffectsMixin:
             if not sim_notice_label.winfo_exists():
                 return
             cancel_sim_fade()
-            sim_notice_label.configure(text="Playback is simulated", fg=TEXT_GRAY)
+            sim_notice_label.configure(text=translate("Playback is simulated"), fg=TEXT_GRAY)
             fade_steps = 36
             fade_step = [0]
 

@@ -50,6 +50,7 @@ class BBCSoundsGUI(
         self._ui_scale_factor = 1.0
         self._text_scale = 1.0
         self._theme_name = "dark"
+        self._language = "en"
         self._resize_after_id = None
 
         self.current_user = None

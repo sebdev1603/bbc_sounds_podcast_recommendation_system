@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from last_listened import record_last_listened
+from gui_parts.i18n import translate
 from gui_parts.theme import (
     ACTION_BTN_BG,
     ACTION_BTN_FG,
@@ -217,7 +218,7 @@ class DetailViewMixin:
                 if not sim_notice_label.winfo_exists():
                     return
                 cancel_sim_fade()
-                sim_notice_label.configure(text=message, fg=TEXT_GRAY)
+                sim_notice_label.configure(text=translate(message), fg=TEXT_GRAY)
                 fade_steps = 36
                 fade_step = [0]
 

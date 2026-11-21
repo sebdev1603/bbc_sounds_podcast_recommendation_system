@@ -35,8 +35,9 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
-        # Reset the login screen visually to default dark theme and 100% text size without changing DB rows.
+        # Reset the login screen visually to default dark theme, English, and 100% text size without changing DB rows.
         self._text_scale = 1.0
+        self.set_language("en", refresh=False, persist=False)
         self.set_theme("dark", refresh=False, persist=False)
         self._shell_box = None
         self._shell_bottom_bar = None

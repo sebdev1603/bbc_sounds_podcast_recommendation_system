@@ -4,6 +4,7 @@ from time import monotonic
 import tkinter as tk
 from tkinter import messagebox
 
+from gui_parts.i18n import translate
 from gui_parts.theme import (
     BANNER_BG,
     BORDER_LINE,
@@ -332,15 +333,15 @@ class PagesMixin:
                     font=(DEFAULT_FONT, 14, "bold"), anchor="center",
                 )
                 title_item = card_canvas.create_text(
-                    0, 0, text=category_name.upper(), fill=card_title_fg,
+                    0, 0, text=translate(category_name.upper()), fill=card_title_fg,
                     font=(DEFAULT_FONT, 11, "bold"), anchor="w",
                 )
                 desc_item = card_canvas.create_text(
-                    0, 0, text=tile_description, fill=card_desc_fg,
+                    0, 0, text=translate(tile_description), fill=card_desc_fg,
                     font=(DEFAULT_FONT, 9), anchor="nw", justify="left", width=225,
                 )
                 act_item = card_canvas.create_text(
-                    0, 0, text="BROWSE PROGRAMMES  →", fill="#ffffff",
+                    0, 0, text=translate("BROWSE PROGRAMMES  →"), fill="#ffffff",
                     font=(DEFAULT_FONT, 8, "bold"), anchor="sw",
                 )
 
@@ -1034,7 +1035,7 @@ class PagesMixin:
         )
         name_entry.pack(fill="both", expand=True, padx=10, pady=5)
         name_placeholder = tk.Label(
-            name_box, text="Choose your name...", font=(DEFAULT_FONT, 10),
+            name_box, text=translate("Choose your name..."), font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
         )
         name_status_lbl = self.create_label(profile_details, "", 9, ORANGE_HL)
@@ -1054,19 +1055,19 @@ class PagesMixin:
             cleaned = " ".join(name_var.get().split()).strip()[:40]
             name_var.set(cleaned)
             if self.save_listener_name(self.current_user, cleaned):
-                name_heading_lbl.configure(text=cleaned or "BBC Sounds listener")
+                name_heading_lbl.configure(text=cleaned or translate("BBC Sounds listener"))
                 if cleaned:
-                    name_status_lbl.configure(text=f"Saved — Home will greet you as \"Good to have you back, {cleaned}!\"")
+                    name_status_lbl.configure(text=translate(f"Saved — Home will greet you as \"Good to have you back, {cleaned}!\""))
                 else:
-                    name_status_lbl.configure(text="Name cleared.")
+                    name_status_lbl.configure(text=translate("Name cleared."))
                 refresh_clear_btn()
                 update_name_placeholder()
 
         def on_clear_name():
             name_var.set("")
             if self.save_listener_name(self.current_user, ""):
-                name_heading_lbl.configure(text="BBC Sounds listener")
-                name_status_lbl.configure(text="Name cleared.")
+                name_heading_lbl.configure(text=translate("BBC Sounds listener"))
+                name_status_lbl.configure(text=translate("Name cleared."))
                 refresh_clear_btn()
                 update_name_placeholder()
 
@@ -1163,19 +1164,50 @@ class PagesMixin:
                 compact=True,
             ).pack(side="left", padx=(0 if theme_key == "dark" else 8, 0))
 
+        # Divider and Language selector row (English / Cymraeg) inside the Accessibility settings card.
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        lang_row = tk.Frame(access_card, bg=CARD_BG)
+        lang_row.pack(fill="x", padx=18, pady=16)
+
+        lang_labels = {
+            "en": "English  ·  Default",
+            "cy": "Cymraeg  ·  Welsh",
+        }
+        active_lang = getattr(self, "_language", "en")
+
+        lang_info = tk.Frame(lang_row, bg=CARD_BG)
+        lang_info.pack(side="left", fill="x", expand=True)
+        self.create_label(lang_info, "LANGUAGE", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        self.create_label(
+            lang_info, lang_labels.get(active_lang, "English  ·  Default"), 13, TEXT_WHITE, "bold",
+        ).pack(anchor="w", pady=(4, 0))
+
+        lang_controls = tk.Frame(lang_row, bg=CARD_BG)
+        lang_controls.pack(side="right")
+        for lang_key, lang_caption in (("en", "English"), ("cy", "Cymraeg (Welsh)")):
+            is_selected = active_lang == lang_key
+            self.create_button(
+                lang_controls,
+                lang_caption,
+                lambda code=lang_key: self.set_language(code),
+                primary=is_selected,
+                compact=True,
+            ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
+
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
             if pct == 100:
-                return "100%  ·  Default"
-            return f"{pct}%  ·  {'Larger' if pct > 100 else 'Smaller'}"
+                return translate("100%  ·  Default")
+            return translate(f"{pct}%  ·  {'Larger' if pct > 100 else 'Smaller'}")
 
         def refresh_accessibility_controls():
             scale_val = getattr(self, "_text_scale", 1.0)
             cur_theme = getattr(self, "_theme_name", "dark")
+            cur_lang = getattr(self, "_language", "en")
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark"
+            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en"
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
@@ -1272,10 +1304,10 @@ class PagesMixin:
                 0, 0, text="▸", fill=ORANGE_HL, font=q_font, anchor="nw",
             )
             q_id = qa_canvas.create_text(
-                0, 0, text=question_text, fill=TEXT_WHITE, font=q_font, anchor="nw", width=800,
+                0, 0, text=translate(question_text), fill=TEXT_WHITE, font=q_font, anchor="nw", width=800,
             )
             ans_id = qa_canvas.create_text(
-                0, 0, text=answer_text, fill=CARD_BG, font=a_font, anchor="nw", width=780,
+                0, 0, text=translate(answer_text), fill=CARD_BG, font=a_font, anchor="nw", width=780,
                 state="hidden",
             )
             qa_anim_items.append({
