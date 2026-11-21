@@ -4,6 +4,7 @@ from time import monotonic
 import tkinter as tk
 from tkinter import messagebox
 
+from gui_parts.i18n import translate
 from gui_parts.theme import (
     BANNER_BG,
     BORDER_LINE,
@@ -178,6 +179,70 @@ class PagesMixin:
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
+                normalized_q = " ".join(search_term.lower().split())
+                egg_specs = {
+                    "snake": (
+                        "BBC Sounds Snake",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.",
+                    ),
+                    "memory": (
+                        "BBC Sounds Card Match",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.",
+                    ),
+                    "flappy": (
+                        "BBC Sounds Flappy Bird",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.",
+                    ),
+                }
+                egg_key = (
+                    "snake" if normalized_q in ("snake game", "snake")
+                    else "memory" if normalized_q in ("match cards", "card match", "memory", "memory game", "matching cards")
+                    else "flappy" if normalized_q in ("flappy bird", "flappy", "flappy game")
+                    else None
+                )
+                if egg_key is not None:
+                    egg_title, desc_idle, desc_armed = egg_specs[egg_key]
+                    egg_card = self.create_card_frame(results_pane, bg=BANNER_BG)
+                    egg_card.pack(fill="x", pady=(10, 12))
+                    tk.Frame(egg_card, bg=ORANGE_ACCENT, width=4).pack(side="left", fill="y")
+                    egg_body = tk.Frame(egg_card, bg=BANNER_BG)
+                    egg_body.pack(side="left", fill="both", expand=True, padx=18, pady=16)
+                    self.create_label(egg_body, "SECRET EASTER EGG", 8, ORANGE_HL, "bold", bg=BANNER_BG).pack(anchor="w")
+                    self.create_label(
+                        egg_body, egg_title, 15, TEXT_WHITE, "bold", bg=BANNER_BG,
+                    ).pack(anchor="w", pady=(4, 6))
+                    already_armed = getattr(self, "_armed_easter_egg", None) == egg_key
+                    egg_desc = self.create_label(
+                        egg_body,
+                        desc_armed if already_armed else desc_idle,
+                        10, TEXT_LIGHT, bg=BANNER_BG, wraplength=620,
+                    )
+                    egg_desc.pack(anchor="w")
+
+                    def activate_egg(target_key=egg_key, armed_text=desc_armed):
+                        self._armed_easter_egg = target_key
+                        if egg_btn.winfo_exists():
+                            egg_btn.configure(text=translate("Easter egg activated ✓"), state="disabled")
+                            self.style_rounded_button(egg_btn, INPUT_BG, BORDER_LINE)
+                        if egg_desc.winfo_exists():
+                            egg_desc.configure(text=translate(armed_text))
+
+                    egg_btn = self.create_button(
+                        egg_card,
+                        "Easter egg activated ✓" if already_armed else "Activate easter egg",
+                        activate_egg,
+                        primary=not already_armed,
+                        compact=True,
+                    )
+                    if already_armed:
+                        egg_btn.configure(state="disabled")
+                    egg_btn.pack(side="right", padx=18, pady=16)
+                    last_search = search_term
+                    return
+
                 matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
@@ -332,15 +397,15 @@ class PagesMixin:
                     font=(DEFAULT_FONT, 14, "bold"), anchor="center",
                 )
                 title_item = card_canvas.create_text(
-                    0, 0, text=category_name.upper(), fill=card_title_fg,
+                    0, 0, text=translate(category_name.upper()), fill=card_title_fg,
                     font=(DEFAULT_FONT, 11, "bold"), anchor="w",
                 )
                 desc_item = card_canvas.create_text(
-                    0, 0, text=tile_description, fill=card_desc_fg,
+                    0, 0, text=translate(tile_description), fill=card_desc_fg,
                     font=(DEFAULT_FONT, 9), anchor="nw", justify="left", width=225,
                 )
                 act_item = card_canvas.create_text(
-                    0, 0, text="BROWSE PROGRAMMES  →", fill="#ffffff",
+                    0, 0, text=translate("BROWSE PROGRAMMES  →"), fill="#ffffff",
                     font=(DEFAULT_FONT, 8, "bold"), anchor="sw",
                 )
 
@@ -380,7 +445,7 @@ class PagesMixin:
                         state["cache"].clear()
 
                     step = state["step"]
-                    t = step / 12.0
+                    t = step / 6.0
                     eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
                     inset = max(0, min(3, round(3.0 - 2.0 * eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
@@ -435,7 +500,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(16, step_card)
+                            state["job"] = self.after(14, step_card)
 
                     step_card()
 
@@ -451,7 +516,7 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 12.0
+                    t = state["step"] / 6.0
                     start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 3)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
@@ -460,7 +525,7 @@ class PagesMixin:
                     )
 
                 card_canvas.bind("<Configure>", lambda _e, paint_fn=paint_gradient_card: paint_fn())
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(12))
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(6))
                 card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
                 card_canvas.bind("<Button-1>", open_genre)
                 card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -473,11 +538,14 @@ class PagesMixin:
 
     def expand_genre_in_tab(self, card, genre_name, genre_icon, genre_desc, start_col, apply_filter, heading_widget, page):
         """Expand a clicked genre tile within the Genres content area and scroll to its programmes."""
+        if self._is_busy_transitioning():
+            return
         canvas_pane, _window = self._page_transition_target
         area_frame = canvas_pane.master
         if getattr(area_frame, "_expanding_genre", False) or not area_frame.winfo_exists() or not card.winfo_exists():
             return
         area_frame._expanding_genre = True
+        self._transition_active = True
 
         start_x = card.winfo_rootx() - area_frame.winfo_rootx()
         start_y = card.winfo_rooty() - area_frame.winfo_rooty()
@@ -488,6 +556,7 @@ class PagesMixin:
 
         if target_w <= 1 or target_h <= 1:
             area_frame._expanding_genre = False
+            self._finish_transition()
             apply_filter()
             return
 
@@ -521,11 +590,15 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.370
+        expand_duration = 0.260
         expand_started = monotonic()
+        last_colors = [(start_col, overlay_title_fg, overlay_desc_fg, badge_bg, badge_fg)]
+        last_rect = [None]
 
         def start_reveal():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
+                area_frame._expanding_genre = False
+                self._finish_transition()
                 return
             apply_filter()
             if canvas_pane.winfo_exists() and heading_widget.winfo_exists() and page.winfo_exists():
@@ -538,33 +611,40 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.320
+            reveal_duration = 0.220
             reveal_started = None
+            last_y = [0]
 
             def draw_reveal():
                 nonlocal reveal_started
                 if not expander.winfo_exists() or not area_frame.winfo_exists():
+                    area_frame._expanding_genre = False
+                    self._finish_transition()
                     return
                 if reveal_started is None:
                     reveal_started = monotonic()
                 progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
                 eased = 1.0 - (1.0 - progress) ** 4
                 cur_y = round(-target_h * eased)
-                expander.place(x=0, y=cur_y, width=target_w, height=target_h)
-                tk.Misc.lift(expander)
+                if cur_y != last_y[0]:
+                    expander.place(x=0, y=cur_y, width=target_w, height=target_h)
+                    last_y[0] = cur_y
                 if progress < 1.0:
-                    self.after(8, draw_reveal)
+                    self.after(16, draw_reveal)
                 else:
                     expander.destroy()
                     area_frame._expanding_genre = False
+                    self._finish_transition()
 
-            self.after(8, draw_reveal)
+            self.after(16, draw_reveal)
 
         def draw_expand():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
+                area_frame._expanding_genre = False
+                self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
             cur_x = max(0, round(start_x * (1.0 - eased)))
             cur_y = max(0, round(start_y * (1.0 - eased)))
             cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
@@ -584,14 +664,19 @@ class PagesMixin:
                 cur_ico_bg = badge_bg
                 cur_ico_fg = badge_fg
 
-            expander.configure(bg=cur_bg)
-            preview_box.configure(bg=cur_bg)
-            title_lbl.configure(bg=cur_bg, fg=cur_title_fg)
-            desc_lbl.configure(bg=cur_bg, fg=cur_desc_fg)
-            icon_badge.configure(bg=cur_ico_bg, fg=cur_ico_fg)
+            colors = (cur_bg, cur_title_fg, cur_desc_fg, cur_ico_bg, cur_ico_fg)
+            if colors != last_colors[0]:
+                expander.configure(bg=cur_bg)
+                preview_box.configure(bg=cur_bg)
+                title_lbl.configure(bg=cur_bg, fg=cur_title_fg)
+                desc_lbl.configure(bg=cur_bg, fg=cur_desc_fg)
+                icon_badge.configure(bg=cur_ico_bg, fg=cur_ico_fg)
+                last_colors[0] = colors
 
-            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            tk.Misc.lift(expander)
+            rect = (cur_x, cur_y, cur_w, cur_h)
+            if rect != last_rect[0]:
+                expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+                last_rect[0] = rect
 
             if progress < 1.0:
                 self.after(8, draw_expand)
@@ -820,21 +905,29 @@ class PagesMixin:
             rendered_cards.append(card)
             details_pane = tk.Frame(card, bg=CARD_BG)
             details_pane.pack(fill="both", expand=True, padx=13, pady=12)
-            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8)).pack(anchor="w")
-            self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
-            self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR).pack(anchor="w", pady=(3, 6))
-            self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
-            self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG).pack(
-                anchor="w", pady=(5, 10)
-            )
+            title_lbl = self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8))
+            title_lbl.pack(anchor="w")
+            cat_lbl = self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY)
+            cat_lbl.pack(anchor="w", pady=(4, 0))
+            avg_lbl = self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR)
+            avg_lbl.pack(anchor="w", pady=(3, 6))
+            yr_lbl = self.create_label(details_pane, "Your rating", 9, TEXT_GRAY)
+            yr_lbl.pack(anchor="w")
+            star_bar = self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG)
+            star_bar.pack(anchor="w", pady=(5, 10))
             button_row = tk.Frame(details_pane, bg=CARD_BG)
             button_row.pack(fill="x")
-            self.create_button(
+            change_btn = self.create_button(
                 button_row, "Change rating", lambda target_id=row[0]: self.rate_programme(target_id, self.show_ratings), compact=True
-            ).pack(side="left")
-            self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
-                side="right"
             )
+            change_btn.pack(side="left")
+            remove_btn = self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True)
+            remove_btn.pack(side="right")
+            bg_widgets = [
+                cover_box, details_pane, title_lbl, cat_lbl, avg_lbl, yr_lbl,
+                star_bar, *star_bar.winfo_children(), button_row, change_btn, remove_btn,
+            ]
+            self._attach_podcast_card_hover(card, bg_widgets, title_lbl)
             reflow_ratings()
         self.render_in_batches(rating_rows, render_rating_card)
 
@@ -1006,7 +1099,7 @@ class PagesMixin:
         )
         name_entry.pack(fill="both", expand=True, padx=10, pady=5)
         name_placeholder = tk.Label(
-            name_box, text="Choose your name...", font=(DEFAULT_FONT, 10),
+            name_box, text=translate("Choose your name..."), font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
         )
         name_status_lbl = self.create_label(profile_details, "", 9, ORANGE_HL)
@@ -1026,19 +1119,19 @@ class PagesMixin:
             cleaned = " ".join(name_var.get().split()).strip()[:40]
             name_var.set(cleaned)
             if self.save_listener_name(self.current_user, cleaned):
-                name_heading_lbl.configure(text=cleaned or "BBC Sounds listener")
+                name_heading_lbl.configure(text=cleaned or translate("BBC Sounds listener"))
                 if cleaned:
-                    name_status_lbl.configure(text=f"Saved — Home will greet you as \"Good to have you back, {cleaned}!\"")
+                    name_status_lbl.configure(text=translate(f"Saved — Home will greet you as \"Good to have you back, {cleaned}!\""))
                 else:
-                    name_status_lbl.configure(text="Name cleared.")
+                    name_status_lbl.configure(text=translate("Name cleared."))
                 refresh_clear_btn()
                 update_name_placeholder()
 
         def on_clear_name():
             name_var.set("")
             if self.save_listener_name(self.current_user, ""):
-                name_heading_lbl.configure(text="BBC Sounds listener")
-                name_status_lbl.configure(text="Name cleared.")
+                name_heading_lbl.configure(text=translate("BBC Sounds listener"))
+                name_status_lbl.configure(text=translate("Name cleared."))
                 refresh_clear_btn()
                 update_name_placeholder()
 
@@ -1135,19 +1228,50 @@ class PagesMixin:
                 compact=True,
             ).pack(side="left", padx=(0 if theme_key == "dark" else 8, 0))
 
+        # Divider and Language selector row (English / Cymraeg) inside the Accessibility settings card.
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        lang_row = tk.Frame(access_card, bg=CARD_BG)
+        lang_row.pack(fill="x", padx=18, pady=16)
+
+        lang_labels = {
+            "en": "English  ·  Default",
+            "cy": "Cymraeg  ·  Welsh",
+        }
+        active_lang = getattr(self, "_language", "en")
+
+        lang_info = tk.Frame(lang_row, bg=CARD_BG)
+        lang_info.pack(side="left", fill="x", expand=True)
+        self.create_label(lang_info, "LANGUAGE", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        self.create_label(
+            lang_info, lang_labels.get(active_lang, "English  ·  Default"), 13, TEXT_WHITE, "bold",
+        ).pack(anchor="w", pady=(4, 0))
+
+        lang_controls = tk.Frame(lang_row, bg=CARD_BG)
+        lang_controls.pack(side="right")
+        for lang_key, lang_caption in (("en", "English"), ("cy", "Cymraeg (Welsh)")):
+            is_selected = active_lang == lang_key
+            self.create_button(
+                lang_controls,
+                lang_caption,
+                lambda code=lang_key: self.set_language(code),
+                primary=is_selected,
+                compact=True,
+            ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
+
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
             if pct == 100:
-                return "100%  ·  Default"
-            return f"{pct}%  ·  {'Larger' if pct > 100 else 'Smaller'}"
+                return translate("100%  ·  Default")
+            return translate(f"{pct}%  ·  {'Larger' if pct > 100 else 'Smaller'}")
 
         def refresh_accessibility_controls():
             scale_val = getattr(self, "_text_scale", 1.0)
             cur_theme = getattr(self, "_theme_name", "dark")
+            cur_lang = getattr(self, "_language", "en")
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark"
+            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en"
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
@@ -1244,10 +1368,10 @@ class PagesMixin:
                 0, 0, text="▸", fill=ORANGE_HL, font=q_font, anchor="nw",
             )
             q_id = qa_canvas.create_text(
-                0, 0, text=question_text, fill=TEXT_WHITE, font=q_font, anchor="nw", width=800,
+                0, 0, text=translate(question_text), fill=TEXT_WHITE, font=q_font, anchor="nw", width=800,
             )
             ans_id = qa_canvas.create_text(
-                0, 0, text=answer_text, fill=CARD_BG, font=a_font, anchor="nw", width=780,
+                0, 0, text=translate(answer_text), fill=CARD_BG, font=a_font, anchor="nw", width=780,
                 state="hidden",
             )
             qa_anim_items.append({

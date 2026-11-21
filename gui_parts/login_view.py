@@ -35,8 +35,18 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
-        # Reset the login screen visually to default dark theme and 100% text size without changing DB rows.
+        self._armed_easter_egg = None
+        for attr in ("_snake_window", "_memory_window", "_flappy_window"):
+            egg_win = getattr(self, attr, None)
+            if egg_win is not None and egg_win.winfo_exists():
+                try:
+                    egg_win.destroy()
+                except tk.TclError:
+                    pass
+            setattr(self, attr, None)
+        # Reset the login screen visually to default dark theme, English, and 100% text size without changing DB rows.
         self._text_scale = 1.0
+        self.set_language("en", refresh=False, persist=False)
         self.set_theme("dark", refresh=False, persist=False)
         self._shell_box = None
         self._shell_bottom_bar = None
@@ -529,7 +539,7 @@ class LoginViewMixin:
 
     def sign_out_to_login(self):
         """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
-        if getattr(self, "_signing_out", False):
+        if getattr(self, "_signing_out", False) or getattr(self, "_transition_active", False):
             return
         self._signing_out = True
         self.focus_set()
@@ -861,11 +871,11 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(10, draw_frame)
+                self.after(16, draw_frame)
             else:
                 finish()
 
-        self.after(10, draw_frame)
+        self.after(16, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
@@ -1086,7 +1096,7 @@ class LoginViewMixin:
             except tk.TclError:
                 return
 
-            canvas_obj._spin_job = self.after(14, animate_spin)
+            canvas_obj._spin_job = self.after(16, animate_spin)
 
         canvas_obj._resume_spin = animate_spin
         if not getattr(self, "_signing_out", False):

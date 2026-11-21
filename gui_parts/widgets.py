@@ -10,6 +10,7 @@ from tkinter import font as tkfont
 import unicodedata
 import xml.etree.ElementTree as ET
 
+from gui_parts.i18n import translate
 from gui_parts.theme import (
     BORDER_LINE,
     CANVA_DIR,
@@ -102,7 +103,7 @@ class WidgetsMixin:
             text_color = TEXT_WHITE
         return tk.Label(
             container,
-            text=text_val,
+            text=translate(text_val),
             font=(DEFAULT_FONT, text_size, font_weight),
             fg=text_color,
             bg=kwargs.pop("bg", container.cget("bg")),
@@ -120,7 +121,7 @@ class WidgetsMixin:
         background = container.cget("bg")
         button = tk.Button(
             container,
-            text=text_val,
+            text=translate(text_val),
             command=command_func,
             font=font_spec, compound="center",
             bg=background, fg=foreground,
@@ -287,18 +288,22 @@ class WidgetsMixin:
             bd=0,
             highlightthickness=0,
         )
+        tile_items = []
         for idx, char in enumerate("BBC"):
             x0 = idx * (tile + gap)
             x1 = x0 + tile
-            logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="")
-            logo_canvas.create_text(
+            tag = f"bbc_tile_{idx}"
+            rect_id = logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="", tags=tag)
+            text_id = logo_canvas.create_text(
                 (x0 + x1) / 2,
                 center_y,
                 text=char,
                 fill=LOGO_TILE_FG,
                 font=tile_font,
                 anchor="center",
+                tags=tag,
             )
+            tile_items.append((rect_id, text_id))
         logo_canvas.create_text(
             tiles_w + word_gap,
             center_y,
@@ -307,6 +312,79 @@ class WidgetsMixin:
             font=sounds_font,
             anchor="w",
         )
+
+        # Easter egg: once activated via the "snake game" search button, clicking all 3 letters of
+        # "BBC" (each stays highlighted for 2 seconds) launches the hidden Snake mini-game.
+        egg_state = {"clicked": set(), "tile_jobs": [None, None, None], "reset_job": None}
+
+        def cancel_egg_timers(_event=None):
+            if egg_state["reset_job"] is not None:
+                try:
+                    self.after_cancel(egg_state["reset_job"])
+                except tk.TclError:
+                    pass
+                egg_state["reset_job"] = None
+            for idx_j in range(3):
+                jid = egg_state["tile_jobs"][idx_j]
+                if jid is not None:
+                    try:
+                        self.after_cancel(jid)
+                    except tk.TclError:
+                        pass
+                    egg_state["tile_jobs"][idx_j] = None
+
+        def reset_single_tile(tile_idx):
+            egg_state["tile_jobs"][tile_idx] = None
+            egg_state["clicked"].discard(tile_idx)
+            if not logo_canvas.winfo_exists():
+                return
+            rect_id, text_id = tile_items[tile_idx]
+            logo_canvas.itemconfigure(rect_id, fill=LOGO_TILE_BG)
+            logo_canvas.itemconfigure(text_id, fill=LOGO_TILE_FG)
+
+        def reset_bbc_tiles():
+            cancel_egg_timers()
+            egg_state["clicked"].clear()
+            if not logo_canvas.winfo_exists():
+                return
+            for rect_id, text_id in tile_items:
+                logo_canvas.itemconfigure(rect_id, fill=LOGO_TILE_BG)
+                logo_canvas.itemconfigure(text_id, fill=LOGO_TILE_FG)
+
+        def on_bbc_tile_click(tile_idx):
+            armed = getattr(self, "_armed_easter_egg", None)
+            if armed not in ("snake", "memory", "flappy"):
+                return
+            prev_job = egg_state["tile_jobs"][tile_idx]
+            if prev_job is not None:
+                try:
+                    self.after_cancel(prev_job)
+                except tk.TclError:
+                    pass
+                egg_state["tile_jobs"][tile_idx] = None
+            egg_state["clicked"].add(tile_idx)
+            rect_id, text_id = tile_items[tile_idx]
+            logo_canvas.itemconfigure(rect_id, fill=ORANGE_ACCENT)
+            logo_canvas.itemconfigure(text_id, fill=PRIMARY_BTN_FG)
+            if len(egg_state["clicked"]) == 3:
+                cancel_egg_timers()
+                egg_state["reset_job"] = self.after(180, reset_bbc_tiles)
+                if armed == "snake":
+                    from gui_parts.snake_game import open_snake_game
+                    open_snake_game(self)
+                elif armed == "memory":
+                    from gui_parts.memory_game import open_memory_game
+                    open_memory_game(self)
+                elif armed == "flappy":
+                    from gui_parts.flappy_game import open_flappy_game
+                    open_flappy_game(self)
+            else:
+                egg_state["tile_jobs"][tile_idx] = self.after(2000, lambda i=tile_idx: reset_single_tile(i))
+
+        for idx in range(3):
+            logo_canvas.tag_bind(f"bbc_tile_{idx}", "<Button-1>", lambda _e, i=idx: on_bbc_tile_click(i))
+
+        logo_canvas.bind("<Destroy>", cancel_egg_timers, add="+")
         return logo_canvas
 
     def render_section_title(self, container, heading, description=None, button_label=None, action_func=None):
@@ -952,6 +1030,134 @@ class WidgetsMixin:
         )
         return tile_box
 
+    def _attach_podcast_card_hover(self, card_frame, bg_widgets, title_label, *, base_bg=None):
+        """Animate a card's highlight colour and outward growth on hover without grid reflow."""
+        rest_bg = base_bg or CARD_BG
+        is_light = getattr(self, "_theme_name", "dark") == "light"
+        hover_bg = (
+            blend_colour(rest_bg, ORANGE_ACCENT, 0.07)
+            if is_light else blend_colour(rest_bg, "#ffffff", 0.06)
+        )
+        base_inset = 3
+        card_frame.set_inset(base_inset)
+        hover_state = {
+            "step": 0,
+            "target": 0,
+            "job": None,
+            "leave_job": None,
+            "last_bg": rest_bg,
+            "last_bd": BORDER_LINE,
+            "last_inset": base_inset,
+            "last_title": TEXT_WHITE,
+        }
+
+        def cancel_jobs(_event=None):
+            for key in ("job", "leave_job"):
+                jid = hover_state[key]
+                if jid is not None:
+                    try:
+                        self.after_cancel(jid)
+                    except tk.TclError:
+                        pass
+                    hover_state[key] = None
+
+        def is_pointer_inside():
+            if not card_frame.winfo_exists():
+                return False
+            try:
+                px, py = card_frame.winfo_pointerxy()
+                w = card_frame.winfo_containing(px, py)
+            except tk.TclError:
+                return False
+            while w is not None:
+                if w is card_frame:
+                    return True
+                w = getattr(w, "master", None)
+            return False
+
+        def apply_frame():
+            hover_state["job"] = None
+            if not card_frame.winfo_exists():
+                return
+            cur = hover_state["step"]
+            tgt = hover_state["target"]
+            if cur == tgt:
+                return
+            cur += 1 if tgt > cur else -1
+            hover_state["step"] = cur
+
+            t = cur / 6.0
+            eased = 1.0 - (1.0 - t) ** 3 if tgt > 0 else t * t * (3.0 - 2.0 * t)
+            inset = max(0, min(base_inset, round(base_inset * (1.0 - eased))))
+            cur_bg = blend_colour(rest_bg, hover_bg, eased)
+            cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, eased)
+            cur_title = blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.55)
+
+            if inset != hover_state["last_inset"]:
+                card_frame.set_inset(inset)
+                hover_state["last_inset"] = inset
+            if cur_bg != hover_state["last_bg"] or cur_bd != hover_state["last_bd"]:
+                card_frame.set_surface(cur_bg, cur_bd)
+                if cur_bg != hover_state["last_bg"]:
+                    for widget in bg_widgets:
+                        if not widget.winfo_exists():
+                            continue
+                        try:
+                            if isinstance(widget, tk.Button):
+                                widget.configure(bg=cur_bg, activebackground=cur_bg, highlightbackground=cur_bg)
+                            elif getattr(widget, "_sync_highlight_bg", False):
+                                widget.configure(bg=cur_bg, highlightbackground=cur_bg)
+                            else:
+                                widget.configure(bg=cur_bg)
+                        except tk.TclError:
+                            pass
+                hover_state["last_bg"] = cur_bg
+                hover_state["last_bd"] = cur_bd
+            if title_label is not None and title_label.winfo_exists() and cur_title != hover_state["last_title"]:
+                title_label.configure(fg=cur_title)
+                hover_state["last_title"] = cur_title
+
+            if cur != tgt:
+                hover_state["job"] = self.after(16, apply_frame)
+
+        def set_hover_target(target):
+            hover_state["target"] = target
+            if hover_state["job"] is None and hover_state["step"] != target:
+                apply_frame()
+
+        def on_enter(_event=None):
+            if hover_state["leave_job"] is not None:
+                try:
+                    self.after_cancel(hover_state["leave_job"])
+                except tk.TclError:
+                    pass
+                hover_state["leave_job"] = None
+            set_hover_target(6)
+
+        def on_leave(_event=None):
+            if hover_state["leave_job"] is not None:
+                try:
+                    self.after_cancel(hover_state["leave_job"])
+                except tk.TclError:
+                    pass
+            def check_and_leave():
+                hover_state["leave_job"] = None
+                if not is_pointer_inside():
+                    set_hover_target(0)
+            hover_state["leave_job"] = self.after(18, check_and_leave)
+
+        # Bind enter/leave across the card and all descendants so moving over child widgets never flickers.
+        bound = [card_frame, card_frame.backdrop]
+        stack = list(card_frame.winfo_children())
+        while stack:
+            child = stack.pop()
+            bound.append(child)
+            stack.extend(child.winfo_children())
+        for widget in bound:
+            widget.bind("<Enter>", on_enter, add="+")
+            widget.bind("<Leave>", on_leave, add="+")
+        card_frame.bind("<Destroy>", cancel_jobs, add="+")
+
     def render_podcast_card(
         self, parent_widget, podcast_data, compact=False,
         show_play_btn=False, show_remove_btn=False, rating_value=None,
@@ -971,22 +1177,29 @@ class WidgetsMixin:
             cover.bind("<Button-1>", lambda _e, tid=pid, t=title, c=category: self.open_podcast_detail(tid, t, c))
             details_pane = tk.Frame(card_frame, bg=CARD_BG)
             details_pane.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=12)
-            self.create_label(details_pane, title, 12, TEXT_WHITE, "bold").pack(anchor="w")
-            self.create_label(details_pane, meta_info, 10, TEXT_GRAY).pack(anchor="w", pady=(5, 0))
-            self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w")
-            self.create_button(
+            title_lbl = self.create_label(details_pane, title, 12, TEXT_WHITE, "bold")
+            title_lbl.pack(anchor="w")
+            meta_lbl = self.create_label(details_pane, meta_info, 10, TEXT_GRAY)
+            meta_lbl.pack(anchor="w", pady=(5, 0))
+            avg_lbl = self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR)
+            avg_lbl.pack(anchor="w")
+            bg_widgets = [details_pane, title_lbl, meta_lbl, avg_lbl]
+            view_btn = self.create_button(
                 details_pane, "View details",
                 lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
                 compact=True,
-            ).pack(anchor="w", pady=(9, 0))
+            )
+            view_btn.pack(anchor="w", pady=(9, 0))
+            bg_widgets.append(view_btn)
             if show_play_btn:
-                self.create_button(card_frame, "▶  Listen", lambda target_id=pid: self.listen(target_id), primary=True, compact=True).pack(
-                    side="right", padx=12
-                )
+                play_btn = self.create_button(card_frame, "▶  Listen", lambda target_id=pid: self.listen(target_id), primary=True, compact=True)
+                play_btn.pack(side="right", padx=12)
+                bg_widgets.append(play_btn)
             if show_remove_btn:
-                self.create_button(card_frame, "Remove", lambda target_id=pid: self.remove_from_history(target_id), compact=True).pack(
-                    side="right", padx=(0, 3)
-                )
+                rem_btn = self.create_button(card_frame, "Remove", lambda target_id=pid: self.remove_from_history(target_id), compact=True)
+                rem_btn.pack(side="right", padx=(0, 3))
+                bg_widgets.append(rem_btn)
+            self._attach_podcast_card_hover(card_frame, bg_widgets, title_lbl)
             return card_frame
 
         cover_box = tk.Frame(card_frame, bg=CARD_BG, height=cover_size, cursor="hand2")
@@ -1004,27 +1217,40 @@ class WidgetsMixin:
 
         details_pane = tk.Frame(card_frame, bg=CARD_BG)
         details_pane.pack(fill="both", expand=True, padx=12, pady=11)
-        self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=max(170, cover_size - 8)).pack(anchor="w")
-        self.create_label(details_pane, meta_info, 9, TEXT_GRAY).pack(anchor="w", pady=(4, 3))
-        self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR).pack(anchor="w", pady=(0, 9))
+        title_lbl = self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=max(170, cover_size - 8))
+        title_lbl.pack(anchor="w")
+        meta_lbl = self.create_label(details_pane, meta_info, 9, TEXT_GRAY)
+        meta_lbl.pack(anchor="w", pady=(4, 3))
+        avg_lbl = self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR)
+        avg_lbl.pack(anchor="w", pady=(0, 9))
+        bg_widgets = [cover_box, details_pane, title_lbl, meta_lbl, avg_lbl]
         if rating_value is not None:
-            self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
-            self.create_star_rating_bar(details_pane, rating_value, star_size=14, background_col=CARD_BG).pack(
-                anchor="w", pady=(0, 9)
-            )
+            yr_lbl = self.create_label(details_pane, "Your rating", 9, TEXT_GRAY)
+            yr_lbl.pack(anchor="w")
+            star_bar = self.create_star_rating_bar(details_pane, rating_value, star_size=14, background_col=CARD_BG)
+            star_bar.pack(anchor="w", pady=(0, 9))
+            bg_widgets.extend([yr_lbl, star_bar, *star_bar.winfo_children()])
         button_strip = tk.Frame(details_pane, bg=CARD_BG)
         button_strip.pack(fill="x", side="bottom")
-        self.create_button(
+        bg_widgets.append(button_strip)
+        det_btn = self.create_button(
             button_strip, "Details",
             lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
             compact=True,
-        ).pack(side="left")
+        )
+        det_btn.pack(side="left")
+        bg_widgets.append(det_btn)
         if show_remove_btn:
-            self.create_button(
+            rem_btn = self.create_button(
                 button_strip, "Remove", lambda target_id=pid: self.remove_from_history(target_id), compact=True
-            ).pack(side="left", padx=(6, 0))
+            )
+            rem_btn.pack(side="left", padx=(6, 0))
+            bg_widgets.append(rem_btn)
         if show_play_btn:
-            self.create_button(button_strip, "▶", lambda target_id=pid: self.listen(target_id), primary=True, compact=True).pack(side="right")
+            play_btn = self.create_button(button_strip, "▶", lambda target_id=pid: self.listen(target_id), primary=True, compact=True)
+            play_btn.pack(side="right")
+            bg_widgets.append(play_btn)
+        self._attach_podcast_card_hover(card_frame, bg_widgets, title_lbl)
         return card_frame
 
     def render_podcast_grid(
@@ -1247,7 +1473,11 @@ class WidgetsMixin:
             except StopIteration:
                 self._render_queue.pop(0)
                 continue
-            render_item(item)
+            try:
+                render_item(item)
+            except tk.TclError:
+                self._render_queue.pop(0)
+                continue
             rendered_count += 1
             if monotonic() >= deadline:
                 break
@@ -1259,6 +1489,9 @@ class WidgetsMixin:
     def cancel_pending_render(self):
         """Cancel any scheduled batched rendering work when leaving a page."""
         if self._pending_render_id is not None:
-            self.after_cancel(self._pending_render_id)
+            try:
+                self.after_cancel(self._pending_render_id)
+            except tk.TclError:
+                pass
             self._pending_render_id = None
         self._render_queue.clear()

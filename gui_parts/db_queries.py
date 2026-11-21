@@ -258,8 +258,47 @@ class DatabaseMixin:
             "CREATE TABLE IF NOT EXISTS user_accessibility ("
             "ListenerID PRIMARY KEY NOT NULL, "
             "TextScale REAL NOT NULL DEFAULT 1.0, "
-            "Theme TEXT NOT NULL DEFAULT 'dark')"
+            "Theme TEXT NOT NULL DEFAULT 'dark', "
+            "Language TEXT NOT NULL DEFAULT 'en')"
         )
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(user_accessibility)").fetchall()}
+        if "language" not in cols:
+            conn.execute("ALTER TABLE user_accessibility ADD COLUMN Language TEXT NOT NULL DEFAULT 'en'")
+
+    def load_user_language(self, listener_id):
+        """Load the listener's saved UI language ('en' or 'cy'), defaulting to 'en'."""
+        if listener_id is None:
+            return "en"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                row = conn.execute(
+                    "SELECT Language FROM user_accessibility WHERE ListenerID = ?",
+                    (listener_id,),
+                ).fetchone()
+            if not row or not row[0]:
+                return "en"
+            lang = str(row[0]).strip().lower()
+            return "cy" if lang == "cy" else "en"
+        except sqlite3.Error:
+            return "en"
+
+    def save_user_language(self, listener_id, lang_code):
+        """Persist a listener's UI language ('en' or 'cy') in database.db."""
+        if listener_id is None:
+            return
+        lang = "cy" if str(lang_code or "").strip().lower() == "cy" else "en"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                conn.execute(
+                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(ListenerID) DO UPDATE SET Language = excluded.Language",
+                    (listener_id, getattr(self, "_text_scale", 1.0), getattr(self, "_theme_name", "dark"), lang),
+                )
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save language setting", err)
 
     def load_user_accessibility(self, listener_id):
         """Load (text_scale, theme_name) for a listener from SQLite, defaulting to (1.0, 'dark')."""

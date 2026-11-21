@@ -50,6 +50,7 @@ class BBCSoundsGUI(
         self._ui_scale_factor = 1.0
         self._text_scale = 1.0
         self._theme_name = "dark"
+        self._language = "en"
         self._resize_after_id = None
 
         self.current_user = None
@@ -78,6 +79,7 @@ class BBCSoundsGUI(
         self._scroll_priority_until = 0.0
         self._active_detail_podcast = None
         self._bottom_bar_info = None
+        self._armed_easter_egg = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
