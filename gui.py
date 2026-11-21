@@ -79,6 +79,7 @@ class BBCSoundsGUI(
         self._scroll_priority_until = 0.0
         self._active_detail_podcast = None
         self._bottom_bar_info = None
+        self._armed_easter_egg = None
 
         self.bind("<Configure>", self.schedule_interface_scaling)
         self.protocol("WM_DELETE_WINDOW", self._on_close)

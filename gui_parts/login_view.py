@@ -35,6 +35,15 @@ class LoginViewMixin:
         self._live_search_callback = None
         self.unbind_all("<MouseWheel>")
         self.current_user = None
+        self._armed_easter_egg = None
+        for attr in ("_snake_window", "_memory_window", "_flappy_window"):
+            egg_win = getattr(self, attr, None)
+            if egg_win is not None and egg_win.winfo_exists():
+                try:
+                    egg_win.destroy()
+                except tk.TclError:
+                    pass
+            setattr(self, attr, None)
         # Reset the login screen visually to default dark theme, English, and 100% text size without changing DB rows.
         self._text_scale = 1.0
         self.set_language("en", refresh=False, persist=False)

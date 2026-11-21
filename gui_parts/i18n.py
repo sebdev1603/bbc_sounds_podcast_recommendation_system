@@ -203,6 +203,18 @@ TRANSLATIONS_CY = {
     "You can't rate this programme until you've listened to it.": "Ni allwch raddio'r rhaglen hon nes i chi wrando arni.",
     "Save preferences": "Cadw dewisiadau",
     "Back to Home": "Yn ôl i'r Hafan",
+    "SECRET EASTER EGG": "WY PASG CYFRINACHOL",
+    "BBC Sounds Snake": "Neidr BBC Sounds",
+    "BBC Sounds Card Match": "Cyfateb Cardiau BBC Sounds",
+    "BBC Sounds Flappy Bird": "Flappy Bird BBC Sounds",
+    "Activate easter egg": "Gweithredu wy pasg",
+    "Easter egg activated ✓": "Wy pasg wedi'i weithredu ✓",
+    'Activate the easter egg, then click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.': 'Gweithredwch yr wy pasg, yna cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Neidr.',
+    'Activated! Click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.': 'Wedi\'i weithredu! Cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Neidr.',
+    'Activate the easter egg, then click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.': 'Gweithredwch yr wy pasg, yna cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Cyfateb Cardiau.',
+    'Activated! Click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.': 'Wedi\'i weithredu! Cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Cyfateb Cardiau.',
+    'Activate the easter egg, then click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.': 'Gweithredwch yr wy pasg, yna cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Flappy Bird.',
+    'Activated! Click all three letters of "BBC" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.': 'Wedi\'i weithredu! Cliciwch bob un o dair llythyren "BBC" (B, B, a C) yn y logo ar frig chwith y ffenestr o fewn 2 eiliad i agor Flappy Bird.',
 }
 
 _RE_GREETING = re.compile(r"^Good to have you back, (.+)!$")

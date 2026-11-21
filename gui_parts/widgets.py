@@ -313,7 +313,8 @@ class WidgetsMixin:
             anchor="w",
         )
 
-        # Easter egg: clicking all 3 letters of "BBC" launches the hidden Snake mini-game.
+        # Easter egg: once activated via the "snake game" search button, clicking all 3 letters of
+        # "BBC" (each stays highlighted for 2 seconds) launches the hidden Snake mini-game.
         egg_state = {"clicked": set(), "tile_jobs": [None, None, None], "reset_job": None}
 
         def cancel_egg_timers(_event=None):
@@ -351,6 +352,9 @@ class WidgetsMixin:
                 logo_canvas.itemconfigure(text_id, fill=LOGO_TILE_FG)
 
         def on_bbc_tile_click(tile_idx):
+            armed = getattr(self, "_armed_easter_egg", None)
+            if armed not in ("snake", "memory", "flappy"):
+                return
             prev_job = egg_state["tile_jobs"][tile_idx]
             if prev_job is not None:
                 try:
@@ -365,8 +369,15 @@ class WidgetsMixin:
             if len(egg_state["clicked"]) == 3:
                 cancel_egg_timers()
                 egg_state["reset_job"] = self.after(180, reset_bbc_tiles)
-                from gui_parts.snake_game import open_snake_game
-                open_snake_game(self)
+                if armed == "snake":
+                    from gui_parts.snake_game import open_snake_game
+                    open_snake_game(self)
+                elif armed == "memory":
+                    from gui_parts.memory_game import open_memory_game
+                    open_memory_game(self)
+                elif armed == "flappy":
+                    from gui_parts.flappy_game import open_flappy_game
+                    open_flappy_game(self)
             else:
                 egg_state["tile_jobs"][tile_idx] = self.after(2000, lambda i=tile_idx: reset_single_tile(i))
 

@@ -179,6 +179,70 @@ class PagesMixin:
             for child in results_pane.winfo_children():
                 child.destroy()
             try:
+                normalized_q = " ".join(search_term.lower().split())
+                egg_specs = {
+                    "snake": (
+                        "BBC Sounds Snake",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Snake.",
+                    ),
+                    "memory": (
+                        "BBC Sounds Card Match",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Card Match.",
+                    ),
+                    "flappy": (
+                        "BBC Sounds Flappy Bird",
+                        "Activate the easter egg, then click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.",
+                        "Activated! Click all three letters of \"BBC\" (B, B, and C) in the top-left logo within 2 seconds to launch Flappy Bird.",
+                    ),
+                }
+                egg_key = (
+                    "snake" if normalized_q in ("snake game", "snake")
+                    else "memory" if normalized_q in ("match cards", "card match", "memory", "memory game", "matching cards")
+                    else "flappy" if normalized_q in ("flappy bird", "flappy", "flappy game")
+                    else None
+                )
+                if egg_key is not None:
+                    egg_title, desc_idle, desc_armed = egg_specs[egg_key]
+                    egg_card = self.create_card_frame(results_pane, bg=BANNER_BG)
+                    egg_card.pack(fill="x", pady=(10, 12))
+                    tk.Frame(egg_card, bg=ORANGE_ACCENT, width=4).pack(side="left", fill="y")
+                    egg_body = tk.Frame(egg_card, bg=BANNER_BG)
+                    egg_body.pack(side="left", fill="both", expand=True, padx=18, pady=16)
+                    self.create_label(egg_body, "SECRET EASTER EGG", 8, ORANGE_HL, "bold", bg=BANNER_BG).pack(anchor="w")
+                    self.create_label(
+                        egg_body, egg_title, 15, TEXT_WHITE, "bold", bg=BANNER_BG,
+                    ).pack(anchor="w", pady=(4, 6))
+                    already_armed = getattr(self, "_armed_easter_egg", None) == egg_key
+                    egg_desc = self.create_label(
+                        egg_body,
+                        desc_armed if already_armed else desc_idle,
+                        10, TEXT_LIGHT, bg=BANNER_BG, wraplength=620,
+                    )
+                    egg_desc.pack(anchor="w")
+
+                    def activate_egg(target_key=egg_key, armed_text=desc_armed):
+                        self._armed_easter_egg = target_key
+                        if egg_btn.winfo_exists():
+                            egg_btn.configure(text=translate("Easter egg activated ✓"), state="disabled")
+                            self.style_rounded_button(egg_btn, INPUT_BG, BORDER_LINE)
+                        if egg_desc.winfo_exists():
+                            egg_desc.configure(text=translate(armed_text))
+
+                    egg_btn = self.create_button(
+                        egg_card,
+                        "Easter egg activated ✓" if already_armed else "Activate easter egg",
+                        activate_egg,
+                        primary=not already_armed,
+                        compact=True,
+                    )
+                    if already_armed:
+                        egg_btn.configure(state="disabled")
+                    egg_btn.pack(side="right", padx=18, pady=16)
+                    last_search = search_term
+                    return
+
                 matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
