@@ -288,18 +288,22 @@ class WidgetsMixin:
             bd=0,
             highlightthickness=0,
         )
+        tile_items = []
         for idx, char in enumerate("BBC"):
             x0 = idx * (tile + gap)
             x1 = x0 + tile
-            logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="")
-            logo_canvas.create_text(
+            tag = f"bbc_tile_{idx}"
+            rect_id = logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="", tags=tag)
+            text_id = logo_canvas.create_text(
                 (x0 + x1) / 2,
                 center_y,
                 text=char,
                 fill=LOGO_TILE_FG,
                 font=tile_font,
                 anchor="center",
+                tags=tag,
             )
+            tile_items.append((rect_id, text_id))
         logo_canvas.create_text(
             tiles_w + word_gap,
             center_y,
@@ -308,6 +312,68 @@ class WidgetsMixin:
             font=sounds_font,
             anchor="w",
         )
+
+        # Easter egg: clicking all 3 letters of "BBC" launches the hidden Snake mini-game.
+        egg_state = {"clicked": set(), "tile_jobs": [None, None, None], "reset_job": None}
+
+        def cancel_egg_timers(_event=None):
+            if egg_state["reset_job"] is not None:
+                try:
+                    self.after_cancel(egg_state["reset_job"])
+                except tk.TclError:
+                    pass
+                egg_state["reset_job"] = None
+            for idx_j in range(3):
+                jid = egg_state["tile_jobs"][idx_j]
+                if jid is not None:
+                    try:
+                        self.after_cancel(jid)
+                    except tk.TclError:
+                        pass
+                    egg_state["tile_jobs"][idx_j] = None
+
+        def reset_single_tile(tile_idx):
+            egg_state["tile_jobs"][tile_idx] = None
+            egg_state["clicked"].discard(tile_idx)
+            if not logo_canvas.winfo_exists():
+                return
+            rect_id, text_id = tile_items[tile_idx]
+            logo_canvas.itemconfigure(rect_id, fill=LOGO_TILE_BG)
+            logo_canvas.itemconfigure(text_id, fill=LOGO_TILE_FG)
+
+        def reset_bbc_tiles():
+            cancel_egg_timers()
+            egg_state["clicked"].clear()
+            if not logo_canvas.winfo_exists():
+                return
+            for rect_id, text_id in tile_items:
+                logo_canvas.itemconfigure(rect_id, fill=LOGO_TILE_BG)
+                logo_canvas.itemconfigure(text_id, fill=LOGO_TILE_FG)
+
+        def on_bbc_tile_click(tile_idx):
+            prev_job = egg_state["tile_jobs"][tile_idx]
+            if prev_job is not None:
+                try:
+                    self.after_cancel(prev_job)
+                except tk.TclError:
+                    pass
+                egg_state["tile_jobs"][tile_idx] = None
+            egg_state["clicked"].add(tile_idx)
+            rect_id, text_id = tile_items[tile_idx]
+            logo_canvas.itemconfigure(rect_id, fill=ORANGE_ACCENT)
+            logo_canvas.itemconfigure(text_id, fill=PRIMARY_BTN_FG)
+            if len(egg_state["clicked"]) == 3:
+                cancel_egg_timers()
+                egg_state["reset_job"] = self.after(180, reset_bbc_tiles)
+                from gui_parts.snake_game import open_snake_game
+                open_snake_game(self)
+            else:
+                egg_state["tile_jobs"][tile_idx] = self.after(2000, lambda i=tile_idx: reset_single_tile(i))
+
+        for idx in range(3):
+            logo_canvas.tag_bind(f"bbc_tile_{idx}", "<Button-1>", lambda _e, i=idx: on_bbc_tile_click(i))
+
+        logo_canvas.bind("<Destroy>", cancel_egg_timers, add="+")
         return logo_canvas
 
     def render_section_title(self, container, heading, description=None, button_label=None, action_func=None):
