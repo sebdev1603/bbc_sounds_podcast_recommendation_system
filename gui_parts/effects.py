@@ -875,12 +875,12 @@ class EffectsMixin:
                 self._tab_transition_distance = 1
 
         self.slide_page(
-            canvas, window, -direction * max(1, canvas.winfo_width()), 145, open_next_page,
-            frame_ms=10,
+            canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page,
+            frame_ms=16,
         )
 
-    def _prerender_initial_batch(self, max_items=4):
-        """Render the first visible row of queued cards off-screen so pages slide in already populated."""
+    def _prerender_initial_batch(self, max_items=2):
+        """Render a lightweight initial batch off-screen without overloading slide HWND repaints."""
         rendered = 0
         while self._render_queue and rendered < max_items:
             items_iter, render_item = self._render_queue[0]
@@ -893,13 +893,12 @@ class EffectsMixin:
             rendered += 1
 
     def animate_page_entry(self, canvas, canvas_window, direction, outgoing_info=None):
-        """Slide the new page smoothly into view using real-time elastic pacing."""
+        """Slide the new page smoothly into view using 60Hz real-time elastic pacing."""
         self._transition_active = True
         tab_distance = max(1, getattr(self, "_tab_transition_distance", 1))
         max_span = max(1, len(getattr(self, "_tab_order", [])) - 2)
         ratio = min(1.0, (tab_distance - 1) / max_span)
-        # Real-time durations (220ms adjacent up to 280ms for far jumps) with gentle elastic settle.
-        entry_ms = round(220 + 60 * ratio)
+        entry_ms = round(210 + 50 * ratio)
         damping = 6.8 - 1.6 * ratio
         frequency = 0.95 + 0.25 * ratio
 
@@ -917,8 +916,8 @@ class EffectsMixin:
             if not canvas.winfo_exists():
                 self._finish_transition()
                 return
-            # Pre-render the first 4 cards off-screen so the page glides in populated without excess HWND overhead.
-            self._prerender_initial_batch(4)
+            if self._active_nav_tab not in ("Genres", "Home"):
+                self._prerender_initial_batch(2)
             if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
                 self._scale_widget_tree(self.current_page, self._ui_scale_factor)
             width = max(1, canvas.winfo_width())
@@ -927,7 +926,7 @@ class EffectsMixin:
             canvas.update_idletasks()
             self.slide_page(
                 canvas, canvas_window, 0, entry_ms, finish_entry,
-                damping=damping, frequency=frequency, frame_ms=10,
+                damping=damping, frequency=frequency, frame_ms=16,
             )
 
         # Wait one idle tick so the destination page finishes building off-screen before sliding in.
@@ -935,7 +934,7 @@ class EffectsMixin:
 
     def slide_page(
         self, canvas, canvas_window, end_x, duration_ms, on_complete=None, *,
-        damping=5.4, frequency=1.15, frame_ms=10,
+        damping=5.4, frequency=1.15, frame_ms=16,
     ):
         """Animate the scrollable content window horizontally to end_x in real elapsed time."""
         previous_frame = getattr(canvas, "_slide_frame", None)
@@ -947,27 +946,19 @@ class EffectsMixin:
         coords = canvas.coords(canvas_window)
         start_x = coords[0] if coords else 0
         duration_sec = max(0.05, float(duration_ms) / 1000.0)
-        max_step = 0.085  # Cap per-frame jump so a slow frame never teleports, while keeping real-time speed.
-        progress = 0.0
-        last_t = None
+        started = monotonic()
         last_x = round(start_x)
         self._transition_active = True
 
         def draw_frame():
-            nonlocal last_x, progress, last_t
+            nonlocal last_x
             canvas._slide_frame = None
             if not canvas.winfo_exists():
                 self._transition_active = False
                 return
-            now = monotonic()
-            if last_t is None:
-                delta = 0.016 / duration_sec
-            else:
-                delta = min(max_step, (now - last_t) / duration_sec)
-            last_t = now
-            progress = min(1.0, progress + delta)
+            progress = min(1.0, (monotonic() - started) / duration_sec)
             # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
-            eased = progress ** 2.4 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
+            eased = progress ** 2.2 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
                 canvas.coords(canvas_window, new_x, 0)
@@ -1055,7 +1046,7 @@ class EffectsMixin:
                 fade_step[0] += 1
                 frac = min(1.0, fade_step[0] / float(fade_steps))
                 eased = frac * frac * (3.0 - 2.0 * frac)
-                sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, bar_bg, eased))
+                sim_notice_label.configure(fg=blend_colour(TEXT_GRAY, footer.surface, eased))
                 if fade_step[0] < fade_steps:
                     sim_fade_job[0] = self.after(40, step_sim_fade)
                 else:
@@ -1064,10 +1055,10 @@ class EffectsMixin:
             # Hold readable for ~1.1s before smoothly fading into the mini-bar background.
             sim_fade_job[0] = self.after(1100, step_sim_fade)
 
-        self.create_button(row, "Dismiss", dismiss, compact=True).pack(side="right", padx=(8, 0))
-        self.create_button(
-            row, "▶  Play", play_from_mini_bar, primary=True, compact=True,
-        ).pack(side="right")
+        dismiss_btn = self.create_button(row, "Dismiss", dismiss, compact=True)
+        dismiss_btn.pack(side="right", padx=(8, 0))
+        play_btn = self.create_button(row, "▶  Play", play_from_mini_bar, primary=True, compact=True)
+        play_btn.pack(side="right")
         sim_notice_label = tk.Label(
             row,
             text="",
@@ -1088,6 +1079,7 @@ class EffectsMixin:
         details = tk.Frame(row, bg=row.cget("bg"), cursor="hand2", takefocus=True,
                            highlightthickness=1, highlightbackground=row.cget("bg"),
                            highlightcolor=ORANGE_HL)
+        details._sync_highlight_bg = True
         details.pack(side="left", fill="both", expand=True, padx=(0, 10))
         title_label = self.create_label(details, title, 13, TEXT_WHITE, "bold", cursor="hand2")
         title_label.pack(fill="x", pady=(6, 1))
@@ -1101,6 +1093,12 @@ class EffectsMixin:
             widget.bind("<Button-1>", open_detail)
         details.bind("<Return>", open_detail)
         details.bind("<space>", open_detail)
+        self._attach_podcast_card_hover(
+            footer,
+            [row, details, title_label, subtitle_label, sim_notice_label, dismiss_btn, play_btn],
+            title_label,
+            base_bg=bar_bg,
+        )
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
@@ -1171,18 +1169,19 @@ class EffectsMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        duration = 0.420
+        duration = 0.280
         started = monotonic()
         last_bg = start_bg
+        last_rect = None
 
         def draw_expand():
-            nonlocal last_bg
+            nonlocal last_bg, last_rect
             if not expander.winfo_exists() or not shell.winfo_exists():
                 shell._expanding_bar = False
                 self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - started) / duration)
-            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
             cur_x = max(0, round(start_x * (1.0 - eased)))
             cur_y = max(target_y, round(start_y + (target_y - start_y) * eased))
             cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
@@ -1194,9 +1193,12 @@ class EffectsMixin:
                 preview_cat.configure(bg=cur_bg)
                 preview_title.configure(bg=cur_bg)
                 last_bg = cur_bg
-            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            rect = (cur_x, cur_y, cur_w, cur_h)
+            if rect != last_rect:
+                expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+                last_rect = rect
             if progress < 1.0:
-                self.after(8, draw_expand)
+                self.after(16, draw_expand)
             else:
                 def start_detail_reveal():
                     if not expander.winfo_exists() or not shell.winfo_exists():
@@ -1210,31 +1212,31 @@ class EffectsMixin:
                         self._finish_transition()
                         return
                     tk.Misc.lift(expander)
-                    reveal_frames = 18
-                    reveal_step = 0
+                    reveal_duration = 0.210
+                    reveal_started = monotonic()
+                    last_top = [target_y]
 
                     def draw_detail_reveal():
-                        nonlocal reveal_step
                         if not expander.winfo_exists() or not shell.winfo_exists():
                             shell._expanding_bar = False
                             self._finish_transition()
                             return
-                        reveal_step += 1
-                        r_prog = min(1.0, reveal_step / float(reveal_frames))
+                        r_prog = min(1.0, (monotonic() - reveal_started) / reveal_duration)
                         r_eased = 1.0 - (1.0 - r_prog) ** 3
                         cur_top = round(target_y - target_h * r_eased)
-                        expander.place(x=0, y=cur_top, width=target_w, height=target_h)
-                        tk.Misc.lift(expander)
-                        if reveal_step < reveal_frames:
-                            self.after(10, draw_detail_reveal)
+                        if cur_top != last_top[0]:
+                            expander.place(x=0, y=cur_top, width=target_w, height=target_h)
+                            last_top[0] = cur_top
+                        if r_prog < 1.0:
+                            self.after(16, draw_detail_reveal)
                         else:
                             shell._expanding_bar = False
                             expander.destroy()
                             self._finish_transition()
 
-                    self.after(10, draw_detail_reveal)
+                    self.after(16, draw_detail_reveal)
 
-                self.after(80, start_detail_reveal)
+                self.after(16, start_detail_reveal)
 
         draw_expand()
 

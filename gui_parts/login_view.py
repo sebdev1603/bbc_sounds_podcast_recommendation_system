@@ -861,11 +861,11 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(10, draw_frame)
+                self.after(16, draw_frame)
             else:
                 finish()
 
-        self.after(10, draw_frame)
+        self.after(16, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
@@ -1086,7 +1086,7 @@ class LoginViewMixin:
             except tk.TclError:
                 return
 
-            canvas_obj._spin_job = self.after(14, animate_spin)
+            canvas_obj._spin_job = self.after(16, animate_spin)
 
         canvas_obj._resume_spin = animate_spin
         if not getattr(self, "_signing_out", False):

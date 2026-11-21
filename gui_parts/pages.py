@@ -380,7 +380,7 @@ class PagesMixin:
                         state["cache"].clear()
 
                     step = state["step"]
-                    t = step / 12.0
+                    t = step / 6.0
                     eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
                     inset = max(0, min(3, round(3.0 - 2.0 * eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
@@ -435,7 +435,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(16, step_card)
+                            state["job"] = self.after(14, step_card)
 
                     step_card()
 
@@ -451,7 +451,7 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 12.0
+                    t = state["step"] / 6.0
                     start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 3)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
@@ -460,7 +460,7 @@ class PagesMixin:
                     )
 
                 card_canvas.bind("<Configure>", lambda _e, paint_fn=paint_gradient_card: paint_fn())
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(12))
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(6))
                 card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
                 card_canvas.bind("<Button-1>", open_genre)
                 card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -478,6 +478,7 @@ class PagesMixin:
         if getattr(area_frame, "_expanding_genre", False) or not area_frame.winfo_exists() or not card.winfo_exists():
             return
         area_frame._expanding_genre = True
+        self._transition_active = True
 
         start_x = card.winfo_rootx() - area_frame.winfo_rootx()
         start_y = card.winfo_rooty() - area_frame.winfo_rooty()
@@ -488,6 +489,7 @@ class PagesMixin:
 
         if target_w <= 1 or target_h <= 1:
             area_frame._expanding_genre = False
+            self._finish_transition()
             apply_filter()
             return
 
@@ -521,11 +523,15 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.370
+        expand_duration = 0.260
         expand_started = monotonic()
+        last_colors = [(start_col, overlay_title_fg, overlay_desc_fg, badge_bg, badge_fg)]
+        last_rect = [None]
 
         def start_reveal():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
+                area_frame._expanding_genre = False
+                self._finish_transition()
                 return
             apply_filter()
             if canvas_pane.winfo_exists() and heading_widget.winfo_exists() and page.winfo_exists():
@@ -538,33 +544,40 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.320
+            reveal_duration = 0.220
             reveal_started = None
+            last_y = [0]
 
             def draw_reveal():
                 nonlocal reveal_started
                 if not expander.winfo_exists() or not area_frame.winfo_exists():
+                    area_frame._expanding_genre = False
+                    self._finish_transition()
                     return
                 if reveal_started is None:
                     reveal_started = monotonic()
                 progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
                 eased = 1.0 - (1.0 - progress) ** 4
                 cur_y = round(-target_h * eased)
-                expander.place(x=0, y=cur_y, width=target_w, height=target_h)
-                tk.Misc.lift(expander)
+                if cur_y != last_y[0]:
+                    expander.place(x=0, y=cur_y, width=target_w, height=target_h)
+                    last_y[0] = cur_y
                 if progress < 1.0:
-                    self.after(8, draw_reveal)
+                    self.after(16, draw_reveal)
                 else:
                     expander.destroy()
                     area_frame._expanding_genre = False
+                    self._finish_transition()
 
-            self.after(8, draw_reveal)
+            self.after(16, draw_reveal)
 
         def draw_expand():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
+                area_frame._expanding_genre = False
+                self._finish_transition()
                 return
             progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = ease_out_elastic(progress, damping=5.5, frequency=1.05)
+            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
             cur_x = max(0, round(start_x * (1.0 - eased)))
             cur_y = max(0, round(start_y * (1.0 - eased)))
             cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
@@ -584,14 +597,19 @@ class PagesMixin:
                 cur_ico_bg = badge_bg
                 cur_ico_fg = badge_fg
 
-            expander.configure(bg=cur_bg)
-            preview_box.configure(bg=cur_bg)
-            title_lbl.configure(bg=cur_bg, fg=cur_title_fg)
-            desc_lbl.configure(bg=cur_bg, fg=cur_desc_fg)
-            icon_badge.configure(bg=cur_ico_bg, fg=cur_ico_fg)
+            colors = (cur_bg, cur_title_fg, cur_desc_fg, cur_ico_bg, cur_ico_fg)
+            if colors != last_colors[0]:
+                expander.configure(bg=cur_bg)
+                preview_box.configure(bg=cur_bg)
+                title_lbl.configure(bg=cur_bg, fg=cur_title_fg)
+                desc_lbl.configure(bg=cur_bg, fg=cur_desc_fg)
+                icon_badge.configure(bg=cur_ico_bg, fg=cur_ico_fg)
+                last_colors[0] = colors
 
-            expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-            tk.Misc.lift(expander)
+            rect = (cur_x, cur_y, cur_w, cur_h)
+            if rect != last_rect[0]:
+                expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+                last_rect[0] = rect
 
             if progress < 1.0:
                 self.after(8, draw_expand)
@@ -820,21 +838,29 @@ class PagesMixin:
             rendered_cards.append(card)
             details_pane = tk.Frame(card, bg=CARD_BG)
             details_pane.pack(fill="both", expand=True, padx=13, pady=12)
-            self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8)).pack(anchor="w")
-            self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY).pack(anchor="w", pady=(4, 0))
-            self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR).pack(anchor="w", pady=(3, 6))
-            self.create_label(details_pane, "Your rating", 9, TEXT_GRAY).pack(anchor="w")
-            self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG).pack(
-                anchor="w", pady=(5, 10)
-            )
+            title_lbl = self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8))
+            title_lbl.pack(anchor="w")
+            cat_lbl = self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY)
+            cat_lbl.pack(anchor="w", pady=(4, 0))
+            avg_lbl = self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR)
+            avg_lbl.pack(anchor="w", pady=(3, 6))
+            yr_lbl = self.create_label(details_pane, "Your rating", 9, TEXT_GRAY)
+            yr_lbl.pack(anchor="w")
+            star_bar = self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG)
+            star_bar.pack(anchor="w", pady=(5, 10))
             button_row = tk.Frame(details_pane, bg=CARD_BG)
             button_row.pack(fill="x")
-            self.create_button(
+            change_btn = self.create_button(
                 button_row, "Change rating", lambda target_id=row[0]: self.rate_programme(target_id, self.show_ratings), compact=True
-            ).pack(side="left")
-            self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True).pack(
-                side="right"
             )
+            change_btn.pack(side="left")
+            remove_btn = self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True)
+            remove_btn.pack(side="right")
+            bg_widgets = [
+                cover_box, details_pane, title_lbl, cat_lbl, avg_lbl, yr_lbl,
+                star_bar, *star_bar.winfo_children(), button_row, change_btn, remove_btn,
+            ]
+            self._attach_podcast_card_hover(card, bg_widgets, title_lbl)
             reflow_ratings()
         self.render_in_batches(rating_rows, render_rating_card)
 
