@@ -1283,14 +1283,14 @@ class WidgetsMixin:
     def render_podcast_grid(
         self, parent_widget, items_list, columns_count=6,
         show_play=False, show_remove=False, max_count=8, single_row=False,
-        rating_index=None, show_end=True,
+        rating_index=None, show_end=True, ratings_mode=False,
     ):
-        """Render a responsive, batched (and paginated when needed) grid of podcast cards."""
+        """Render a responsive single-Canvas grid of podcast cards (zero child HWNDs for tear-free scrolling)."""
         if not items_list:
             self.render_empty_message(parent_widget, "No programmes to show yet", "Try another search, or explore all programmes.")
             return
         displayed_items = items_list[:max_count]
-        if not single_row and len(displayed_items) > PODCASTS_PER_PAGE:
+        if not single_row and not ratings_mode and len(displayed_items) > PODCASTS_PER_PAGE:
             self.paginate_podcasts(
                 parent_widget, displayed_items,
                 lambda parent, rows, last: self.render_podcast_grid(
@@ -1301,115 +1301,364 @@ class WidgetsMixin:
             )
             return
 
-        grid_container = tk.Frame(parent_widget, bg=parent_widget.cget("bg"))
-        grid_container.pack(fill="x")
-
-        end_message = self.create_label(
-            grid_container, "No more results", 15, "#777b83", "bold", anchor="center",
+        bg_col = parent_widget.cget("bg")
+        grid_canvas = tk.Canvas(
+            parent_widget, bg=bg_col, highlightthickness=0, bd=0, height=1,
         )
-        rendered_cards = []
-        current_columns = [0]
-        max_configured_cols = [0]
-        current_cover_size = [0]
-        cover_resize_job = [None]
+        grid_canvas.pack(fill="x")
 
-        def compute_grid_metrics():
-            available_width = grid_container.winfo_width()
-            if available_width <= 1:
-                available_width = max(1, self.winfo_width() - 110)
-            # Grow card width only modestly on wide monitors so extra space adds more cards per row.
-            target_card_w = min(330, max(255, round(255 + max(0, available_width - 1100) * 0.025)))
-            responsive_columns = max(2, min(16, available_width // target_card_w))
-            col_width = available_width // responsive_columns
-            # Fill card box width (subtract 10px card padx and 18px cover padx) with no side gaps.
-            target_cover = max(160, col_width - 28)
-            return responsive_columns, target_cover
+        class _CanvasRectProxy:
+            """Lightweight geometry proxy so hero expand/shrink/play animations target Canvas cards directly."""
+            __slots__ = ("_canvas", "_x", "_y", "_w", "_h")
 
-        def refresh_card_covers():
-            cover_resize_job[0] = None
-            if not grid_container.winfo_exists():
+            def __init__(self, cvs, x, y, w, h):
+                self._canvas = cvs
+                self._x = x
+                self._y = y
+                self._w = w
+                self._h = h
+
+            def winfo_exists(self):
+                return self._canvas.winfo_exists()
+
+            def winfo_ismapped(self):
+                return self._canvas.winfo_ismapped()
+
+            def winfo_rootx(self):
+                return self._canvas.winfo_rootx() + self._x
+
+            def winfo_rooty(self):
+                return self._canvas.winfo_rooty() + self._y
+
+            def winfo_width(self):
+                return self._w
+
+            def winfo_height(self):
+                return self._h
+
+        def rounded_pts(x0, y0, x1, y1, r):
+            r = max(2, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+            return (
+                x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
+                x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+                x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+            )
+
+        scale = getattr(self, "_ui_scale_factor", 1.0)
+        text_scale = getattr(self, "_text_scale", 1.0)
+        f_scale = scale * text_scale
+        title_font = self._get_cached_font((DEFAULT_FONT, max(9, round(11 * f_scale)), "bold"))
+        meta_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * f_scale))))
+        star_font = self._get_cached_font((DEFAULT_FONT, max(11, round(13 * f_scale))))
+        btn_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * f_scale)), "bold"))
+        end_font = self._get_cached_font((DEFAULT_FONT, max(12, round(15 * f_scale)), "bold"))
+
+        details_txt = translate("Details")
+        remove_txt = translate("Remove")
+        change_txt = translate("Change rating")
+        your_rating_txt = translate("Your rating")
+        no_more_txt = translate("No more results")
+        hover_bg_col = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.55)
+        sec_btn_bg = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.60)
+        sec_btn_hover = SECONDARY_HOVER_BG
+
+        # Precompute card metadata once so layout/reflow stays instant.
+        card_entries = []
+        for row in displayed_items:
+            pid = row[0]
+            title = str(row[1])
+            category = str(row[2] or "Programme")
+            length_mins = row[3] if (not ratings_mode and len(row) > 3) else None
+            meta_info = translate(category)
+            if length_mins is not None:
+                meta_info += f"  ·  {length_mins} min"
+            avg_txt = self.podcast_average_text(pid)
+            r_val = row[rating_index] if (rating_index is not None and len(row) > rating_index) else None
+            card_entries.append((pid, title, category, meta_info, avg_txt, r_val))
+
+        state = {
+            "last_w": 0,
+            "cards": [],      # list of dicts with bounds, item ids, buttons, proxies
+            "hovered": None,  # hovered card index
+            "hovered_btn": None,  # (card_idx, btn_idx)
+            "resize_job": None,
+        }
+        grid_canvas._photo_refs = []
+        grid_canvas._canvas_card_rects = {}
+
+        def draw_grid(avail_w):
+            if not grid_canvas.winfo_exists():
                 return
-            target_size = current_cover_size[0]
-            for card_widget in rendered_cards:
-                if not card_widget.winfo_exists():
-                    continue
-                meta = getattr(card_widget, "_cover_meta", None)
-                if not meta or meta[5] == target_size:
-                    continue
-                cover_box, cover_lbl, pid, title, category, _old_size = meta
-                if cover_box.winfo_exists():
-                    cover_box.configure(height=target_size)
-                self.update_podcast_cover(
-                    cover_lbl, pid, title, category, target_size, target_size,
+            if avail_w <= 1:
+                avail_w = max(320, self.winfo_width() - 110)
+            target_card_w = (
+                min(355, max(280, round(280 + max(0, avail_w - 1100) * 0.025)))
+                if ratings_mode else
+                min(330, max(255, round(255 + max(0, avail_w - 1100) * 0.025)))
+            )
+            cols = max(2, min(14 if ratings_mode else 16, avail_w // target_card_w))
+            gap = 10
+            card_w = max(180, (avail_w - gap * (cols - 1)) // cols)
+            cover_sz = max(140, card_w - 20)
+            has_rating_row = ratings_mode or (rating_index is not None)
+            text_area_h = round((166 if has_rating_row else 128) * max(0.95, min(1.35, f_scale)))
+            card_h = cover_sz + 18 + text_area_h
+
+            visible_entries = card_entries[:cols] if single_row else card_entries
+            total_items = len(visible_entries)
+            rows_n = max(1, math.ceil(total_items / cols))
+            total_h = rows_n * card_h + max(0, rows_n - 1) * gap + 4
+
+            grid_canvas.delete("all")
+            grid_canvas._photo_refs = []
+            grid_canvas._canvas_card_rects = {}
+            state["cards"] = []
+            state["hovered"] = None
+            state["hovered_btn"] = None
+            grid_canvas.configure(height=total_h)
+
+            for idx, (pid, title, category, meta_info, avg_txt, r_val) in enumerate(visible_entries):
+                row_i, col_i = divmod(idx, cols)
+                x0 = col_i * (card_w + gap)
+                y0 = row_i * (card_h + gap)
+                x1 = x0 + card_w
+                y1 = y0 + card_h
+
+                bg_item = grid_canvas.create_polygon(
+                    rounded_pts(x0 + 1, y0 + 1, x1 - 1, y1 - 1, 12),
+                    smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
+                )
+
+                cov_x = x0 + (card_w - cover_sz) // 2
+                cov_y = y0 + 10
+                photo, icon, _ = self._get_cover_photo(
+                    grid_canvas, pid, title, category, cover_sz, cover_sz,
                     corner_radius=8, backdrop=CARD_BG,
                 )
-                meta[5] = target_size
+                grid_canvas._photo_refs.append(photo)
+                grid_canvas.create_image(cov_x, cov_y, image=photo, anchor="nw")
+                if icon is not None:
+                    grid_canvas.create_text(
+                        cov_x + cover_sz // 2, cov_y + cover_sz // 2,
+                        text=icon, fill=TEXT_WHITE,
+                        font=self._get_cached_font((DEFAULT_FONT, max(12, cover_sz // 6), "bold")),
+                    )
 
-        def schedule_cover_refresh():
-            if cover_resize_job[0] is not None:
+                tx = x0 + 12
+                ty = cov_y + cover_sz + 11
+                max_tw = max(120, card_w - 24)
+                # Keep title cleanly within 2 lines so card heights stay uniform.
+                disp_title = title if len(title) <= 44 else (title[:42].rstrip() + "…")
+                title_item = grid_canvas.create_text(
+                    tx, ty, text=disp_title, fill=TEXT_WHITE, font=title_font,
+                    anchor="nw", width=max_tw,
+                )
+                tb = grid_canvas.bbox(title_item)
+                next_y = (tb[3] if tb else ty + 20) + 4
+                grid_canvas.create_text(
+                    tx, next_y, text=meta_info, fill=TEXT_GRAY, font=meta_font,
+                    anchor="nw", width=max_tw,
+                )
+                next_y += round(17 * max(0.95, f_scale))
+                grid_canvas.create_text(
+                    tx, next_y, text=avg_txt, fill=GOLD_STAR, font=meta_font,
+                    anchor="nw", width=max_tw,
+                )
+                next_y += round(18 * max(0.95, f_scale))
+
+                if r_val is not None:
+                    grid_canvas.create_text(
+                        tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font, anchor="nw",
+                    )
+                    next_y += round(15 * max(0.95, f_scale))
+                    try:
+                        filled = max(0, min(5, int(round(float(r_val)))))
+                    except (TypeError, ValueError):
+                        filled = 0
+                    for s_i in range(5):
+                        grid_canvas.create_text(
+                            tx + s_i * round(16 * max(0.95, f_scale)), next_y,
+                            text="★", fill=GOLD_STAR if s_i < filled else STAR_EMPTY,
+                            font=star_font, anchor="nw",
+                        )
+
+                card_proxy = _CanvasRectProxy(grid_canvas, x0, y0, card_w, card_h)
+                cover_proxy = _CanvasRectProxy(grid_canvas, cov_x, cov_y, cover_sz, cover_sz)
+                title_proxy = _CanvasRectProxy(grid_canvas, tx, ty, max_tw, 24)
+                grid_canvas._canvas_card_rects[str(pid)] = (card_proxy, cover_proxy, pid, title, category, cover_sz)
+
+                # Bottom pill buttons.
+                btn_h = round(28 * max(0.95, min(1.25, f_scale)))
+                by1 = y1 - 11
+                by0 = by1 - btn_h
+                buttons = []
+
+                def add_btn(bx0, bx1, label_s, primary, action):
+                    base_c = ORANGE_ACCENT if primary else sec_btn_bg
+                    hov_c = ORANGE_HL if primary else sec_btn_hover
+                    fg_c = PRIMARY_BTN_FG if primary else TEXT_WHITE
+                    poly = grid_canvas.create_polygon(
+                        rounded_pts(bx0, by0, bx1, by1, 8),
+                        smooth=True, fill=base_c, outline="",
+                    )
+                    lbl = grid_canvas.create_text(
+                        (bx0 + bx1) / 2.0, (by0 + by1) / 2.0,
+                        text=label_s, fill=fg_c, font=btn_font,
+                    )
+                    buttons.append({
+                        "rect": (bx0, by0, bx1, by1),
+                        "poly": poly,
+                        "lbl": lbl,
+                        "base": base_c,
+                        "hover": hov_c,
+                        "action": action,
+                    })
+
+                if ratings_mode:
+                    ch_w = max(84, btn_font.measure(change_txt) + 20)
+                    rm_w = max(62, btn_font.measure(remove_txt) + 18)
+                    add_btn(
+                        tx, min(x1 - 12 - rm_w - 6, tx + ch_w), change_txt, False,
+                        lambda tid=pid: self.rate_programme(tid, self.show_ratings),
+                    )
+                    add_btn(
+                        x1 - 12 - rm_w, x1 - 12, remove_txt, False,
+                        lambda tid=pid: self.remove_rating(tid),
+                    )
+                else:
+                    det_w = max(60, btn_font.measure(details_txt) + 20)
+                    add_btn(
+                        tx, tx + det_w, details_txt, False,
+                        lambda tid=pid, t=title, c=category, cp=card_proxy, cvp=cover_proxy, tp=title_proxy: (
+                            self.open_podcast_detail(tid, t, c, source_card=cp, source_cover=cvp, source_title=tp)
+                        ),
+                    )
+                    if show_remove:
+                        rm_w = max(60, btn_font.measure(remove_txt) + 18)
+                        rx0 = tx + det_w + 6
+                        add_btn(
+                            rx0, rx0 + rm_w, remove_txt, False,
+                            lambda tid=pid: self.remove_from_history(tid),
+                        )
+                    if show_play:
+                        pw = max(36, round(38 * max(0.95, f_scale)))
+                        px0 = x1 - 12 - pw
+                        play_proxy = _CanvasRectProxy(grid_canvas, px0, by0, pw, btn_h)
+                        add_btn(
+                            px0, x1 - 12, "▶", True,
+                            lambda pp=play_proxy, tid=pid, t=title, c=category, cvp=cover_proxy: (
+                                self.play_podcast_to_mini_bar(pp, tid, t, c, cover_widget=cvp)
+                            ),
+                        )
+
+                state["cards"].append({
+                    "rect": (x0, y0, x1, y1),
+                    "bg_item": bg_item,
+                    "title_item": title_item,
+                    "buttons": buttons,
+                    "open_action": (
+                        lambda tid=pid, t=title, c=category, cp=card_proxy, cvp=cover_proxy, tp=title_proxy:
+                        self.open_podcast_detail(tid, t, c, source_card=cp, source_cover=cvp, source_title=tp)
+                    ),
+                })
+
+            final_row, used_cols = divmod(total_items, cols)
+            if show_end and total_items == len(items_list) and used_cols and (not single_row or final_row == 0):
+                ex0 = used_cols * (card_w + gap)
+                ex1 = cols * card_w + (cols - 1) * gap
+                ey = final_row * (card_h + gap) + card_h // 2
+                grid_canvas.create_text(
+                    (ex0 + ex1) / 2.0, ey, text=no_more_txt, fill="#777b83", font=end_font,
+                )
+
+        def set_hover(card_idx, btn_idx):
+            prev_c = state["hovered"]
+            prev_b = state["hovered_btn"]
+            if prev_c == card_idx and prev_b == btn_idx:
+                return
+            if prev_b is not None:
+                pc, pb = prev_b
+                if pc < len(state["cards"]) and pb < len(state["cards"][pc]["buttons"]):
+                    b = state["cards"][pc]["buttons"][pb]
+                    grid_canvas.itemconfigure(b["poly"], fill=b["base"])
+            if prev_c is not None and prev_c != card_idx and prev_c < len(state["cards"]):
+                c = state["cards"][prev_c]
+                grid_canvas.itemconfigure(c["bg_item"], fill=CARD_BG, outline=BORDER_LINE)
+                grid_canvas.itemconfigure(c["title_item"], fill=TEXT_WHITE)
+            if card_idx is not None and card_idx < len(state["cards"]):
+                c = state["cards"][card_idx]
+                grid_canvas.itemconfigure(c["bg_item"], fill=hover_bg_col, outline=ORANGE_ACCENT)
+                grid_canvas.itemconfigure(c["title_item"], fill=ORANGE_HL)
+                if btn_idx is not None and btn_idx < len(c["buttons"]):
+                    b = c["buttons"][btn_idx]
+                    grid_canvas.itemconfigure(b["poly"], fill=b["hover"])
+                grid_canvas.configure(cursor="hand2")
+            else:
+                grid_canvas.configure(cursor="")
+            state["hovered"] = card_idx
+            state["hovered_btn"] = (card_idx, btn_idx) if (card_idx is not None and btn_idx is not None) else None
+
+        def hit_test(x, y):
+            for ci, c in enumerate(state["cards"]):
+                x0, y0, x1, y1 = c["rect"]
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    for bi, b in enumerate(c["buttons"]):
+                        bx0, by0, bx1, by1 = b["rect"]
+                        if bx0 <= x <= bx1 and by0 <= y <= by1:
+                            return ci, bi
+                    return ci, None
+            return None, None
+
+        def on_motion(event):
+            if getattr(self, "_transition_active", False) or self._is_scrolling():
+                return
+            ci, bi = hit_test(event.x, event.y)
+            set_hover(ci, bi)
+
+        def on_leave(_event=None):
+            set_hover(None, None)
+
+        def on_click(event):
+            if self._is_busy_transitioning():
+                return
+            ci, bi = hit_test(event.x, event.y)
+            if ci is None:
+                return
+            c = state["cards"][ci]
+            if bi is not None:
+                c["buttons"][bi]["action"]()
+            else:
+                c["open_action"]()
+
+        def on_configure(event):
+            if event.width <= 1 or abs(event.width - state["last_w"]) < 4:
+                return
+            state["last_w"] = event.width
+            if state["resize_job"] is not None:
                 try:
-                    self.after_cancel(cover_resize_job[0])
+                    self.after_cancel(state["resize_job"])
                 except tk.TclError:
                     pass
-            cover_resize_job[0] = self.after(50, refresh_card_covers)
+            delay = 80 if getattr(self, "_transition_active", False) else 35
+            state["resize_job"] = self.after(delay, lambda w=event.width: draw_grid(w))
 
-        def reflow_cards(_event=None):
-            responsive_columns, target_cover = compute_grid_metrics()
-            columns_changed = responsive_columns != current_columns[0]
-            cover_changed = current_cover_size[0] == 0 or abs(target_cover - current_cover_size[0]) >= 2
-            if cover_changed:
-                current_cover_size[0] = target_cover
-                if rendered_cards:
-                    schedule_cover_refresh()
-            if not columns_changed and _event is not None:
-                return
-            current_columns[0] = responsive_columns
-            if columns_changed:
-                span = max(max_configured_cols[0], responsive_columns)
-                max_configured_cols[0] = span
-                for col_idx in range(span):
-                    grid_container.grid_columnconfigure(
-                        col_idx, weight=1 if col_idx < responsive_columns else 0,
-                        uniform="programme" if col_idx < responsive_columns else "",
-                    )
-            visible_count = responsive_columns if single_row else len(rendered_cards)
-            first_card = 0 if columns_changed else len(rendered_cards) - 1
-            for card_idx in range(first_card, len(rendered_cards)):
-                card_widget = rendered_cards[card_idx]
-                if card_idx >= visible_count:
-                    card_widget.grid_remove()
-                    continue
-                card_widget.grid(
-                    row=card_idx // responsive_columns,
-                    column=card_idx % responsive_columns,
-                    sticky="nsew", padx=5, pady=5,
-                )
+        grid_canvas.bind("<Motion>", on_motion)
+        grid_canvas.bind("<Leave>", on_leave)
+        grid_canvas.bind("<Button-1>", on_click)
+        grid_canvas.bind("<Configure>", on_configure)
 
-            item_count = len(rendered_cards)
-            final_row, used_columns = divmod(item_count, responsive_columns)
-            if show_end and item_count == len(items_list) and used_columns and (not single_row or final_row == 0):
-                end_message.grid(
-                    row=final_row, column=used_columns,
-                    columnspan=responsive_columns - used_columns,
-                    sticky="nsew", padx=5, pady=5,
-                )
+        init_w = parent_widget.winfo_width()
+        if init_w <= 1 and parent_widget.master is not None:
+            init_w = parent_widget.master.winfo_width()
+        if init_w <= 1:
+            shell_cvs = getattr(self, "_shell_canvas", None)
+            if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
+                # Subtract content_pane's 46px left + 46px right padding so initial columns fit cleanly.
+                init_w = max(320, shell_cvs.winfo_width() - 92)
             else:
-                end_message.grid_remove()
-
-        def render_card(podcast):
-            if current_cover_size[0] == 0:
-                _, current_cover_size[0] = compute_grid_metrics()
-            rating_value = podcast[rating_index] if rating_index is not None and len(podcast) > rating_index else None
-            card = self.render_podcast_card(
-                grid_container, podcast, show_play_btn=show_play,
-                show_remove_btn=show_remove, rating_value=rating_value,
-                cover_size=current_cover_size[0],
-            )
-            rendered_cards.append(card)
-            reflow_cards()
-
-        grid_container.bind("<Configure>", reflow_cards)
-        self.render_in_batches(displayed_items, render_card)
+                init_w = max(320, self.winfo_width() - 120)
+        state["last_w"] = init_w
+        draw_grid(init_w)
 
     def paginate_podcasts(self, parent, items, render_page):
         """Wrap a list of programmes with Previous/Next page controls."""
@@ -1437,9 +1686,33 @@ class WidgetsMixin:
         controls = []
         content = self.current_page
         canvas = content.master
+        anim_state = {"job": None, "active": False, "holder": None}
 
-        def change_page(number, scroll=False):
+        def cancel_page_anim(_event=None):
+            if anim_state["job"] is not None:
+                try:
+                    body.after_cancel(anim_state["job"])
+                except tk.TclError:
+                    pass
+                anim_state["job"] = None
+            if anim_state["active"]:
+                anim_state["active"] = False
+                self._finish_transition()
+
+        wrapper.bind("<Destroy>", cancel_page_anim, add="+")
+
+        def find_grid_canvas():
+            for child in body.winfo_children():
+                if isinstance(child, tk.Canvas):
+                    return child
+            return None
+
+        def change_page(number, scroll=False, animate=False):
             nonlocal page_number
+            target_num = max(0, min(page_count - 1, number))
+            if animate and (anim_state["active"] or self._is_busy_transitioning() or target_num == page_number):
+                return
+            direction = 1 if target_num > page_number else -1
             if scroll:
                 region = canvas.cget("scrollregion")
                 if region:
@@ -1448,32 +1721,115 @@ class WidgetsMixin:
                         offset = wrapper.winfo_rooty() - content.winfo_rooty()
                         canvas.yview_moveto(max(0, offset - 8) / height)
                 self.cancel_pending_render()
-            page_number = max(0, min(page_count - 1, number))
+
+            old_canvas = find_grid_canvas()
+            page_number = target_num
             order_cache[page_key] = page_number
-            for child in body.winfo_children():
-                child.destroy()
             last = page_number == page_count - 1
             status.set(f"Page {page_number + 1} of {page_count}")
             for previous, following in controls:
                 previous.configure(state="normal" if page_number else "disabled")
                 following.configure(state="disabled" if last else "normal")
             start = page_number * PODCASTS_PER_PAGE
-            render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
+
+            if not animate or old_canvas is None or not old_canvas.winfo_exists():
+                for child in body.winfo_children():
+                    child.destroy()
+                render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
+                return
+
+            # Zero-HWND-move single-Canvas slide: shift canvas items out, swap page, spring new items in.
+            self._transition_active = True
+            anim_state["active"] = True
+            out_dist = 240.0
+            in_dist = 260.0
+            out_dur = 0.095
+            in_dur = 0.250
+
+            def finish_slide():
+                anim_state["job"] = None
+                anim_state["active"] = False
+                self._finish_transition()
+
+            def start_incoming():
+                if not body.winfo_exists():
+                    finish_slide()
+                    return
+                for child in body.winfo_children():
+                    child.destroy()
+                render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
+                new_canvas = find_grid_canvas()
+                if new_canvas is None or not new_canvas.winfo_exists():
+                    finish_slide()
+                    return
+                cur_offset = [round(direction * in_dist)]
+                new_canvas.move("all", cur_offset[0], 0)
+                in_started = [None]
+
+                def draw_in():
+                    anim_state["job"] = None
+                    if not body.winfo_exists() or not new_canvas.winfo_exists():
+                        finish_slide()
+                        return
+                    f_t0 = monotonic()
+                    if in_started[0] is None:
+                        in_started[0] = f_t0
+                    p = min(1.0, (f_t0 - in_started[0]) / in_dur)
+                    eased = ease_out_elastic(p, damping=4.8, frequency=1.22)
+                    desired_x = round(direction * in_dist * (1.0 - eased))
+                    dx = desired_x - cur_offset[0]
+                    if dx:
+                        new_canvas.move("all", dx, 0)
+                        cur_offset[0] = desired_x
+                    if p < 1.0:
+                        spent = (monotonic() - f_t0) * 1000.0
+                        anim_state["job"] = body.after(max(1, round(16 - spent)), draw_in)
+                    else:
+                        if cur_offset[0] != 0:
+                            new_canvas.move("all", -cur_offset[0], 0)
+                        finish_slide()
+
+                body.after_idle(draw_in)
+
+            out_offset = [0]
+            out_started = [None]
+
+            def draw_out():
+                anim_state["job"] = None
+                if not body.winfo_exists() or not old_canvas.winfo_exists():
+                    start_incoming()
+                    return
+                f_t0 = monotonic()
+                if out_started[0] is None:
+                    out_started[0] = f_t0
+                p = min(1.0, (f_t0 - out_started[0]) / out_dur)
+                desired_x = round(-direction * out_dist * (p * p))
+                dx = desired_x - out_offset[0]
+                if dx:
+                    old_canvas.move("all", dx, 0)
+                    out_offset[0] = desired_x
+                if p < 1.0:
+                    spent = (monotonic() - f_t0) * 1000.0
+                    anim_state["job"] = body.after(max(1, round(16 - spent)), draw_out)
+                else:
+                    start_incoming()
+
+            draw_out()
 
         for bar in (top, bottom):
             previous = self.create_button(
-                bar, "‹ Previous", lambda: change_page(page_number - 1, scroll=True), compact=True,
+                bar, "‹ Previous", lambda: change_page(page_number - 1, scroll=True, animate=True), compact=True,
             )
             previous.pack(side="left")
             tk.Label(bar, textvariable=status, bg=background, fg=TEXT_GRAY, font=(DEFAULT_FONT, 10)).pack(
                 side="left", padx=12,
             )
             following = self.create_button(
-                bar, "Next ›", lambda: change_page(page_number + 1, scroll=True), compact=True,
+                bar, "Next ›", lambda: change_page(page_number + 1, scroll=True, animate=True), compact=True,
             )
             following.pack(side="left")
             controls.append((previous, following))
-        change_page(page_number)
+        change_page(page_number, animate=False)
 
     def render_empty_message(self, parent_widget, heading, subtitle):
         """Display a styled empty-state card with a heading and helpful hint."""

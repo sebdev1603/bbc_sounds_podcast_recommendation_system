@@ -2179,6 +2179,25 @@ class EffectsMixin:
         target_str = str(podcast_id)
         while stack:
             widget = stack.pop()
+            canvas_cards = getattr(widget, "_canvas_card_rects", None)
+            if canvas_cards is not None and target_str in canvas_cards:
+                card_proxy, cover_proxy, _pid, _t, _c, csz = canvas_cards[target_str]
+                try:
+                    if card_proxy.winfo_ismapped() and cover_proxy.winfo_exists():
+                        cx = card_proxy.winfo_rootx() - sh_rx
+                        cy = card_proxy.winfo_rooty() - sh_ry
+                        card_rect = (cx, cy, card_proxy.winfo_width(), card_proxy.winfo_height())
+                        cover_rect = (
+                            cover_proxy.winfo_rootx() - sh_rx,
+                            cover_proxy.winfo_rooty() - sh_ry,
+                            csz,
+                        )
+                        dist = abs(cx - near_rect[0]) + abs(cy - near_rect[1])
+                        if best_dist is None or dist < best_dist:
+                            best, best_dist = (card_rect, cover_rect), dist
+                except tk.TclError:
+                    pass
+                continue
             meta = getattr(widget, "_cover_meta", None)
             if meta is not None and str(meta[2]) == target_str:
                 cover = meta[1]
