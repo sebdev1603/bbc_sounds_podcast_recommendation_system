@@ -12,6 +12,7 @@ from last_listened import get_last_listened
 from gui_parts.i18n import set_active_language, translate
 from gui_parts.theme import (
     BORDER_LINE,
+    CARD_BG,
     DARK_BG,
     DEFAULT_FONT,
     INPUT_BG,
@@ -596,8 +597,13 @@ class EffectsMixin:
             "Settings" if profile_tab_active else
             "Report" if active_tab_title == "Listening report" else active_tab_title
         )
-        # Remember the last non-detail page so Programme details' Back button returns there.
+        # Remember the last non-detail page so Programme details' Back button returns there,
+        # and only reset shuffled podcast orders when actually switching to a different tab.
         if active_tab_title != "Programme details":
+            prev_non_detail = getattr(self, "_last_visited_non_detail_tab", None)
+            if prev_non_detail != active_tab_title:
+                self._tab_podcast_order_cache = {}
+                self._last_visited_non_detail_tab = active_tab_title
             nav_map = dict(nav_links)
             if active_tab_title == "Your genres":
                 self._last_non_detail_tab = ("Settings", self.show_genres, "your genres")
@@ -896,6 +902,37 @@ class EffectsMixin:
         self.cancel_pending_render()
 
         if current == "Programme details" and self._active_detail_podcast is not None:
+            pid_now, title_now, cat_now = self._active_detail_podcast
+            origin = getattr(self, "_detail_hero_origin", None)
+            if origin is not None and origin.get("podcast_id") != pid_now:
+                origin = None
+
+            back_tab, back_handler, _back_name = getattr(
+                self, "_last_non_detail_tab", (None, None, ""),
+            )
+            # If the user clicked a different tab from Programme details, first shrink back to the
+            # page they came from, then smoothly transition to the tab they requested.
+            switching_to_other_tab = (
+                tab is not None
+                and back_tab is not None
+                and back_handler is not None
+                and tab != back_tab
+            )
+            shrink_dest = back_handler if switching_to_other_tab else destination
+            follow_up = (lambda: self.transition_to(destination, tab)) if switching_to_other_tab else None
+
+            if origin is not None and origin.get("source") == "card":
+                self.shrink_detail_to_origin(
+                    shrink_dest, origin, restore_scroll=True, on_complete=follow_up,
+                )
+                return
+
+            if origin is not None and origin.get("source") == "mini_bar":
+                self.shrink_detail_to_origin(
+                    shrink_dest, origin, restore_scroll=False, on_complete=follow_up,
+                )
+                return
+
             recent = None
             try:
                 with self.get_db_connection() as conn:
@@ -904,11 +941,11 @@ class EffectsMixin:
                 recent = None
             if (
                 recent is not None
-                and recent[0] == self._active_detail_podcast[0]
+                and recent[0] == pid_now
                 and recent[0] != self._dismissed_last_listened
             ):
                 self.shrink_detail_to_bottom_bar(
-                    destination, self._active_detail_podcast[1], self._active_detail_podcast[2],
+                    shrink_dest, title_now, cat_now, podcast_id=pid_now, on_complete=follow_up,
                 )
                 return
 
@@ -1016,7 +1053,8 @@ class EffectsMixin:
             if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
                 self._finish_transition()
                 return
-            progress = min(1.0, (monotonic() - started) / duration_sec)
+            frame_t0 = monotonic()
+            progress = min(1.0, (frame_t0 - started) / duration_sec)
             # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
             eased = progress ** 2.2 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
@@ -1028,7 +1066,8 @@ class EffectsMixin:
                     return
                 last_x = new_x
             if progress < 1.0:
-                canvas._slide_frame = canvas.after(frame_ms, draw_frame)
+                spent_ms = (monotonic() - frame_t0) * 1000.0
+                canvas._slide_frame = canvas.after(max(1, round(frame_ms - spent_ms)), draw_frame)
             elif on_complete:
                 on_complete()
             else:
@@ -1274,10 +1313,11 @@ class EffectsMixin:
             if not migrator.winfo_exists() or not shell.winfo_exists():
                 finish_migration()
                 return
-            progress = min(1.0, (monotonic() - started) / duration)
+            frame_t0 = monotonic()
+            progress = min(1.0, (frame_t0 - started) / duration)
             # Lively damped elastic spring for both the migrating bar and the flying cover art.
             eased = ease_out_elastic(progress, damping=4.5, frequency=1.30)
-            clamped_color = max(0.0, min(1.0, 1.0 - (1.0 - progress) ** 3))
+            clamped_color = round(max(0.0, min(1.0, 1.0 - (1.0 - progress) ** 3)) * 6) / 6.0
 
             cur_x = max(0, round(start_x + (target_x - start_x) * eased))
             cur_y = max(0, round(start_y + (target_y - start_y) * eased))
@@ -1309,14 +1349,18 @@ class EffectsMixin:
                     last_cov_pos[0] = cov_pos
 
             if progress < 1.0:
-                self.after(16, draw_migration)
+                spent_ms = (monotonic() - frame_t0) * 1000.0
+                self.after(max(1, round(16 - spent_ms)), draw_migration)
             else:
                 finish_migration()
 
         draw_migration()
 
-    def open_podcast_detail(self, podcast_id, title=None, category=None):
-        """Open a podcast's detail page by expanding upward via the bottom mini-bar."""
+    def open_podcast_detail(
+        self, podcast_id, title=None, category=None,
+        source_card=None, source_cover=None, source_title=None,
+    ):
+        """Open a podcast's detail page by expanding directly from its card on the page."""
         if self._is_busy_transitioning():
             return
         if title is None or category is None:
@@ -1328,232 +1372,818 @@ class EffectsMixin:
             except sqlite3.Error:
                 pass
         shell = getattr(self, "_shell_box", None)
-        footer = getattr(self, "_shell_bottom_bar", None)
-        if shell is not None and shell.winfo_exists():
-            self.expand_bottom_bar_to_detail(
-                shell, footer, podcast_id, str(title or "Programme"), category or "",
+        has_source = (
+            (source_card is not None and source_card.winfo_exists())
+            or (source_cover is not None and source_cover.winfo_exists())
+        )
+        if shell is not None and shell.winfo_exists() and has_source:
+            self.expand_card_to_detail(
+                shell, source_card, source_cover, podcast_id,
+                str(title or "Programme"), category or "",
+                title_widget=source_title,
             )
             return
         self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
 
-    def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
-        """Expand the bottom mini-bar smoothly upward to open the podcast detail page."""
+    def expand_card_to_detail(
+        self, shell, source_card, source_cover, podcast_id, title, category, title_widget=None,
+    ):
+        """Seamlessly expand a clicked podcast card and grow its cover art into the detail page."""
         if self._is_busy_transitioning() or not shell.winfo_exists():
             return
         canvas, _window = self._page_transition_target
         if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
             return
-        shell._expanding_bar = True
-        canvas._leaving_page = True
-        self._transition_active = True
-        self.cancel_pending_render()
 
         area_frame = canvas.master
+        shell_w = max(1, shell.winfo_width())
+        shell_h = max(1, shell.winfo_height())
+        target_y = area_frame.winfo_y()
+        sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+
+        card_w_ref = source_card if (source_card is not None and source_card.winfo_exists()) else source_cover
+        if card_w_ref is not None and card_w_ref.winfo_exists() and card_w_ref.winfo_width() > 1:
+            raw_x = card_w_ref.winfo_rootx() - sh_rx
+            raw_y = card_w_ref.winfo_rooty() - sh_ry
+            start_w = max(1, card_w_ref.winfo_width())
+            start_h = max(1, card_w_ref.winfo_height())
+            start_x = max(0, min(shell_w - 1, raw_x))
+            start_y = max(target_y, min(shell_h - 1, raw_y))
+            start_h = max(1, min(shell_h - start_y, start_h - max(0, target_y - raw_y)))
+        else:
+            start_x, start_y, start_w, start_h = 40, target_y + 40, 260, 320
+
+        if source_cover is not None and source_cover.winfo_exists() and source_cover.winfo_width() > 1:
+            cw = source_cover.winfo_width()
+            ch = source_cover.winfo_height()
+            cov_start_sz = max(48, min(cw, ch))
+            cov_start_x = (source_cover.winfo_rootx() - sh_rx) + max(0, (cw - cov_start_sz) // 2)
+            cov_start_y = max(target_y, source_cover.winfo_rooty() - sh_ry)
+        else:
+            cov_start_sz = min(140, max(62, min(start_w - 18, start_h - 18)))
+            cov_start_x = start_x + 10
+            cov_start_y = start_y + 10
+
+        if title_widget is not None and title_widget.winfo_exists() and title_widget.winfo_width() > 1:
+            rp_start_x = max(0, title_widget.winfo_rootx() - sh_rx)
+            rp_start_y = max(target_y, title_widget.winfo_rooty() - sh_ry)
+        else:
+            rp_start_x = cov_start_x
+            rp_start_y = min(shell_h - 40, cov_start_y + cov_start_sz + 8)
+
+        self._animate_hero_to_detail(
+            shell, podcast_id, title, category,
+            start_rect=(start_x, start_y, start_w, start_h),
+            cov_start_rect=(cov_start_x, cov_start_y, cov_start_sz),
+            rp_start_pos=(rp_start_x, rp_start_y),
+            start_bg=CARD_BG,
+            accent_top_bar=False,
+            source_kind="card",
+        )
+
+    def expand_bottom_bar_to_detail(self, shell, footer, podcast_id, title, category):
+        """Seamlessly expand the bottom mini-bar and grow its cover art into the podcast detail page."""
+        if self._is_busy_transitioning() or not shell.winfo_exists():
+            return
+        canvas, _window = self._page_transition_target
+        if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
+            return
+
+        shell_w = max(1, shell.winfo_width())
+        shell_h = max(1, shell.winfo_height())
         if footer is not None and footer.winfo_exists() and footer.winfo_width() > 1 and footer.winfo_height() > 1:
             start_x = footer.winfo_x()
             start_y = footer.winfo_y()
             start_w = max(1, footer.winfo_width())
             start_h = max(1, footer.winfo_height())
         else:
-            shell_w = max(1, shell.winfo_width())
-            shell_h = max(1, shell.winfo_height())
             start_x = 18
             start_w = max(1, shell_w - 36)
             start_h = 80
             start_y = max(0, shell_h - 90)
-        target_y = area_frame.winfo_y()
-        target_w = max(1, shell.winfo_width())
-        target_h = max(1, shell.winfo_height() - target_y)
+        cov_start_sz = 62
+        cov_start_x = start_x + 13
+        cov_start_y = start_y + max(7, (start_h - cov_start_sz) // 2)
+        rp_start_x = cov_start_x + cov_start_sz + 11
+        rp_start_y = start_y + 12
 
-        start_bg = MINI_BAR_BG
-        expander = tk.Frame(shell, bg=start_bg, bd=0, highlightthickness=0)
-        accent_top = tk.Frame(expander, bg=ORANGE_ACCENT, height=3)
-        accent_top.pack(fill="x")
-        preview_box = tk.Frame(expander, bg=start_bg)
-        preview_box.place(relx=0.5, rely=0.5, anchor="center")
-        preview_cat = self.create_label(
-            preview_box, str(category or "Programme").upper(), 10, ORANGE_HL, "bold",
-            anchor="center", bg=start_bg,
+        self._animate_hero_to_detail(
+            shell, podcast_id, title, category,
+            start_rect=(start_x, start_y, start_w, start_h),
+            cov_start_rect=(cov_start_x, cov_start_y, cov_start_sz),
+            rp_start_pos=(rp_start_x, rp_start_y),
+            start_bg=MINI_BAR_BG,
+            accent_top_bar=True,
+            source_kind="mini_bar",
         )
-        preview_cat.pack()
-        preview_title = self.create_label(
-            preview_box, title, 22, TEXT_WHITE, "bold",
-            anchor="center", justify="center", bg=start_bg,
+
+    def _animate_hero_to_detail(
+        self, shell, podcast_id, title, category,
+        start_rect, cov_start_rect, rp_start_pos, start_bg,
+        accent_top_bar=False, source_kind="card",
+    ):
+        """Shared hero transition engine expanding a source surface + cover + title into the detail page."""
+        if self._is_busy_transitioning() or not shell.winfo_exists():
+            return
+        canvas, _window = self._page_transition_target
+        if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
+            return
+        try:
+            saved_scroll = canvas.yview()[0]
+        except tk.TclError:
+            saved_scroll = 0.0
+        self._detail_hero_origin = {
+            "source": source_kind,
+            "podcast_id": podcast_id,
+            "title": title,
+            "category": category,
+            "tab": self._active_nav_tab,
+            "scroll_y": saved_scroll,
+            "target_rect": start_rect,
+            "cov_target_rect": cov_start_rect,
+            "rp_target_pos": rp_start_pos,
+            "target_bg": start_bg,
+            "accent_top_bar": accent_top_bar,
+        }
+        shell._expanding_bar = True
+        canvas._leaving_page = True
+        self._transition_active = True
+        self.cancel_pending_render()
+
+        area_frame = canvas.master
+        shell_w = max(1, shell.winfo_width())
+        shell_h = max(1, shell.winfo_height())
+        start_x, start_y, start_w, start_h = start_rect
+        cov_start_x, cov_start_y, cov_start_sz = cov_start_rect
+        rp_start_x, rp_start_y = rp_start_pos
+        target_y = area_frame.winfo_y()
+        target_w = shell_w
+        target_h = max(1, shell_h - target_y)
+
+        # Match detail_view.py's exact cover size, typography, and hero position (using cached geometry when available).
+        win_w = max(1024, self.winfo_width())
+        win_h = max(700, self.winfo_height())
+        detail_scale = max(0.92, min(1.75, min(win_w / 1180, win_h / 760)))
+        text_scale = getattr(self, "_text_scale", 1.0)
+        font_scale = detail_scale * text_scale
+        cov_end_sz = round(max(248, min(420, 285 * detail_scale)))
+        hero_gap = round(38 * detail_scale)
+        title_wrap = round(max(400, min(720, 500 * detail_scale)))
+
+        geom_key = (target_w, target_h, round(text_scale, 2))
+        cached_geom = getattr(self, "_detail_hero_geom", {}).get(geom_key)
+        if cached_geom is not None:
+            approx_cov_x, approx_cov_y, cov_end_sz, approx_rp_x, approx_rp_y = cached_geom
+        else:
+            approx_cov_x = max(48, round((target_w - 16 - (cov_end_sz + hero_gap + title_wrap)) / 2))
+            approx_cov_y = target_y + round(85 + 30 * detail_scale)
+            approx_rp_x = approx_cov_x + cov_end_sz + hero_gap
+            approx_rp_y = approx_cov_y + 4
+
+        # Use a single double-buffered tk.Canvas (zero child HWNDs) so background, accent bar, cover art,
+        # and title paint atomically in one BitBlt per frame with zero tearing and lively elastic motion.
+        is_mini = source_kind == "mini_bar"
+        clip_top = target_y
+        clip_bottom = shell_h if is_mini else (target_y + max(1, area_frame.winfo_height()))
+
+        expander = tk.Canvas(shell, bg=start_bg, bd=0, highlightthickness=0)
+        accent_item = (
+            expander.create_rectangle(0, 0, max(1, start_w), 3, fill=ORANGE_ACCENT, outline="")
+            if accent_top_bar else None
         )
-        preview_title.pack(pady=(6, 0))
-        expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
+
+        cat_pt = max(10, round(11 * font_scale))
+        title_pt = max(24, round(29 * font_scale))
+        cat_font = (DEFAULT_FONT, cat_pt, "bold")
+        title_font = (DEFAULT_FONT, title_pt, "bold")
+        cat_text = translate(str(category or "Programme")).upper()
+        title_text = str(title)
+        cat_line_h = max(16, round(cat_pt * 1.45)) + 6
+
+        cat_item = expander.create_text(
+            -9999, -9999, text=cat_text, fill=start_bg, font=cat_font, anchor="nw",
+        )
+        title_item = expander.create_text(
+            -9999, -9999, text=title_text, fill=start_bg, font=title_font,
+            anchor="nw", width=title_wrap, justify="left",
+        )
+
+        if cached_geom is None:
+            tb = expander.bbox(title_item)
+            req_w = (tb[2] - tb[0]) if tb else title_wrap
+            est_rp_w = max(round(460 * detail_scale), min(title_wrap, req_w))
+            canvas_inner_w = max(1, target_w - 17)
+            approx_cov_x = max(48, round((canvas_inner_w - (cov_end_sz + hero_gap + est_rp_w)) / 2))
+            approx_cov_y = target_y + round(85 + 30 * detail_scale)
+            approx_rp_x = approx_cov_x + cov_end_sz + hero_gap
+            approx_rp_y = approx_cov_y + 4
+
+        photo0, icon0, _bg0 = self._get_cover_photo(
+            expander, podcast_id, title, category, cov_start_sz, cov_start_sz,
+            corner_radius=10, backdrop=start_bg,
+        )
+        expander._cur_photo = photo0
+
+        vis_x0 = max(0, round(start_x))
+        vis_y0 = max(clip_top, round(start_y))
+        vis_x1 = min(shell_w, round(start_x + start_w))
+        vis_y1 = min(clip_bottom, round(start_y + start_h))
+        expander.place(x=vis_x0, y=vis_y0, width=max(1, vis_x1 - vis_x0), height=max(1, vis_y1 - vis_y0))
+
+        cx0 = cov_start_x + cov_start_sz / 2.0
+        cy0 = cov_start_y + cov_start_sz / 2.0
+        cx1 = approx_cov_x + cov_end_sz / 2.0
+        cy1 = approx_cov_y + cov_end_sz / 2.0
+
+        cover_item = expander.create_image(
+            round(cx0 - vis_x0), round(cy0 - vis_y0), image=photo0, anchor="center",
+        )
+        icon_item = (
+            expander.create_text(
+                round(cx0 - vis_x0), round(cy0 - vis_y0), text=icon0, fill=TEXT_WHITE,
+                font=(DEFAULT_FONT, max(11, cov_start_sz // 6), "bold"), anchor="center",
+            )
+            if icon0 is not None else None
+        )
         tk.Misc.lift(expander)
 
-        duration = 0.280
-        started = monotonic()
-        last_bg = start_bg
-        last_rect = None
+        # Pre-warm 5 cover sizes (including a subtle +5% elastic overshoot) with constant DARK_BG backdrop.
+        overshoot_sz = round(cov_end_sz * 1.05) if cov_end_sz > cov_start_sz else cov_end_sz
+        size_steps = tuple(sorted({
+            *(round(cov_start_sz + (cov_end_sz - cov_start_sz) * (i / 4.0)) for i in range(5)),
+            overshoot_sz,
+        }))
+        cover_cache = {cov_start_sz: (photo0, icon0)}
+        for step_sz in size_steps:
+            if step_sz not in cover_cache:
+                p_img, p_ico, _ = self._get_cover_photo(
+                    expander, podcast_id, title, category, step_sz, step_sz,
+                    corner_radius=max(10, round(step_sz * 0.09)), backdrop=DARK_BG,
+                )
+                cover_cache[step_sz] = (p_img, p_ico)
+
+        duration = 0.370
+        started = [None]
+        last_bg = [start_bg]
+        last_fade_step = [-1]
+        last_rect = [None]
+        last_cov_sz = [cov_start_sz]
+        last_cov_abs = [(cov_start_x, cov_start_y)]
+        last_rp_abs = [(rp_start_x, rp_start_y)]
+
+        def cleanup():
+            shell._expanding_bar = False
+            if expander.winfo_exists():
+                try:
+                    expander.destroy()
+                except tk.TclError:
+                    pass
+            self._finish_transition()
 
         def draw_expand():
-            nonlocal last_bg, last_rect
             if not expander.winfo_exists() or not shell.winfo_exists():
-                shell._expanding_bar = False
-                self._finish_transition()
+                cleanup()
                 return
-            progress = min(1.0, (monotonic() - started) / duration)
-            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
-            cur_x = max(0, round(start_x * (1.0 - eased)))
-            cur_y = max(target_y, round(start_y + (target_y - start_y) * eased))
-            cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
-            cur_bg = blend_colour(start_bg, DARK_BG, progress)
-            if cur_bg != last_bg:
+            frame_start = monotonic()
+            if started[0] is None:
+                started[0] = frame_start
+            progress = min(1.0, (frame_start - started[0]) / duration)
+            # Outer surface expands swiftly and cleanly; cover & title use a juicy elastic spring inside the canvas.
+            box_eased = min(1.0, max(0.0, ease_out_elastic(progress, damping=5.2, frequency=1.15)))
+            hero_eased = ease_out_elastic(progress, damping=4.3, frequency=1.28)
+            smooth_t = 1.0 - (1.0 - progress) ** 3
+
+            cur_x = start_x * (1.0 - box_eased)
+            cur_y = start_y + (target_y - start_y) * box_eased
+            cur_w = start_w + (target_w - start_w) * box_eased
+            cur_h = start_h + (target_h - start_h) * box_eased
+
+            vx0 = max(0, round(cur_x))
+            vy0 = max(clip_top, round(cur_y))
+            vx1 = min(shell_w, round(cur_x + cur_w))
+            vy1 = min(shell_h if progress >= 0.80 else clip_bottom, round(cur_y + cur_h))
+
+            bg_step = round(smooth_t * 6) / 6.0
+            cur_bg = blend_colour(start_bg, DARK_BG, bg_step)
+            if cur_bg != last_bg[0]:
                 expander.configure(bg=cur_bg)
-                preview_box.configure(bg=cur_bg)
-                preview_cat.configure(bg=cur_bg)
-                preview_title.configure(bg=cur_bg)
-                last_bg = cur_bg
-            rect = (cur_x, cur_y, cur_w, cur_h)
-            if rect != last_rect:
-                expander.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
-                last_rect = rect
+                last_bg[0] = cur_bg
+
+            rect = (vx0, vy0, max(1, vx1 - vx0), max(1, vy1 - vy0))
+            if rect != last_rect[0]:
+                expander.place(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
+                if accent_item is not None:
+                    expander.coords(accent_item, 0, 0, rect[2], 3)
+                last_rect[0] = rect
+
+            desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.08, hero_eased))
+            quant_sz = min(size_steps, key=lambda s: abs(s - desired_sz))
+            if quant_sz != last_cov_sz[0]:
+                p_img, p_ico = cover_cache[quant_sz]
+                expander._cur_photo = p_img
+                expander.itemconfigure(cover_item, image=p_img)
+                if icon_item is not None and p_ico is not None:
+                    expander.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, quant_sz // 6), "bold"))
+                last_cov_sz[0] = quant_sz
+
+            cur_cx = cx0 + (cx1 - cx0) * hero_eased
+            cur_cy = cy0 + (cy1 - cy0) * hero_eased
+            rel_cx = round(cur_cx) - vx0
+            rel_cy = round(cur_cy) - vy0
+            expander.coords(cover_item, rel_cx, rel_cy)
+            if icon_item is not None:
+                expander.coords(icon_item, rel_cx, rel_cy)
+            last_cov_abs[0] = (round(cur_cx - quant_sz / 2.0), round(cur_cy - quant_sz / 2.0))
+
+            # Fade the detail-sized title in smoothly once expander is large enough (progress >= 0.30).
+            if progress >= 0.30:
+                fade_step = min(6, round(((progress - 0.30) / 0.55) * 6))
+                if fade_step != last_fade_step[0]:
+                    fade = fade_step / 6.0
+                    expander.itemconfigure(cat_item, fill=blend_colour(cur_bg, ORANGE_HL, fade))
+                    expander.itemconfigure(title_item, fill=blend_colour(cur_bg, TEXT_WHITE, fade))
+                    last_fade_step[0] = fade_step
+                rp_x = round(rp_start_x + (approx_rp_x - rp_start_x) * hero_eased)
+                rp_y = round(rp_start_y + (approx_rp_y - rp_start_y) * hero_eased)
+                last_rp_abs[0] = (rp_x, rp_y)
+                expander.coords(cat_item, rp_x - vx0, rp_y - vy0)
+                expander.coords(title_item, rp_x - vx0, rp_y - vy0 + cat_line_h)
+
             if progress < 1.0:
-                self.after(16, draw_expand)
+                spent_ms = (monotonic() - frame_start) * 1000.0
+                self.after(max(1, round(16 - spent_ms)), draw_expand)
             else:
-                def start_detail_reveal():
+                def handoff_to_detail():
                     if not expander.winfo_exists() or not shell.winfo_exists():
-                        shell._expanding_bar = False
-                        self._finish_transition()
+                        cleanup()
                         return
-                    # Build the detail page underneath the overlay, then glide the curtain upward to reveal it.
+                    expander.configure(bg=DARK_BG)
+                    expander.place(x=0, y=target_y, width=target_w, height=target_h)
+                    expander.itemconfigure(cat_item, fill=ORANGE_HL)
+                    expander.itemconfigure(title_item, fill=TEXT_WHITE)
+
                     self.show_detail(podcast_id)
                     if not expander.winfo_exists() or not shell.winfo_exists():
-                        shell._expanding_bar = False
-                        self._finish_transition()
+                        cleanup()
                         return
+                    self.update_idletasks()
                     tk.Misc.lift(expander)
-                    reveal_duration = 0.210
-                    reveal_started = monotonic()
+
+                    self.update_idletasks()
+                    holder = getattr(self, "_detail_cover_holder", None)
+                    rp_widget = getattr(self, "_detail_right_pane", None)
+                    sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+                    if holder is not None and holder.winfo_exists() and holder.winfo_width() > 1:
+                        final_x = holder.winfo_rootx() - sh_rx
+                        final_y = holder.winfo_rooty() - sh_ry
+                        final_sz = max(cov_start_sz, holder.winfo_width())
+                    else:
+                        final_x, final_y, final_sz = approx_cov_x, approx_cov_y, cov_end_sz
+
+                    if rp_widget is not None and rp_widget.winfo_exists() and rp_widget.winfo_width() > 1:
+                        final_rp_x = rp_widget.winfo_rootx() - sh_rx
+                        final_rp_y = rp_widget.winfo_rooty() - sh_ry
+                    else:
+                        final_rp_x, final_rp_y = approx_rp_x, approx_rp_y
+
+                    geom_cache = getattr(self, "_detail_hero_geom", None)
+                    if geom_cache is None:
+                        geom_cache = {}
+                        self._detail_hero_geom = geom_cache
+                    geom_cache[geom_key] = (final_x, final_y, final_sz, final_rp_x, final_rp_y)
+
+                    if last_cov_sz[0] != final_sz:
+                        p_img, p_ico, _ = self._get_cover_photo(
+                            expander, podcast_id, title, category, final_sz, final_sz,
+                            corner_radius=round(final_sz * 0.09), backdrop=DARK_BG,
+                        )
+                        expander._cur_photo = p_img
+                        expander.itemconfigure(cover_item, image=p_img)
+                        if icon_item is not None and p_ico is not None:
+                            expander.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, final_sz // 6), "bold"))
+                        last_cov_sz[0] = final_sz
+
+                    from_x, from_y = last_cov_abs[0]
+                    from_rp_x, from_rp_y = last_rp_abs[0]
+                    needs_align = (
+                        abs(final_x - from_x) > 2 or abs(final_y - from_y) > 2
+                        or abs(final_rp_x - from_rp_x) > 2 or abs(final_rp_y - from_rp_y) > 2
+                    )
+                    align_duration = 0.055 if needs_align else 0.0
+                    reveal_duration = 0.135
+                    align_started = monotonic()
                     last_top = [target_y]
 
-                    def draw_detail_reveal():
+                    def start_reveal():
+                        # Hero cover and title are already aligned pixel-for-pixel with the real detail page underneath,
+                        # so drop the overlay cleanly without a second full-screen HWND wipe.
+                        cleanup()
+
+                    if not needs_align:
+                        start_reveal()
+                        return
+
+                    def draw_align():
                         if not expander.winfo_exists() or not shell.winfo_exists():
-                            shell._expanding_bar = False
-                            self._finish_transition()
+                            cleanup()
                             return
-                        r_prog = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                        r_eased = 1.0 - (1.0 - r_prog) ** 3
-                        cur_top = round(target_y - target_h * r_eased)
-                        if cur_top != last_top[0]:
-                            expander.place(x=0, y=cur_top, width=target_w, height=target_h)
-                            last_top[0] = cur_top
-                        if r_prog < 1.0:
-                            self.after(16, draw_detail_reveal)
+                        f_t0 = monotonic()
+                        a_prog = min(1.0, (f_t0 - align_started) / align_duration)
+                        a_eased = 1.0 - (1.0 - a_prog) ** 2
+                        sx = round(from_x + (final_x - from_x) * a_eased + final_sz / 2.0)
+                        sy = round(from_y + (final_y - from_y) * a_eased + final_sz / 2.0) - target_y
+                        expander.coords(cover_item, sx, sy)
+                        if icon_item is not None:
+                            expander.coords(icon_item, sx, sy)
+                        px = round(from_rp_x + (final_rp_x - from_rp_x) * a_eased)
+                        py = round(from_rp_y + (final_rp_y - from_rp_y) * a_eased) - target_y
+                        expander.coords(cat_item, px, py)
+                        expander.coords(title_item, px, py + cat_line_h)
+                        if a_prog < 1.0:
+                            spent = (monotonic() - f_t0) * 1000.0
+                            self.after(max(1, round(16 - spent)), draw_align)
                         else:
-                            shell._expanding_bar = False
-                            expander.destroy()
-                            self._finish_transition()
+                            start_reveal()
 
-                    self.after(16, draw_detail_reveal)
+                    draw_align()
 
-                self.after(16, start_detail_reveal)
+                self.after(16, handoff_to_detail)
 
         draw_expand()
 
-    def shrink_detail_to_bottom_bar(self, destination, title, category):
+    def shrink_detail_to_bottom_bar(self, destination, title, category, podcast_id=None, on_complete=None):
         """Shrink the podcast detail view down into the destination tab's bottom mini-bar."""
+        shell = getattr(self, "_shell_box", None)
+        shell_w = max(1, shell.winfo_width()) if (shell is not None and shell.winfo_exists()) else max(1, self.winfo_width())
+        shell_h = max(1, shell.winfo_height()) if (shell is not None and shell.winfo_exists()) else max(1, self.winfo_height())
+        if podcast_id is None and self._active_detail_podcast is not None:
+            podcast_id = self._active_detail_podcast[0]
+        start_x = 18
+        start_w = max(1, shell_w - 36)
+        start_h = 80
+        start_y = max(0, shell_h - 90)
+        cov_sz = 62
+        cov_x = start_x + 13
+        cov_y = start_y + max(7, (start_h - cov_sz) // 2)
+        origin = {
+            "source": "mini_bar",
+            "podcast_id": podcast_id,
+            "title": title,
+            "category": category,
+            "tab": None,
+            "scroll_y": 0.0,
+            "target_rect": (start_x, start_y, start_w, start_h),
+            "cov_target_rect": (cov_x, cov_y, cov_sz),
+            "rp_target_pos": (cov_x + cov_sz + 11, start_y + 12),
+            "target_bg": MINI_BAR_BG,
+            "accent_top_bar": True,
+        }
+        self.shrink_detail_to_origin(destination, origin, restore_scroll=False, on_complete=on_complete)
+
+    def shrink_detail_to_origin(self, destination, origin, restore_scroll=False, on_complete=None):
+        """Reverse hero transition: shrink the detail view + cover art back into its source card or mini-bar."""
+        shell = getattr(self, "_shell_box", None)
         canvas, _window = self._page_transition_target
+        if shell is None or not shell.winfo_exists() or not canvas.winfo_exists():
+            self._tab_transition_direction = None
+            self._detail_hero_origin = None
+            self._finish_transition()
+            destination()
+            if on_complete is not None:
+                self.after(16, on_complete)
+            return
+
         area_frame = canvas.master
-        win_w = max(1, self.winfo_width())
-        win_h = max(1, self.winfo_height())
-        start_x = area_frame.winfo_rootx() - self.winfo_rootx()
-        start_y = area_frame.winfo_rooty() - self.winfo_rooty()
-        start_w = max(1, area_frame.winfo_width())
-        start_h = max(1, win_h - start_y)
+        shell_w = max(1, shell.winfo_width())
+        shell_h = max(1, shell.winfo_height())
+        start_x = 0
+        start_y = area_frame.winfo_y()
+        start_w = shell_w
+        start_h = max(1, shell_h - start_y)
 
         if start_w <= 1 or start_h <= 1:
             self._tab_transition_direction = None
+            self._detail_hero_origin = None
             self._finish_transition()
             destination()
             return
 
-        target_box = [18, max(start_y, win_h - 90), max(1, win_w - 36), 80]
+        # Measure exact current detail cover and title/category coordinates before rebuilding destination.
+        shell.update_idletasks()
+        sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+        holder = getattr(self, "_detail_cover_holder", None)
+        rp_widget = getattr(self, "_detail_right_pane", None)
+        win_w = max(1024, self.winfo_width())
+        win_h = max(700, self.winfo_height())
+        detail_scale = max(0.92, min(1.75, min(win_w / 1180, win_h / 760)))
+        text_scale = getattr(self, "_text_scale", 1.0)
+        font_scale = detail_scale * text_scale
+        title_wrap = round(max(400, min(720, 500 * detail_scale)))
 
+        if holder is not None and holder.winfo_exists() and holder.winfo_width() > 1:
+            cov_start_x = holder.winfo_rootx() - sh_rx
+            cov_start_y = holder.winfo_rooty() - sh_ry
+            cov_start_sz = max(62, holder.winfo_width())
+        else:
+            cov_start_sz = round(max(248, min(420, 285 * detail_scale)))
+            cov_start_x = max(48, round((shell_w - cov_start_sz - 460) / 2))
+            cov_start_y = start_y + round(85 + 30 * detail_scale)
+
+        if rp_widget is not None and rp_widget.winfo_exists() and rp_widget.winfo_width() > 1:
+            rp_start_x = rp_widget.winfo_rootx() - sh_rx
+            rp_start_y = rp_widget.winfo_rooty() - sh_ry
+        else:
+            rp_start_x = cov_start_x + cov_start_sz + round(38 * detail_scale)
+            rp_start_y = cov_start_y + 4
+
+        podcast_id = origin.get("podcast_id")
+        title = str(origin.get("title") or "Programme")
+        category = origin.get("category") or ""
+        target_bg = origin.get("target_bg") or CARD_BG
+        accent_top_bar = bool(origin.get("accent_top_bar"))
+        target_box = list(origin.get("target_rect", (18, max(start_y, shell_h - 90), max(1, shell_w - 36), 80)))
+        cov_target = list(origin.get("cov_target_rect", (target_box[0] + 13, target_box[1] + 9, 62)))
+        rp_target = list(origin.get("rp_target_pos", (cov_target[0] + cov_target[2] + 11, target_box[1] + 12)))
+
+        # Build one double-buffered tk.Canvas (zero child HWNDs) so the shrinking card, cover art, and title
+        # paint atomically in one BitBlt per frame with zero stutter and lively elastic motion.
+        shell._expanding_bar = True
         self._tab_transition_direction = None
         self._transition_active = True
-        destination()
-        if not self.winfo_exists():
-            self._transition_active = False
-            return
+        self._detail_hero_origin = None
+        is_mini = origin.get("source") == "mini_bar"
 
-        target_bg = MINI_BAR_BG
-        shrinker = tk.Frame(self, bg=DARK_BG, bd=0, highlightthickness=0)
-        accent_top = tk.Frame(shrinker, bg=ORANGE_ACCENT, height=3)
-        accent_top.pack(fill="x")
-        preview_box = tk.Frame(shrinker, bg=DARK_BG)
-        preview_box.place(relx=0.5, rely=0.5, anchor="center")
-        preview_cat = self.create_label(
-            preview_box, str(category or "Programme").upper(), 10, ORANGE_HL, "bold",
-            anchor="center", bg=DARK_BG,
+        shrinker = tk.Canvas(shell, bg=DARK_BG, bd=0, highlightthickness=0)
+        accent_item = (
+            shrinker.create_rectangle(0, 0, start_w, 3, fill=ORANGE_ACCENT, outline="")
+            if accent_top_bar else None
         )
-        preview_cat.pack()
-        preview_title = self.create_label(
-            preview_box, title, 22, TEXT_WHITE, "bold",
-            anchor="center", justify="center", bg=DARK_BG,
+
+        shrink_cat_pt = max(9, round(10 * min(1.25, font_scale)))
+        shrink_title_pt = max(14, round(18 * min(1.25, font_scale)))
+        cat_line_h = max(14, round(shrink_cat_pt * 1.45)) + 4
+        cat_item = shrinker.create_text(
+            rp_start_x - start_x, rp_start_y - start_y,
+            text=translate(str(category or "Programme")).upper(),
+            fill=ORANGE_HL, font=(DEFAULT_FONT, shrink_cat_pt, "bold"), anchor="nw",
         )
-        preview_title.pack(pady=(6, 0))
+        title_item = shrinker.create_text(
+            rp_start_x - start_x, rp_start_y - start_y + cat_line_h,
+            text=title, fill=TEXT_WHITE, font=(DEFAULT_FONT, shrink_title_pt, "bold"),
+            anchor="nw", width=min(title_wrap, 360), justify="left",
+        )
+
+        photo0, icon0, _bg0 = self._get_cover_photo(
+            shrinker, podcast_id, title, category, cov_start_sz, cov_start_sz,
+            corner_radius=max(10, round(cov_start_sz * 0.09)), backdrop=DARK_BG,
+        )
+        shrinker._cur_photo = photo0
+        cx0 = cov_start_x + cov_start_sz / 2.0
+        cy0 = cov_start_y + cov_start_sz / 2.0
+        cover_item = shrinker.create_image(
+            round(cx0 - start_x), round(cy0 - start_y), image=photo0, anchor="center",
+        )
+        icon_item = (
+            shrinker.create_text(
+                round(cx0 - start_x), round(cy0 - start_y), text=icon0, fill=TEXT_WHITE,
+                font=(DEFAULT_FONT, max(11, cov_start_sz // 6), "bold"), anchor="center",
+            )
+            if icon0 is not None else None
+        )
 
         shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
 
-        duration = 0.440
-        started = None
-        last_bg = DARK_BG
+        # Build the destination page underneath while fully covered by shrinker.
+        destination()
+        if not shell.winfo_exists() or not shrinker.winfo_exists():
+            self._finish_transition()
+            return
+
+        # Pre-render the visible batch of cards underneath shrinker BEFORE animation starts so grid pages
+        # (For you, Favourites, History, Ratings, Search) are already populated rather than blank during shrink.
+        self._prerender_initial_batch(6)
+        saved_scroll = float(origin.get("scroll_y") or 0.0)
+        new_target = getattr(self, "_page_transition_target", None)
+        if restore_scroll and saved_scroll > 0.0 and new_target:
+            self._prerender_initial_batch(6)
+        if new_target:
+            new_canvas, _new_win = new_target
+            if new_canvas.winfo_exists():
+                try:
+                    new_canvas.update_idletasks()
+                    if self.current_page is not None and self.current_page.winfo_exists():
+                        new_canvas.configure(
+                            scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
+                        )
+                    if restore_scroll and saved_scroll > 0.0:
+                        new_canvas.yview_moveto(saved_scroll)
+                except tk.TclError:
+                    pass
+
+        shell.update_idletasks()
+        tk.Misc.lift(shrinker)
+        sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+
+        # Visible clip region: card returns stay inside the scroll area (never over the mini-bar);
+        # mini-bar returns may travel down into the footer.
+        new_area = getattr(self, "_shell_area_frame", None)
+        if new_area is None or not new_area.winfo_exists():
+            new_area = area_frame
+        if is_mini:
+            clip_top, clip_bottom = start_y, shell_h
+        else:
+            clip_top = new_area.winfo_y()
+            clip_bottom = clip_top + max(1, new_area.winfo_height())
+
+        if is_mini:
+            dest_footer = getattr(self, "_shell_bottom_bar", None)
+            if dest_footer is not None and dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
+                fx = dest_footer.winfo_x()
+                fy = dest_footer.winfo_y()
+                fw = dest_footer.winfo_width()
+                fh = dest_footer.winfo_height()
+                target_box[:] = [fx, fy, fw, fh]
+                cov_target[:] = [fx + 13, fy + max(7, (fh - 62) // 2), 62]
+                rp_target[:] = [fx + 13 + 62 + 11, fy + 12]
+        else:
+            live = self._find_live_podcast_card(podcast_id, target_box, sh_rx, sh_ry)
+            if live is not None:
+                card_rect, cover_rect = live
+                dx = card_rect[0] - target_box[0]
+                dy = card_rect[1] - target_box[1]
+                target_box[:] = list(card_rect)
+                cov_target[:] = list(cover_rect)
+                rp_target[:] = [rp_target[0] + dx, rp_target[1] + dy]
+
+        end_x, end_y, end_w, end_h = target_box
+        cov_end_x, cov_end_y, cov_end_sz = cov_target
+        rp_end_x, rp_end_y = rp_target
+        cx1 = cov_end_x + cov_end_sz / 2.0
+        cy1 = cov_end_y + cov_end_sz / 2.0
+
+        # Pre-warm 5 cover sizes with constant target_bg backdrop (~30ms worst case, 0ms cached).
+        size_steps = tuple(sorted({
+            round(cov_start_sz + (cov_end_sz - cov_start_sz) * (i / 4.0))
+            for i in range(5)
+        }))
+        cover_cache = {cov_start_sz: (photo0, icon0)}
+        for step_sz in size_steps:
+            if step_sz not in cover_cache:
+                p_img, p_ico, _ = self._get_cover_photo(
+                    shrinker, podcast_id, title, category, step_sz, step_sz,
+                    corner_radius=max(8, round(step_sz * 0.09)), backdrop=target_bg,
+                )
+                cover_cache[step_sz] = (p_img, p_ico)
+
+        duration = 0.360
+        frame_ms = 16
+        started = [None]
+        last_bg = [DARK_BG]
+        last_fade_step = [-1]
+        preview_hidden = [False]
+        shrinker_hidden = [False]
+        last_rect = [None]
+        last_cov_sz = [cov_start_sz]
+
+        def cleanup():
+            if shell.winfo_exists():
+                shell._expanding_bar = False
+            if shrinker.winfo_exists():
+                try:
+                    shrinker.destroy()
+                except tk.TclError:
+                    pass
+            if on_complete is not None and shell.winfo_exists():
+                # Skip background batch rendering for the intermediate page since we immediately slide to the next tab.
+                self._transition_active = False
+                self.after(16, on_complete)
+            else:
+                self._finish_transition()
 
         def draw_shrink():
-            nonlocal last_bg, started
-            if not shrinker.winfo_exists() or not self.winfo_exists():
-                self._finish_transition()
+            if not shrinker.winfo_exists() or not shell.winfo_exists():
+                cleanup()
                 return
-            if started is None:
-                started = monotonic()
-            if self._bottom_bar_info is not None:
-                dest_footer = self._bottom_bar_info[1]
-                if dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
-                    target_box[0] = dest_footer.winfo_rootx() - self.winfo_rootx()
-                    target_box[1] = dest_footer.winfo_rooty() - self.winfo_rooty()
-                    target_box[2] = dest_footer.winfo_width()
-                    target_box[3] = dest_footer.winfo_height()
-            target_x, target_y, target_w, target_h = target_box
-            progress = min(1.0, (monotonic() - started) / duration)
-            eased = ease_out_elastic(progress, damping=5.2, frequency=1.10)
-            cur_x = round(start_x + (target_x - start_x) * eased)
-            cur_y = round(start_y + (target_y - start_y) * eased)
-            cur_w = max(1, round(start_w + (target_w - start_w) * eased))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
-            cur_bg = blend_colour(DARK_BG, target_bg, progress)
+            frame_start = monotonic()
+            if started[0] is None:
+                started[0] = frame_start
+            progress = min(1.0, (frame_start - started[0]) / duration)
+            # Outer card surface contracts smoothly (no re-covering underlying cards or mini-bar);
+            # cover art inside the canvas uses a juicy elastic spring for tactile snap-back.
+            box_eased = 1.0 - (1.0 - progress) ** 3.4
+            hero_eased = ease_out_elastic(progress, damping=4.5, frequency=1.25)
 
-            if cur_bg != last_bg or progress > 0.55:
+            bg_step = round(box_eased * 6) / 6.0
+            cur_bg = blend_colour(DARK_BG, target_bg, bg_step)
+
+            cur_x = start_x + (end_x - start_x) * box_eased
+            cur_y = start_y + (end_y - start_y) * box_eased
+            cur_w = start_w + (end_w - start_w) * box_eased
+            cur_h = start_h + (end_h - start_h) * box_eased
+
+            vis_x0 = max(0, round(cur_x))
+            vis_y0 = max(clip_top, round(cur_y))
+            vis_x1 = min(shell_w, round(cur_x + cur_w))
+            vis_y1 = min(clip_bottom, round(cur_y + cur_h))
+
+            if vis_x1 - vis_x0 < 1 or vis_y1 - vis_y0 < 1:
+                if not shrinker_hidden[0]:
+                    shrinker.place_forget()
+                    shrinker_hidden[0] = True
+            else:
+                if shrinker_hidden[0]:
+                    shrinker_hidden[0] = False
+                    last_rect[0] = None
+                rect = (vis_x0, vis_y0, vis_x1 - vis_x0, vis_y1 - vis_y0)
+                if rect != last_rect[0]:
+                    shrinker.place(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
+                    if accent_item is not None:
+                        shrinker.coords(accent_item, 0, 0, rect[2], 3)
+                    last_rect[0] = rect
+
+            if cur_bg != last_bg[0]:
                 shrinker.configure(bg=cur_bg)
-                preview_box.configure(bg=cur_bg)
-                if progress > 0.55:
-                    fade = (progress - 0.55) / 0.45
-                    cat_fg = blend_colour(ORANGE_HL, cur_bg, fade)
-                    title_fg = blend_colour(TEXT_WHITE, cur_bg, fade)
-                    accent_bg = blend_colour(ORANGE_ACCENT, cur_bg, fade)
-                else:
-                    cat_fg = ORANGE_HL
-                    title_fg = TEXT_WHITE
-                    accent_bg = ORANGE_ACCENT
-                accent_top.configure(bg=accent_bg)
-                preview_cat.configure(bg=cur_bg, fg=cat_fg)
-                preview_title.configure(bg=cur_bg, fg=title_fg)
-                last_bg = cur_bg
+                last_bg[0] = cur_bg
 
-            shrinker.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+            desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.06, hero_eased))
+            quant_sz = min(size_steps, key=lambda s: abs(s - desired_sz))
+            if quant_sz != last_cov_sz[0]:
+                p_img, p_ico = cover_cache[quant_sz]
+                shrinker._cur_photo = p_img
+                shrinker.itemconfigure(cover_item, image=p_img)
+                if icon_item is not None and p_ico is not None:
+                    shrinker.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, quant_sz // 6), "bold"))
+                last_cov_sz[0] = quant_sz
+
+            rel_cx = round(cx0 + (cx1 - cx0) * hero_eased) - vis_x0
+            rel_cy = round(cy0 + (cy1 - cy0) * hero_eased) - vis_y0
+            shrinker.coords(cover_item, rel_cx, rel_cy)
+            if icon_item is not None:
+                shrinker.coords(icon_item, rel_cx, rel_cy)
+
+            if not preview_hidden[0]:
+                if progress >= 0.35:
+                    shrinker.delete(cat_item, title_item)
+                    preview_hidden[0] = True
+                else:
+                    fade_step = round((progress / 0.35) * 4)
+                    if fade_step != last_fade_step[0]:
+                        fade = fade_step / 4.0
+                        shrinker.itemconfigure(cat_item, fill=blend_colour(ORANGE_HL, cur_bg, fade))
+                        shrinker.itemconfigure(title_item, fill=blend_colour(TEXT_WHITE, cur_bg, fade))
+                        last_fade_step[0] = fade_step
+                    rx = round(rp_start_x + (rp_end_x - rp_start_x) * hero_eased) - vis_x0
+                    ry = round(rp_start_y + (rp_end_y - rp_start_y) * hero_eased) - vis_y0
+                    shrinker.coords(cat_item, rx, ry)
+                    shrinker.coords(title_item, rx, ry + cat_line_h)
 
             if progress < 1.0:
-                self.after(8, draw_shrink)
+                spent_ms = (monotonic() - frame_start) * 1000.0
+                self.after(max(1, round(frame_ms - spent_ms)), draw_shrink)
             else:
-                shrinker.destroy()
-                self._finish_transition()
+                cleanup()
 
-        self.after(8, draw_shrink)
+        self.update_idletasks()
+        draw_shrink()
+
+    def _find_live_podcast_card(self, podcast_id, near_rect, sh_rx, sh_ry):
+        """Locate a rendered podcast card for podcast_id on the current page (closest to near_rect)."""
+        page = getattr(self, "current_page", None)
+        if page is None or not page.winfo_exists():
+            return None
+        best = None
+        best_dist = None
+        stack = [page]
+        target_str = str(podcast_id)
+        while stack:
+            widget = stack.pop()
+            meta = getattr(widget, "_cover_meta", None)
+            if meta is not None and str(meta[2]) == target_str:
+                cover = meta[1]
+                try:
+                    if widget.winfo_ismapped() and cover.winfo_exists() and cover.winfo_width() > 1:
+                        cx = widget.winfo_rootx() - sh_rx
+                        cy = widget.winfo_rooty() - sh_ry
+                        card_rect = (cx, cy, widget.winfo_width(), widget.winfo_height())
+                        cw, ch = cover.winfo_width(), cover.winfo_height()
+                        csz = max(48, min(cw, ch))
+                        cover_rect = (
+                            cover.winfo_rootx() - sh_rx + max(0, (cw - csz) // 2),
+                            cover.winfo_rooty() - sh_ry + max(0, (ch - csz) // 2),
+                            csz,
+                        )
+                        dist = abs(cx - near_rect[0]) + abs(cy - near_rect[1])
+                        if best_dist is None or dist < best_dist:
+                            best, best_dist = (card_rect, cover_rect), dist
+                except tk.TclError:
+                    pass
+                continue
+            try:
+                stack.extend(widget.winfo_children())
+            except tk.TclError:
+                pass
+        return best
 
     def bind_page_scroll(self, canvas, scrollbar):
         """Ease wheel detents briefly and keep direct scrolling responsive."""
@@ -1576,11 +2206,13 @@ class EffectsMixin:
         def draw_frame(start, started):
             nonlocal pending_frame, target
             pending_frame = None
-            progress = min(1.0, (monotonic() - started) / 0.165)
+            frame_t0 = monotonic()
+            progress = min(1.0, (frame_t0 - started) / 0.165)
             position = round(start + (target - start) * (1 - (1 - progress) ** 4))
             canvas.yview_scroll(position - round(canvas.canvasy(0)), "units")
             if progress < 1 and position != target:
-                pending_frame = canvas.after(8, draw_frame, start, started)
+                spent_ms = (monotonic() - frame_t0) * 1000.0
+                pending_frame = canvas.after(max(1, round(16 - spent_ms)), draw_frame, start, started)
             else:
                 target = None
 

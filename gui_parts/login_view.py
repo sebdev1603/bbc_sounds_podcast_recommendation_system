@@ -530,7 +530,7 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(14, draw_frame)
+                self.after(16, draw_frame)
             else:
                 finish()
 

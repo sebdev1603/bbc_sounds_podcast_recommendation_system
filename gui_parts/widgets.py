@@ -1077,7 +1077,7 @@ class WidgetsMixin:
 
         def apply_frame():
             hover_state["job"] = None
-            if not card_frame.winfo_exists():
+            if not card_frame.winfo_exists() or getattr(self, "_transition_active", False):
                 return
             cur = hover_state["step"]
             tgt = hover_state["target"]
@@ -1126,6 +1126,9 @@ class WidgetsMixin:
                 apply_frame()
 
         def on_enter(_event=None):
+            # Ignore synthetic Enter events fired while hero overlays slide under a stationary pointer.
+            if getattr(self, "_transition_active", False):
+                return
             if hover_state["leave_job"] is not None:
                 try:
                     self.after_cancel(hover_state["leave_job"])
@@ -1174,11 +1177,16 @@ class WidgetsMixin:
             card_frame.pack(fill="x", pady=5)
             cover = self.generate_podcast_cover(card_frame, pid, title, category, 92, 92)
             cover.pack(side="left", padx=11, pady=10)
-            cover.bind("<Button-1>", lambda _e, tid=pid, t=title, c=category: self.open_podcast_detail(tid, t, c))
+            card_frame._cover_meta = [card_frame, cover, pid, title, category, 92]
             details_pane = tk.Frame(card_frame, bg=CARD_BG)
             details_pane.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=12)
             title_lbl = self.create_label(details_pane, title, 12, TEXT_WHITE, "bold")
             title_lbl.pack(anchor="w")
+            open_cmd = (
+                lambda _e=None, tid=pid, t=title, c=category, cf=card_frame, cv=cover, tl=title_lbl:
+                self.open_podcast_detail(tid, t, c, source_card=cf, source_cover=cv, source_title=tl)
+            )
+            cover.bind("<Button-1>", open_cmd)
             meta_lbl = self.create_label(details_pane, meta_info, 10, TEXT_GRAY)
             meta_lbl.pack(anchor="w", pady=(5, 0))
             avg_lbl = self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR)
@@ -1186,7 +1194,7 @@ class WidgetsMixin:
             bg_widgets = [details_pane, title_lbl, meta_lbl, avg_lbl]
             view_btn = self.create_button(
                 details_pane, "View details",
-                lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
+                open_cmd,
                 compact=True,
             )
             view_btn.pack(anchor="w", pady=(9, 0))
@@ -1215,15 +1223,18 @@ class WidgetsMixin:
             corner_radius=8, backdrop=CARD_BG,
         )
         cover.pack(fill="both", expand=True)
-        open_cmd = lambda _e=None, tid=pid, t=title, c=category: self.open_podcast_detail(tid, t, c)
-        cover_box.bind("<Button-1>", open_cmd)
-        cover.bind("<Button-1>", open_cmd)
         card_frame._cover_meta = [cover_box, cover, pid, title, category, cover_size]
 
         details_pane = tk.Frame(card_frame, bg=CARD_BG)
         details_pane.pack(fill="both", expand=True, padx=12, pady=11)
         title_lbl = self.create_label(details_pane, title, 12, TEXT_WHITE, "bold", wraplength=max(170, cover_size - 8))
         title_lbl.pack(anchor="w")
+        open_cmd = (
+            lambda _e=None, tid=pid, t=title, c=category, cf=card_frame, cv=cover, tl=title_lbl:
+            self.open_podcast_detail(tid, t, c, source_card=cf, source_cover=cv, source_title=tl)
+        )
+        cover_box.bind("<Button-1>", open_cmd)
+        cover.bind("<Button-1>", open_cmd)
         meta_lbl = self.create_label(details_pane, meta_info, 9, TEXT_GRAY)
         meta_lbl.pack(anchor="w", pady=(4, 3))
         avg_lbl = self.create_label(details_pane, self.podcast_average_text(pid), 9, GOLD_STAR)
@@ -1240,7 +1251,7 @@ class WidgetsMixin:
         bg_widgets.append(button_strip)
         det_btn = self.create_button(
             button_strip, "Details",
-            lambda target_id=pid, t=title, c=category: self.open_podcast_detail(target_id, t, c),
+            open_cmd,
             compact=True,
         )
         det_btn.pack(side="left")
@@ -1410,7 +1421,12 @@ class WidgetsMixin:
         bottom = tk.Frame(wrapper, bg=background)
         bottom.pack(pady=5)
         page_count = math.ceil(len(items) / PODCASTS_PER_PAGE)
-        page_number = 0
+        order_cache = getattr(self, "_tab_podcast_order_cache", None)
+        if order_cache is None:
+            order_cache = {}
+            self._tab_podcast_order_cache = order_cache
+        page_key = ("pagination_page", getattr(self, "_active_nav_tab", None), len(items), items[0][0] if items else None)
+        page_number = min(page_count - 1, max(0, int(order_cache.get(page_key, 0))))
         status = tk.StringVar(master=wrapper)
         controls = []
         content = self.current_page
@@ -1426,7 +1442,8 @@ class WidgetsMixin:
                         offset = wrapper.winfo_rooty() - content.winfo_rooty()
                         canvas.yview_moveto(max(0, offset - 8) / height)
                 self.cancel_pending_render()
-            page_number = number
+            page_number = max(0, min(page_count - 1, number))
+            order_cache[page_key] = page_number
             for child in body.winfo_children():
                 child.destroy()
             last = page_number == page_count - 1
@@ -1450,7 +1467,7 @@ class WidgetsMixin:
             )
             following.pack(side="left")
             controls.append((previous, following))
-        change_page(0)
+        change_page(page_number)
 
     def render_empty_message(self, parent_widget, heading, subtitle):
         """Display a styled empty-state card with a heading and helpful hint."""
