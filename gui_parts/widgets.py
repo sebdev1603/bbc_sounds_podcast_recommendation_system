@@ -1192,7 +1192,12 @@ class WidgetsMixin:
             view_btn.pack(anchor="w", pady=(9, 0))
             bg_widgets.append(view_btn)
             if show_play_btn:
-                play_btn = self.create_button(card_frame, "▶  Listen", lambda target_id=pid: self.listen(target_id), primary=True, compact=True)
+                play_btn = self.create_button(card_frame, "▶  Listen", lambda: None, primary=True, compact=True)
+                play_btn.configure(
+                    command=lambda b=play_btn, cv=cover, target_id=pid, t=title, c=category: (
+                        self.play_podcast_to_mini_bar(b, target_id, t, c, cover_widget=cv)
+                    )
+                )
                 play_btn.pack(side="right", padx=12)
                 bg_widgets.append(play_btn)
             if show_remove_btn:
@@ -1247,7 +1252,12 @@ class WidgetsMixin:
             rem_btn.pack(side="left", padx=(6, 0))
             bg_widgets.append(rem_btn)
         if show_play_btn:
-            play_btn = self.create_button(button_strip, "▶", lambda target_id=pid: self.listen(target_id), primary=True, compact=True)
+            play_btn = self.create_button(button_strip, "▶", lambda: None, primary=True, compact=True)
+            play_btn.configure(
+                command=lambda b=play_btn, cv=cover, target_id=pid, t=title, c=category: (
+                    self.play_podcast_to_mini_bar(b, target_id, t, c, cover_widget=cv)
+                )
+            )
             play_btn.pack(side="right")
             bg_widgets.append(play_btn)
         self._attach_podcast_card_hover(card_frame, bg_widgets, title_lbl)

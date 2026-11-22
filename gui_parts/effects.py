@@ -1093,9 +1093,7 @@ class EffectsMixin:
                     pass
                 sim_fade_job[0] = None
 
-        def play_from_mini_bar():
-            if not self.listen(podcast_id, open_detail=False):
-                return
+        def show_mini_bar_sim_notice():
             if not sim_notice_label.winfo_exists():
                 return
             cancel_sim_fade()
@@ -1118,6 +1116,13 @@ class EffectsMixin:
 
             # Hold readable for ~1.1s before smoothly fading into the mini-bar background.
             sim_fade_job[0] = self.after(1100, step_sim_fade)
+
+        def play_from_mini_bar():
+            if not self.listen(podcast_id, open_detail=False):
+                return
+            show_mini_bar_sim_notice()
+
+        footer._show_sim_notice = show_mini_bar_sim_notice
 
         dismiss_btn = self.create_button(row, "Dismiss", dismiss, compact=True)
         dismiss_btn.pack(side="right", padx=(8, 0))
@@ -1165,6 +1170,150 @@ class EffectsMixin:
         )
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
+
+    def play_podcast_to_mini_bar(self, source_widget, podcast_id, title="", category="", cover_widget=None):
+        """Elastically migrate a podcast's Play button and cover art into the bottom mini-bar."""
+        if self._is_busy_transitioning():
+            return
+        if not self.listen(podcast_id, open_detail=False):
+            return
+
+        shell = getattr(self, "_shell_box", None)
+        if shell is None or not shell.winfo_exists():
+            return
+
+        show_avg = getattr(self, "_active_nav_tab", "") != "Settings"
+        if source_widget is None or not source_widget.winfo_exists():
+            self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
+            bar = getattr(self, "_shell_bottom_bar", None)
+            if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
+                bar._show_sim_notice()
+            return
+
+        self._transition_active = True
+        self.update_idletasks()
+        shell_x = shell.winfo_rootx()
+        shell_y = shell.winfo_rooty()
+        shell_w = max(1, shell.winfo_width())
+        shell_h = max(1, shell.winfo_height())
+
+        start_x = source_widget.winfo_rootx() - shell_x
+        start_y = source_widget.winfo_rooty() - shell_y
+        start_w = max(28, source_widget.winfo_width())
+        start_h = max(24, source_widget.winfo_height())
+
+        existing_bar = getattr(self, "_shell_bottom_bar", None)
+        if existing_bar is not None and existing_bar.winfo_exists() and existing_bar.winfo_width() > 1:
+            target_x = existing_bar.winfo_x()
+            target_y = existing_bar.winfo_y()
+            target_w = max(1, existing_bar.winfo_width())
+            target_h = max(1, existing_bar.winfo_height())
+        else:
+            target_x = 18
+            target_w = max(1, shell_w - 36)
+            target_h = 80
+            target_y = max(0, shell_h - 90)
+
+        # Mini-bar cover slot sits 13px from left edge (3px accent + 10px padx) and vertically centred.
+        cov_target_x = target_x + 13
+        cov_target_y = target_y + max(7, (target_h - 62) // 2)
+        if cover_widget is not None and cover_widget.winfo_exists() and cover_widget.winfo_width() > 1:
+            cov_start_x = cover_widget.winfo_rootx() - shell_x + max(0, (cover_widget.winfo_width() - 62) // 2)
+            cov_start_y = cover_widget.winfo_rooty() - shell_y + max(0, (cover_widget.winfo_height() - 62) // 2)
+        else:
+            cov_start_x = start_x
+            cov_start_y = start_y
+
+        migrator = tk.Frame(shell, bg=ORANGE_ACCENT, bd=0, highlightthickness=1, highlightbackground=ORANGE_HL)
+        left_accent = tk.Frame(migrator, bg=ORANGE_ACCENT, width=3)
+        left_accent.pack(side="left", fill="y")
+        text_box = tk.Frame(migrator, bg=ORANGE_ACCENT)
+        text_box.pack(side="left", fill="both", expand=True, padx=(84, 14), pady=8)
+        title_lbl = tk.Label(
+            text_box, text=str(title or "Programme"),
+            font=(DEFAULT_FONT, 12, "bold"), fg=ORANGE_ACCENT, bg=ORANGE_ACCENT, anchor="w",
+        )
+        title_lbl.pack(fill="x", pady=(6, 1))
+        sub_lbl = tk.Label(
+            text_box, text=translate(f"Last played  ·  {category}" if category else "Last played"),
+            font=(DEFAULT_FONT, 9), fg=ORANGE_ACCENT, bg=ORANGE_ACCENT, anchor="w",
+        )
+        sub_lbl.pack(fill="x")
+
+        floating_cover = self.generate_podcast_cover(
+            shell, podcast_id, title, category, 62, 62,
+            corner_radius=10, backdrop=MINI_BAR_BG,
+        )
+
+        migrator.place(x=start_x, y=start_y, width=start_w, height=start_h)
+        floating_cover.place(x=cov_start_x, y=cov_start_y, width=62, height=62)
+        tk.Misc.lift(migrator)
+        tk.Misc.lift(floating_cover)
+
+        duration = 0.420
+        started = monotonic()
+        last_rect = [None]
+        last_cov_pos = [None]
+        last_bg = [ORANGE_ACCENT]
+
+        def finish_migration():
+            for w in (floating_cover, migrator):
+                if w is not None and w.winfo_exists():
+                    try:
+                        w.destroy()
+                    except tk.TclError:
+                        pass
+            if shell.winfo_exists():
+                self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
+                bar = getattr(self, "_shell_bottom_bar", None)
+                if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
+                    bar._show_sim_notice()
+            self._finish_transition()
+
+        def draw_migration():
+            if not migrator.winfo_exists() or not shell.winfo_exists():
+                finish_migration()
+                return
+            progress = min(1.0, (monotonic() - started) / duration)
+            # Lively damped elastic spring for both the migrating bar and the flying cover art.
+            eased = ease_out_elastic(progress, damping=4.5, frequency=1.30)
+            clamped_color = max(0.0, min(1.0, 1.0 - (1.0 - progress) ** 3))
+
+            cur_x = max(0, round(start_x + (target_x - start_x) * eased))
+            cur_y = max(0, round(start_y + (target_y - start_y) * eased))
+            cur_w = max(1, min(shell_w, round(start_w + (target_w - start_w) * eased)))
+            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+
+            cur_bg = blend_colour(ORANGE_ACCENT, MINI_BAR_BG, clamped_color)
+            if cur_bg != last_bg[0]:
+                migrator.configure(bg=cur_bg, highlightbackground=blend_colour(ORANGE_HL, ORANGE_ACCENT, clamped_color))
+                text_box.configure(bg=cur_bg)
+                text_fade = max(0.0, (progress - 0.28) / 0.72)
+                title_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_WHITE, text_fade))
+                sub_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_GRAY, text_fade))
+                last_bg[0] = cur_bg
+
+            rect = (cur_x, cur_y, cur_w, cur_h)
+            if rect != last_rect[0]:
+                migrator.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+                last_rect[0] = rect
+
+            if floating_cover.winfo_exists():
+                # Gentle upward arc + elastic settle right into the mini-bar's 62x62 cover slot.
+                arc_lift = -26.0 * (4.0 * progress * (1.0 - progress))
+                cov_x = round(cov_start_x + (cov_target_x - cov_start_x) * eased)
+                cov_y = round(cov_start_y + (cov_target_y - cov_start_y) * eased + arc_lift)
+                cov_pos = (cov_x, cov_y)
+                if cov_pos != last_cov_pos[0]:
+                    floating_cover.place(x=cov_x, y=cov_y, width=62, height=62)
+                    last_cov_pos[0] = cov_pos
+
+            if progress < 1.0:
+                self.after(16, draw_migration)
+            else:
+                finish_migration()
+
+        draw_migration()
 
     def open_podcast_detail(self, podcast_id, title=None, category=None):
         """Open a podcast's detail page by expanding upward via the bottom mini-bar."""

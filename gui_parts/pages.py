@@ -1045,10 +1045,16 @@ class PagesMixin:
             self.create_label(
                 highlight_details, self.podcast_average_text(top_programme[0]), 9, GOLD_STAR,
             ).pack(anchor="w", pady=(4, 0))
-            self.create_button(
-                highlight_card, "▶  Listen again", lambda: self.listen(top_programme[0]),
+            listen_again_btn = self.create_button(
+                highlight_card, "▶  Listen again", lambda: None,
                 primary=True, compact=True,
-            ).pack(side="right", padx=18)
+            )
+            listen_again_btn.configure(
+                command=lambda b=listen_again_btn, cv=highlight_cover, tid=top_programme[0], t=top_programme[1], c=top_programme[2]: (
+                    self.play_podcast_to_mini_bar(b, tid, t, c, cover_widget=cv)
+                )
+            )
+            listen_again_btn.pack(side="right", padx=18)
         else:
             self.render_empty_message(page, "No listening data yet", "Play a programme to start your personal report.")
 
