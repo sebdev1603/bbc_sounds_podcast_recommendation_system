@@ -530,7 +530,7 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(14, draw_frame)
+                self.after(16, draw_frame)
             else:
                 finish()
 
@@ -899,7 +899,9 @@ class LoginViewMixin:
         inner_r = outer_r * 0.65
         vinyl_r = outer_r * 0.50
 
-        # 1. Three concentric rotating circles of text (matching 1.svg), skipping blank spaces.
+        # 1. Three concentric rotating circles of text + centre vinyl disc.
+        # On Windows, render both the rings and the vinyl disc via GDI+ (SmoothingModeAntiAlias +
+        # TextRenderingHintAntiAlias) into a reusable PhotoImage so curves and letters have zero jitter.
         ring_text = "LISTEN · DISCOVER · STREAM · SHARE · BBC SOUND · "
         ring_specs = [
             (outer_r, "#d2d5db", max(11, round(unit * 0.032)), 0.45),
@@ -907,78 +909,86 @@ class LoginViewMixin:
             (inner_r, ORANGE_ACCENT, max(9, round(unit * 0.023)), 0.80),
         ]
         ring_items = []
-        for radius, colour, font_size, speed in ring_specs:
-            step = 360.0 / len(ring_text)
-            for idx, char in enumerate(ring_text):
-                if char == " ":
-                    continue
-                base_deg = idx * step
-                rad = math.radians(base_deg - 90)
-                init_ang = round((-base_deg) % 360) % 360
-                item_id = canvas_obj.create_text(
-                    center_x + radius * math.cos(rad),
-                    center_y + radius * math.sin(rad),
-                    text=char, fill=colour, font=("Arial Black", font_size, "bold"),
-                    angle=init_ang,
-                )
-                ring_items.append([item_id, base_deg, radius, speed, init_ang])
-
-        # 2. Rotating Vinyl CD / Record in the centre.
-        canvas_obj.create_oval(
-            center_x - vinyl_r, center_y - vinyl_r,
-            center_x + vinyl_r, center_y + vinyl_r,
-            fill="#111215", outline="#2e3138", width=2,
+        gdi_rings = self._create_gdiplus_ring_renderer(
+            canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs,
         )
-        sheen_1 = canvas_obj.create_arc(
-            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
-            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
-            start=25, extent=38, fill="#24272e", outline="", style="pieslice",
-        )
-        sheen_2 = canvas_obj.create_arc(
-            center_x - vinyl_r + 3, center_y - vinyl_r + 3,
-            center_x + vinyl_r - 3, center_y + vinyl_r - 3,
-            start=205, extent=38, fill="#24272e", outline="", style="pieslice",
-        )
-        glint_1 = canvas_obj.create_arc(
-            center_x - vinyl_r * 0.84, center_y - vinyl_r * 0.84,
-            center_x + vinyl_r * 0.84, center_y + vinyl_r * 0.84,
-            start=35, extent=18, outline="#555a66", width=2, style="arc",
-        )
-        glint_2 = canvas_obj.create_arc(
-            center_x - vinyl_r * 0.68, center_y - vinyl_r * 0.68,
-            center_x + vinyl_r * 0.68, center_y + vinyl_r * 0.68,
-            start=215, extent=20, outline="#4a4f5a", width=2, style="arc",
-        )
-        for frac, stroke in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34")):
-            gr = vinyl_r * frac
-            canvas_obj.create_oval(center_x - gr, center_y - gr, center_x + gr, center_y + gr, outline=stroke, width=1)
-
+        sheen_1 = sheen_2 = glint_1 = glint_2 = None
+        label_marker = label_top = label_bottom = None
         label_r = vinyl_r * 0.36
-        canvas_obj.create_oval(
-            center_x - label_r, center_y - label_r,
-            center_x + label_r, center_y + label_r,
-            fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2,
-        )
         label_dot_r = label_r * 0.68
-        label_marker = canvas_obj.create_oval(
-            center_x - 3, center_y - label_dot_r - 3,
-            center_x + 3, center_y - label_dot_r + 3,
-            fill="#111111", outline="",
-        )
-        label_top = canvas_obj.create_text(
-            center_x, center_y - label_r * 0.45,
-            text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, max(7, round(label_r * 0.28)), "bold"),
-        )
-        label_bottom = canvas_obj.create_text(
-            center_x, center_y + label_r * 0.48,
-            text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, max(6, round(label_r * 0.20)), "bold"),
-        )
-        spindle_r = max(5, vinyl_r * 0.08)
-        canvas_obj.create_oval(
-            center_x - spindle_r, center_y - spindle_r,
-            center_x + spindle_r, center_y + spindle_r,
-            fill="#111111", outline=TEXT_WHITE, width=2,
-        )
+        if gdi_rings is None:
+            letter_slot = 0
+            for radius, colour, font_size, speed in ring_specs:
+                step = 360.0 / len(ring_text)
+                for idx, char in enumerate(ring_text):
+                    if char == " ":
+                        continue
+                    base_deg = idx * step
+                    rad = math.radians(base_deg - 90)
+                    init_ang = (-base_deg) % 360.0
+                    item_id = canvas_obj.create_text(
+                        center_x + radius * math.cos(rad),
+                        center_y + radius * math.sin(rad),
+                        text=char, fill=colour, font=(DEFAULT_FONT, font_size, "bold"),
+                        angle=init_ang,
+                    )
+                    ring_items.append([item_id, base_deg, radius, speed, letter_slot % 3])
+                    letter_slot += 1
+
+            # 2. Fallback Tk Canvas Vinyl CD / Record in the centre (non-Windows).
+            canvas_obj.create_oval(
+                center_x - vinyl_r, center_y - vinyl_r,
+                center_x + vinyl_r, center_y + vinyl_r,
+                fill="#111215", outline="#2e3138", width=2,
+            )
+            sheen_1 = canvas_obj.create_arc(
+                center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+                center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+                start=25, extent=38, fill="#24272e", outline="", style="pieslice",
+            )
+            sheen_2 = canvas_obj.create_arc(
+                center_x - vinyl_r + 3, center_y - vinyl_r + 3,
+                center_x + vinyl_r - 3, center_y + vinyl_r - 3,
+                start=205, extent=38, fill="#24272e", outline="", style="pieslice",
+            )
+            glint_1 = canvas_obj.create_arc(
+                center_x - vinyl_r * 0.84, center_y - vinyl_r * 0.84,
+                center_x + vinyl_r * 0.84, center_y + vinyl_r * 0.84,
+                start=35, extent=18, outline="#555a66", width=2, style="arc",
+            )
+            glint_2 = canvas_obj.create_arc(
+                center_x - vinyl_r * 0.68, center_y - vinyl_r * 0.68,
+                center_x + vinyl_r * 0.68, center_y + vinyl_r * 0.68,
+                start=215, extent=20, outline="#4a4f5a", width=2, style="arc",
+            )
+            for frac, stroke in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34")):
+                gr = vinyl_r * frac
+                canvas_obj.create_oval(center_x - gr, center_y - gr, center_x + gr, center_y + gr, outline=stroke, width=1)
+
+            canvas_obj.create_oval(
+                center_x - label_r, center_y - label_r,
+                center_x + label_r, center_y + label_r,
+                fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2,
+            )
+            label_marker = canvas_obj.create_oval(
+                center_x - 3, center_y - label_dot_r - 3,
+                center_x + 3, center_y - label_dot_r + 3,
+                fill="#111111", outline="",
+            )
+            label_top = canvas_obj.create_text(
+                center_x, center_y - label_r * 0.45,
+                text="BBC", fill=TEXT_WHITE, font=(DEFAULT_FONT, max(7, round(label_r * 0.28)), "bold"),
+            )
+            label_bottom = canvas_obj.create_text(
+                center_x, center_y + label_r * 0.48,
+                text="SOUNDS", fill="#111111", font=(DEFAULT_FONT, max(6, round(label_r * 0.20)), "bold"),
+            )
+            spindle_r = max(5, vinyl_r * 0.08)
+            canvas_obj.create_oval(
+                center_x - spindle_r, center_y - spindle_r,
+                center_x + spindle_r, center_y + spindle_r,
+                fill="#111111", outline=TEXT_WHITE, width=2,
+            )
 
         # 3. Turntable tonearm resting on the top-right of the spinning vinyl (as in 1.svg).
         pivot_x = center_x + vinyl_r * 1.06
@@ -1021,8 +1031,7 @@ class LoginViewMixin:
         state = {
             "tick": getattr(canvas_obj, "_spin_tick", 0.0),
             "last_t": None,
-            "last_top_ang": None,
-            "last_bot_ang": None,
+            "frame_n": 0,
         }
         canvas_path = str(canvas_obj)
         tk_eval = canvas_obj.tk.eval
@@ -1046,58 +1055,298 @@ class LoginViewMixin:
                 return
 
             # Advance in real elapsed time (30 ticks/sec matches the original speed at 60fps).
-            dt = 0.016 if state["last_t"] is None else min(0.05, now - state["last_t"])
+            dt = 0.016 if state["last_t"] is None else max(0.004, min(0.033, now - state["last_t"]))
             state["last_t"] = now
             state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
             canvas_obj._spin_tick = state["tick"]
             t = state["tick"]
+            bucket = state["frame_n"] % 3
+            state["frame_n"] += 1
 
-            cmds = []
-            append = cmds.append
+            if gdi_rings is not None:
+                gdi_rings(t)
+            else:
+                cmds = []
+                append = cmds.append
+                # Fallback for non-Windows: update (x, y) at 60Hz and stagger float -angle across 3 buckets.
+                for item_id, base_deg, radius, speed, slot in ring_items:
+                    deg = (base_deg + t * speed) % 360.0
+                    rad = (deg - 90.0) * deg2rad
+                    append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.2f} {center_y + radius * sin(rad):.2f}")
+                    if slot == bucket:
+                        append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.2f}")
 
-            # Rotate each letter smoothly along its concentric ring; only update GDI font angle on 1-deg steps.
-            for item in ring_items:
-                item_id, base_deg, radius, speed, last_ang = item
-                deg = (base_deg + t * speed) % 360.0
-                rad = (deg - 90.0) * deg2rad
-                append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.2f} {center_y + radius * sin(rad):.2f}")
-                ang = round((-deg) % 360.0) % 360
-                if ang != last_ang:
-                    item[4] = ang
-                    append(f"{canvas_path} itemconfigure {item_id} -angle {ang}")
+                # Rotate the vinyl highlights and specular glints clockwise.
+                vinyl_deg = (t * 2.2) % 360.0
+                append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.2f}")
 
-            # Rotate the vinyl highlights and specular glints clockwise.
-            vinyl_deg = (t * 2.2) % 360.0
-            append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.2f}")
-            append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.2f}")
-            append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.2f}")
-            append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.2f}")
+                # Orbit the centre label dot and "BBC / SOUNDS" text with continuous float angles every frame.
+                v_rad = (vinyl_deg - 90.0) * deg2rad
+                cv, sv = cos(v_rad), sin(v_rad)
+                mx = center_x + label_dot_r * cv
+                my = center_y + label_dot_r * sv
+                append(f"{canvas_path} coords {label_marker} {mx - 3:.2f} {my - 3:.2f} {mx + 3:.2f} {my + 3:.2f}")
+                append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.2f} {center_y + top_r * sv:.2f}")
+                append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.2f} {center_y - bot_r * sv:.2f}")
+                append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.2f}")
 
-            # Orbit the centre label dot and "BBC / SOUNDS" text around the spindle.
-            v_rad = (vinyl_deg - 90.0) * deg2rad
-            cv, sv = cos(v_rad), sin(v_rad)
-            mx = center_x + label_dot_r * cv
-            my = center_y + label_dot_r * sv
-            append(f"{canvas_path} coords {label_marker} {mx - 3:.2f} {my - 3:.2f} {mx + 3:.2f} {my + 3:.2f}")
-            append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.2f} {center_y + top_r * sv:.2f}")
-            append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.2f} {center_y - bot_r * sv:.2f}")
+                try:
+                    tk_eval("\n".join(cmds))
+                except tk.TclError:
+                    return
 
-            top_ang = round((-vinyl_deg) % 360.0) % 360
-            if top_ang != state["last_top_ang"]:
-                state["last_top_ang"] = top_ang
-                append(f"{canvas_path} itemconfigure {label_top} -angle {top_ang}")
-            bot_ang = round((180.0 - vinyl_deg) % 360.0) % 360
-            if bot_ang != state["last_bot_ang"]:
-                state["last_bot_ang"] = bot_ang
-                append(f"{canvas_path} itemconfigure {label_bottom} -angle {bot_ang}")
-
-            try:
-                tk_eval("\n".join(cmds))
-            except tk.TclError:
-                return
-
-            canvas_obj._spin_job = self.after(16, animate_spin)
+            # Compensate for frame render time so the spin locks cleanly to 60Hz instead of drifting to ~53fps.
+            spent_ms = (monotonic() - now) * 1000.0
+            canvas_obj._spin_job = self.after(max(1, round(16 - spent_ms)), animate_spin)
 
         canvas_obj._resume_spin = animate_spin
         if not getattr(self, "_signing_out", False):
             animate_spin()
+        elif gdi_rings is not None:
+            gdi_rings(state["tick"])
+
+    def _create_gdiplus_ring_renderer(self, canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs):
+        """Build a Windows GDI+ sub-pixel anti-aliased renderer for the 3 rotating text rings and vinyl disc."""
+        import sys
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            gdiplus = ctypes.windll.gdiplus
+            if not getattr(self, "_gdiplus_vinyl_token", None):
+                class _GdiplusStartupInput(ctypes.Structure):
+                    _fields_ = [
+                        ("GdiplusVersion", ctypes.c_uint32),
+                        ("DebugEventCallback", ctypes.c_void_p),
+                        ("SuppressBackgroundThread", ctypes.c_int),
+                        ("SuppressExternalCodecs", ctypes.c_int),
+                    ]
+                token = ctypes.c_void_p()
+                if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(_GdiplusStartupInput(1, None, 0, 0)), None) != 0:
+                    return None
+                self._gdiplus_vinyl_token = token
+
+            # Ensure bitmap dimension is a multiple of 4 so 24bppRGB stride is 4-byte aligned.
+            pad = max(24, round(ring_specs[0][2] * 2.2))
+            size = ((int(math.ceil((outer_r + pad) * 2)) + 3) // 4) * 4
+            if size < 64 or size > 1200:
+                return None
+
+            def swapped_argb(hex_col):
+                c = str(hex_col).lstrip("#")
+                if len(c) != 6:
+                    return 0xFFFFFFFF
+                r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+                # Swap R and B so GDI+ PixelFormat24bppRGB ([B, G, R] in memory) produces exact PPM [R, G, B].
+                return 0xFF000000 | (b << 16) | (g << 8) | r
+
+            bg_argb = ctypes.c_uint32(swapped_argb(canvas_obj.cget("bg")))
+            stride = size * 3
+            buf = (ctypes.c_ubyte * (stride * size))()
+            bmp = ctypes.c_void_p()
+            if gdiplus.GdipCreateBitmapFromScan0(size, size, stride, 0x00021808, buf, ctypes.byref(bmp)) != 0:
+                return None
+            gfx = ctypes.c_void_p()
+            if gdiplus.GdipGetImageGraphicsContext(bmp, ctypes.byref(gfx)) != 0:
+                gdiplus.GdipDisposeImage(bmp)
+                return None
+            gdiplus.GdipSetSmoothingMode(gfx, 4)        # SmoothingModeAntiAlias
+            gdiplus.GdipSetTextRenderingHint(gfx, 4)    # TextRenderingHintAntiAlias (sub-pixel, no grid-fitting)
+
+            fam = ctypes.c_void_p()
+            for fam_name in (DEFAULT_FONT, "Segoe UI", "Arial"):
+                if gdiplus.GdipCreateFontFamilyFromName(fam_name, None, ctypes.byref(fam)) == 0 and fam.value:
+                    break
+            if not fam.value:
+                gdiplus.GdipDeleteGraphics(gfx)
+                gdiplus.GdipDisposeImage(bmp)
+                return None
+
+            fmt = ctypes.c_void_p()
+            gdiplus.GdipCreateStringFormat(0, 0, ctypes.byref(fmt))
+            gdiplus.GdipSetStringFormatAlign(fmt, 1)      # Center
+            gdiplus.GdipSetStringFormatLineAlign(fmt, 1)  # Center
+
+            class _RectF(ctypes.Structure):
+                _fields_ = [("X", ctypes.c_float), ("Y", ctypes.c_float), ("W", ctypes.c_float), ("H", ctypes.c_float)]
+
+            char_rect = _RectF(-26.0, -26.0, 52.0, 52.0)
+            label_rect = _RectF(-60.0, -24.0, 120.0, 48.0)
+            step = 360.0 / len(ring_text)
+            chars = tuple((idx * step, ch) for idx, ch in enumerate(ring_text) if ch != " ")
+
+            c_float = ctypes.c_float
+            fonts_to_free = []
+            brushes_to_free = []
+            pens_to_free = []
+
+            def make_brush(hex_col):
+                br = ctypes.c_void_p()
+                gdiplus.GdipCreateSolidFill(ctypes.c_uint32(swapped_argb(hex_col)), ctypes.byref(br))
+                brushes_to_free.append(br)
+                return br
+
+            def make_pen(hex_col, width_px):
+                pen = ctypes.c_void_p()
+                gdiplus.GdipCreatePen1(ctypes.c_uint32(swapped_argb(hex_col)), c_float(float(width_px)), 2, ctypes.byref(pen))
+                pens_to_free.append(pen)
+                return pen
+
+            def make_font(pt_size):
+                fnt = ctypes.c_void_p()
+                gdiplus.GdipCreateFont(fam, c_float(max(9.0, pt_size * 1.33)), 1, 2, ctypes.byref(fnt))
+                fonts_to_free.append(fnt)
+                return fnt
+
+            prepared_rings = []
+            for radius, colour, font_size, speed in ring_specs:
+                prepared_rings.append((c_float(-float(radius)), speed, make_font(font_size), make_brush(colour)))
+
+            # Pre-create brushes, pens, and fonts for the anti-aliased centre vinyl disc.
+            half_f = size / 2.0
+            disc_br = make_brush("#111215")
+            disc_pen = make_pen("#2e3138", 2.0)
+            sheen_br = make_brush("#24272e")
+            glint1_pen = make_pen("#555a66", 2.0)
+            glint2_pen = make_pen("#4a4f5a", 2.0)
+            groove_specs = tuple(
+                (c_float(half_f - vinyl_r * f), c_float(half_f - vinyl_r * f),
+                 c_float(vinyl_r * f * 2.0), c_float(vinyl_r * f * 2.0), make_pen(col, 1.0))
+                for f, col in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34"))
+            )
+            label_r = vinyl_r * 0.36
+            label_dot_r = label_r * 0.68
+            spindle_r = max(5.0, vinyl_r * 0.08)
+            label_br = make_brush(ORANGE_ACCENT)
+            white_pen = make_pen(TEXT_WHITE, 2.0)
+            white_br = make_brush(TEXT_WHITE)
+            dark_br = make_brush("#111111")
+            bbc_font = make_font(max(7, round(label_r * 0.28)))
+            sounds_font = make_font(max(6, round(label_r * 0.20)))
+
+            disc_xy = c_float(half_f - vinyl_r)
+            disc_d = c_float(vinyl_r * 2.0)
+            sheen_xy = c_float(half_f - vinyl_r + 3.0)
+            sheen_d = c_float((vinyl_r - 3.0) * 2.0)
+            g1_xy = c_float(half_f - vinyl_r * 0.84)
+            g1_d = c_float(vinyl_r * 0.84 * 2.0)
+            g2_xy = c_float(half_f - vinyl_r * 0.68)
+            g2_d = c_float(vinyl_r * 0.68 * 2.0)
+            lbl_xy = c_float(half_f - label_r)
+            lbl_d = c_float(label_r * 2.0)
+            sp_xy = c_float(half_f - spindle_r)
+            sp_d = c_float(spindle_r * 2.0)
+            dot_x = c_float(-3.0)
+            dot_y = c_float(-label_dot_r - 3.0)
+            dot_d = c_float(6.0)
+            top_neg_y = c_float(-label_r * 0.45)
+            bot_neg_y = c_float(-label_r * 0.48)
+            sw_38 = c_float(38.0)
+            sw_18 = c_float(18.0)
+            sw_20 = c_float(20.0)
+            deg_180 = c_float(180.0)
+
+            header = f"P6\n{size} {size}\n255\n".encode("ascii")
+            half = c_float(half_f)
+            zero = c_float(0.0)
+            rect_ref = ctypes.byref(char_rect)
+            lbl_rect_ref = ctypes.byref(label_rect)
+
+            gdi_clear = gdiplus.GdipGraphicsClear
+            gdi_reset = gdiplus.GdipResetWorldTransform
+            gdi_trans = gdiplus.GdipTranslateWorldTransform
+            gdi_rot = gdiplus.GdipRotateWorldTransform
+            gdi_draw = gdiplus.GdipDrawString
+            gdi_fill_ell = gdiplus.GdipFillEllipse
+            gdi_draw_ell = gdiplus.GdipDrawEllipse
+            gdi_fill_pie = gdiplus.GdipFillPie
+            gdi_draw_arc = gdiplus.GdipDrawArc
+
+            # Paint initial frame into a single reusable PhotoImage placed behind the tonearm.
+            gdi_clear(gfx, bg_argb)
+            photo = tk.PhotoImage(data=header + bytes(buf))
+            canvas_obj._ring_photo = photo
+            canvas_obj.create_image(center_x, center_y, image=photo, anchor="center")
+
+            alive = [True]
+
+            def cleanup_gdi(_event=None):
+                if not alive[0]:
+                    return
+                alive[0] = False
+                for fnt in fonts_to_free:
+                    if fnt.value:
+                        gdiplus.GdipDeleteFont(fnt)
+                for br in brushes_to_free:
+                    if br.value:
+                        gdiplus.GdipDeleteBrush(br)
+                for pen in pens_to_free:
+                    if pen.value:
+                        gdiplus.GdipDeletePen(pen)
+                if fmt.value:
+                    gdiplus.GdipDeleteStringFormat(fmt)
+                if fam.value:
+                    gdiplus.GdipDeleteFontFamily(fam)
+                if gfx.value:
+                    gdiplus.GdipDeleteGraphics(gfx)
+                if bmp.value:
+                    gdiplus.GdipDisposeImage(bmp)
+
+            canvas_obj.bind("<Destroy>", cleanup_gdi, add="+")
+
+            def render_frame(t):
+                if not alive[0]:
+                    return
+                gdi_clear(gfx, bg_argb)
+                # 1. Three rotating anti-aliased text rings.
+                for neg_r, speed, fnt, br in prepared_rings:
+                    offset = t * speed
+                    for base_deg, ch in chars:
+                        gdi_reset(gfx)
+                        gdi_trans(gfx, half, half, 0)
+                        gdi_rot(gfx, c_float(base_deg + offset), 0)
+                        gdi_trans(gfx, zero, neg_r, 0)
+                        gdi_draw(gfx, ch, 1, fnt, rect_ref, fmt, br)
+
+                # 2. Anti-aliased vinyl disc, rotating specular sheens/glints, grooves, and centre label.
+                gdi_reset(gfx)
+                vinyl_deg = (t * 2.2) % 360.0
+                gdi_fill_ell(gfx, disc_br, disc_xy, disc_xy, disc_d, disc_d)
+                gdi_fill_pie(gfx, sheen_br, sheen_xy, sheen_xy, sheen_d, sheen_d, c_float(vinyl_deg - 63.0), sw_38)
+                gdi_fill_pie(gfx, sheen_br, sheen_xy, sheen_xy, sheen_d, sheen_d, c_float(vinyl_deg + 117.0), sw_38)
+                gdi_draw_arc(gfx, glint1_pen, g1_xy, g1_xy, g1_d, g1_d, c_float(vinyl_deg - 53.0), sw_18)
+                gdi_draw_arc(gfx, glint2_pen, g2_xy, g2_xy, g2_d, g2_d, c_float(vinyl_deg + 125.0), sw_20)
+                gdi_draw_ell(gfx, disc_pen, disc_xy, disc_xy, disc_d, disc_d)
+                for gx, gy, gw, gh, gpen in groove_specs:
+                    gdi_draw_ell(gfx, gpen, gx, gy, gw, gh)
+
+                gdi_fill_ell(gfx, label_br, lbl_xy, lbl_xy, lbl_d, lbl_d)
+                gdi_draw_ell(gfx, white_pen, lbl_xy, lbl_xy, lbl_d, lbl_d)
+
+                # Rotating marker dot + "BBC" and "SOUNDS" on the orange label.
+                gdi_trans(gfx, half, half, 0)
+                gdi_rot(gfx, c_float(vinyl_deg), 0)
+                gdi_fill_ell(gfx, dark_br, dot_x, dot_y, dot_d, dot_d)
+                gdi_trans(gfx, zero, top_neg_y, 0)
+                gdi_draw(gfx, "BBC", 3, bbc_font, lbl_rect_ref, fmt, white_br)
+
+                gdi_reset(gfx)
+                gdi_trans(gfx, half, half, 0)
+                gdi_rot(gfx, c_float(vinyl_deg + 180.0), 0)
+                gdi_trans(gfx, zero, bot_neg_y, 0)
+                gdi_draw(gfx, "SOUNDS", 6, sounds_font, lbl_rect_ref, fmt, dark_br)
+
+                # Centre spindle.
+                gdi_reset(gfx)
+                gdi_fill_ell(gfx, dark_br, sp_xy, sp_xy, sp_d, sp_d)
+                gdi_draw_ell(gfx, white_pen, sp_xy, sp_xy, sp_d, sp_d)
+
+                photo.configure(data=header + bytes(buf))
+
+            return render_frame
+        except Exception:
+            return None

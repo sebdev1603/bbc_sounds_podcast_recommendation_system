@@ -243,7 +243,15 @@ class PagesMixin:
                     last_search = search_term
                     return
 
-                matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
+                order_cache = getattr(self, "_tab_podcast_order_cache", None)
+                if order_cache is None:
+                    order_cache = {}
+                    self._tab_podcast_order_cache = order_cache
+                search_cache_key = ("search", self.current_user, search_term)
+                matching_rows = order_cache.get(search_cache_key)
+                if matching_rows is None:
+                    matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
+                    order_cache[search_cache_key] = matching_rows
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
                     results_pane, matching_rows, columns_count=6,
@@ -490,7 +498,9 @@ class PagesMixin:
 
                     def step_card():
                         state["job"] = None
-                        if not cvs.winfo_exists():
+                        if not cvs.winfo_exists() or getattr(self, "_transition_active", False):
+                            return
+                        if state["target"] > 0 and self._is_scrolling():
                             return
                         cur = state["step"]
                         tgt = state["target"]
@@ -500,7 +510,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(14, step_card)
+                            state["job"] = self.after(16, step_card)
 
                     step_card()
 
@@ -679,10 +689,10 @@ class PagesMixin:
                 last_rect[0] = rect
 
             if progress < 1.0:
-                self.after(8, draw_expand)
+                self.after(16, draw_expand)
             else:
                 # Brief hold at full expansion before sliding the curtain up to reveal programmes.
-                self.after(95, start_reveal)
+                self.after(80, start_reveal)
 
         draw_expand()
 
@@ -701,7 +711,16 @@ class PagesMixin:
                 lambda: self.transition_to(self.show_preferences, "Settings"), primary=True,
             ).pack(anchor="w", pady=7)
             self.render_section_title(page, "Explore the catalogue while you decide")
-            self.render_podcast_grid(page, self.query_podcasts(item_limit=8, shuffle=True), show_play=True)
+            order_cache = getattr(self, "_tab_podcast_order_cache", None)
+            if order_cache is None:
+                order_cache = {}
+                self._tab_podcast_order_cache = order_cache
+            fallback_key = ("for_you_fallback", self.current_user)
+            fallback_rows = order_cache.get(fallback_key)
+            if fallback_rows is None:
+                fallback_rows = self.query_podcasts(item_limit=8, shuffle=True)
+                order_cache[fallback_key] = fallback_rows
+            self.render_podcast_grid(page, fallback_rows, show_play=True)
             return
         # Show a 2-column summary card of the listener's active genre and episode-length preferences.
         prefs_bar = tk.Frame(page, bg=DARK_BG)
@@ -728,8 +747,16 @@ class PagesMixin:
         self.create_label(length_card, length_caption, 11, ORANGE_HL, "bold").pack(
             anchor="w", padx=16, pady=(0, 12)
         )
-        # Fetch up to 40 weighted-shuffled recommendations matching those preferences.
-        rec_results = self.get_custom_recommendations(40, shuffle=True)
+        # Keep the For You podcast order stable while opening/closing details; reshuffle only on tab change.
+        order_cache = getattr(self, "_tab_podcast_order_cache", None)
+        if order_cache is None:
+            order_cache = {}
+            self._tab_podcast_order_cache = order_cache
+        recs_key = ("for_you_recs", self.current_user, genres_val, length_val)
+        rec_results = order_cache.get(recs_key)
+        if rec_results is None:
+            rec_results = self.get_custom_recommendations(40, shuffle=True)
+            order_cache[recs_key] = rec_results
         if rec_results:
             self.render_podcast_grid(page, rec_results, columns_count=6, show_play=True, max_count=40)
         else:
@@ -803,133 +830,11 @@ class PagesMixin:
         self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
 
     def render_ratings_page(self, parent, rating_rows, last_page):
-        """Render one page of responsive rated podcast cards."""
-        ratings_grid = tk.Frame(parent, bg=DARK_BG)
-        ratings_grid.pack(fill="x")
-
-        end_message = self.create_label(
-            ratings_grid, "No more results", 15, "#777b83", "bold", anchor="center",
+        """Render one page of responsive rated podcast cards on a single Canvas (zero child HWNDs)."""
+        self.render_podcast_grid(
+            parent, rating_rows, max_count=len(rating_rows),
+            rating_index=3, show_end=last_page, ratings_mode=True,
         )
-        rendered_cards = []
-        current_columns = [0]
-        max_configured_cols = [0]
-        current_cover_size = [0]
-        cover_resize_job = [None]
-
-        def compute_rating_metrics():
-            available_width = ratings_grid.winfo_width()
-            if available_width <= 1:
-                available_width = max(1, self.winfo_width() - 110)
-            target_card_w = min(355, max(280, round(280 + max(0, available_width - 1100) * 0.025)))
-            cols = max(2, min(14, available_width // target_card_w))
-            col_width = available_width // cols
-            return cols, max(160, col_width - 30)
-
-        def refresh_rating_covers():
-            cover_resize_job[0] = None
-            if not ratings_grid.winfo_exists():
-                return
-            target_size = current_cover_size[0]
-            for card_widget in rendered_cards:
-                if not card_widget.winfo_exists():
-                    continue
-                meta = getattr(card_widget, "_cover_meta", None)
-                if not meta or meta[5] == target_size:
-                    continue
-                cover_box, cover_lbl, pid, title, category, _old_size = meta
-                if cover_box.winfo_exists():
-                    cover_box.configure(height=target_size)
-                self.update_podcast_cover(
-                    cover_lbl, pid, title, category, target_size, target_size,
-                    corner_radius=8, backdrop=CARD_BG,
-                )
-                meta[5] = target_size
-
-        def reflow_ratings(_event=None):
-            cols, target_size = compute_rating_metrics()
-            columns_changed = cols != current_columns[0]
-            if current_cover_size[0] == 0 or abs(target_size - current_cover_size[0]) >= 2:
-                current_cover_size[0] = target_size
-                if rendered_cards:
-                    if cover_resize_job[0] is not None:
-                        try:
-                            self.after_cancel(cover_resize_job[0])
-                        except tk.TclError:
-                            pass
-                    cover_resize_job[0] = self.after(50, refresh_rating_covers)
-            if not columns_changed and _event is not None:
-                return
-            current_columns[0] = cols
-            if columns_changed:
-                span = max(max_configured_cols[0], cols)
-                max_configured_cols[0] = span
-                for column_idx in range(span):
-                    ratings_grid.grid_columnconfigure(
-                        column_idx, weight=1 if column_idx < cols else 0,
-                        uniform="rating-cards" if column_idx < cols else "",
-                    )
-            first_card = 0 if columns_changed else len(rendered_cards) - 1
-            for idx in range(first_card, len(rendered_cards)):
-                rendered_cards[idx].grid(
-                    row=idx // cols, column=idx % cols, sticky="nsew", padx=6, pady=6,
-                )
-            item_count = len(rendered_cards)
-            final_row, used_columns = divmod(item_count, cols)
-            if last_page and item_count == len(rating_rows) and used_columns:
-                end_message.grid(
-                    row=final_row, column=used_columns, columnspan=cols - used_columns,
-                    sticky="nsew", padx=6, pady=6,
-                )
-            else:
-                end_message.grid_remove()
-
-        ratings_grid.bind("<Configure>", reflow_ratings)
-
-        def render_rating_card(row):
-            if current_cover_size[0] == 0:
-                _, current_cover_size[0] = compute_rating_metrics()
-            cover_size = current_cover_size[0]
-            card = self.create_card_frame(ratings_grid)
-            cover_box = tk.Frame(card, bg=CARD_BG, height=cover_size, cursor="hand2")
-            cover_box.pack_propagate(False)
-            cover_box.pack(fill="x", padx=9, pady=(9, 0))
-            cover = self.generate_podcast_cover(
-                cover_box, row[0], row[1], row[2], cover_size, cover_size,
-                corner_radius=8, backdrop=CARD_BG,
-            )
-            cover.pack(fill="both", expand=True)
-            open_cmd = lambda _e=None, tid=row[0], t=row[1], c=row[2]: self.open_podcast_detail(tid, t, c)
-            cover_box.bind("<Button-1>", open_cmd)
-            cover.bind("<Button-1>", open_cmd)
-            card._cover_meta = [cover_box, cover, row[0], row[1], row[2], cover_size]
-            rendered_cards.append(card)
-            details_pane = tk.Frame(card, bg=CARD_BG)
-            details_pane.pack(fill="both", expand=True, padx=13, pady=12)
-            title_lbl = self.create_label(details_pane, row[1], 12, TEXT_WHITE, "bold", wraplength=max(180, cover_size - 8))
-            title_lbl.pack(anchor="w")
-            cat_lbl = self.create_label(details_pane, str(row[2]), 9, TEXT_GRAY)
-            cat_lbl.pack(anchor="w", pady=(4, 0))
-            avg_lbl = self.create_label(details_pane, self.podcast_average_text(row[0]), 9, GOLD_STAR)
-            avg_lbl.pack(anchor="w", pady=(3, 6))
-            yr_lbl = self.create_label(details_pane, "Your rating", 9, TEXT_GRAY)
-            yr_lbl.pack(anchor="w")
-            star_bar = self.create_star_rating_bar(details_pane, row[3], star_size=16, background_col=CARD_BG)
-            star_bar.pack(anchor="w", pady=(5, 10))
-            button_row = tk.Frame(details_pane, bg=CARD_BG)
-            button_row.pack(fill="x")
-            change_btn = self.create_button(
-                button_row, "Change rating", lambda target_id=row[0]: self.rate_programme(target_id, self.show_ratings), compact=True
-            )
-            change_btn.pack(side="left")
-            remove_btn = self.create_button(button_row, "Remove", lambda target_id=row[0]: self.remove_rating(target_id), compact=True)
-            remove_btn.pack(side="right")
-            bg_widgets = [
-                cover_box, details_pane, title_lbl, cat_lbl, avg_lbl, yr_lbl,
-                star_bar, *star_bar.winfo_children(), button_row, change_btn, remove_btn,
-            ]
-            self._attach_podcast_card_hover(card, bg_widgets, title_lbl)
-            reflow_ratings()
-        self.render_in_batches(rating_rows, render_rating_card)
 
     def show_genres(self):
         """Render the listener's favourite genres summary and matching programmes."""
@@ -1031,24 +936,33 @@ class PagesMixin:
                 corner_radius=8, backdrop=CARD_BG,
             )
             highlight_cover.pack(side="left", padx=12, pady=12)
-            highlight_cover.bind(
-                "<Button-1>",
-                lambda _e, tid=top_programme[0], t=top_programme[1], c=top_programme[2]: self.open_podcast_detail(tid, t, c),
-            )
+            highlight_card._cover_meta = [highlight_card, highlight_cover, top_programme[0], top_programme[1], top_programme[2], 128]
             highlight_details = tk.Frame(highlight_card, bg=CARD_BG)
             highlight_details.pack(side="left", fill="both", expand=True, pady=16)
             self.create_label(highlight_details, "MOST PLAYED", 8, ORANGE_ACCENT, "bold").pack(anchor="w", pady=(0, 5))
-            self.create_label(highlight_details, top_programme[1], 16, TEXT_WHITE, "bold").pack(anchor="w")
+            highlight_title_lbl = self.create_label(highlight_details, top_programme[1], 16, TEXT_WHITE, "bold")
+            highlight_title_lbl.pack(anchor="w")
+            highlight_cover.bind(
+                "<Button-1>",
+                lambda _e, tid=top_programme[0], t=top_programme[1], c=top_programme[2], cf=highlight_card, cv=highlight_cover, tl=highlight_title_lbl:
+                self.open_podcast_detail(tid, t, c, source_card=cf, source_cover=cv, source_title=tl),
+            )
             self.create_label(
                 highlight_details, f"{top_programme[4] or 0} plays  ·  {top_programme[2]}", 10, TEXT_GRAY,
             ).pack(anchor="w", pady=(5, 0))
             self.create_label(
                 highlight_details, self.podcast_average_text(top_programme[0]), 9, GOLD_STAR,
             ).pack(anchor="w", pady=(4, 0))
-            self.create_button(
-                highlight_card, "▶  Listen again", lambda: self.listen(top_programme[0]),
+            listen_again_btn = self.create_button(
+                highlight_card, "▶  Listen again", lambda: None,
                 primary=True, compact=True,
-            ).pack(side="right", padx=18)
+            )
+            listen_again_btn.configure(
+                command=lambda b=listen_again_btn, cv=highlight_cover, tid=top_programme[0], t=top_programme[1], c=top_programme[2]: (
+                    self.play_podcast_to_mini_bar(b, tid, t, c, cover_widget=cv)
+                )
+            )
+            listen_again_btn.pack(side="right", padx=18)
         else:
             self.render_empty_message(page, "No listening data yet", "Play a programme to start your personal report.")
 
@@ -1514,7 +1428,7 @@ class PagesMixin:
 
             layout_qa()
             if any_active:
-                qa_loop["job"] = self.after(10, tick_qa_animations)
+                qa_loop["job"] = self.after(16, tick_qa_animations)
             else:
                 qa_loop["last_t"] = None
 

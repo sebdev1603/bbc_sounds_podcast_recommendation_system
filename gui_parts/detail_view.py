@@ -74,9 +74,11 @@ class DetailViewMixin:
 
             cover_holder = tk.Frame(hero_box, bg=DARK_BG)
             cover_holder.pack(side="left", anchor="n", padx=(0, 38))
+            self._detail_cover_holder = cover_holder
 
             right_pane = tk.Frame(hero_box, bg=DARK_BG)
             right_pane.pack(side="left", anchor="n", pady=(4, 0))
+            self._detail_right_pane = right_pane
 
             category_label = self.create_label(right_pane, str(podcast_rec[2] or "Programme").upper(), 10, ORANGE_HL, "bold")
             category_label.pack(anchor="w")
@@ -332,7 +334,7 @@ class DetailViewMixin:
                 cover_art = self.generate_podcast_cover(
                     cover_holder, podcast_id, podcast_rec[1], podcast_rec[2],
                     cover_size, cover_size,
-                    corner_radius=round(cover_size * 0.09), backdrop=DARK_BG,
+                    corner_radius=8, backdrop=DARK_BG,
                 )
                 cover_art.pack()
 
@@ -409,6 +411,8 @@ class DetailViewMixin:
             # Clear any prior dismissal so the newly played podcast appears in the mini-bar.
             self._dismissed_last_listened = None
             if open_detail:
+                # Going back after pressing Listen now should shrink the podcast down into the mini-bar.
+                self._detail_hero_origin = None
                 self.show_detail(podcast_id, show_simulated_notice=True)
             return True
         except sqlite3.Error as err:
