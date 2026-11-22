@@ -804,9 +804,12 @@ class EffectsMixin:
         canvas_window = canvas_pane.create_window(init_pos, **win_kwargs)
         self._shell_canvas_window = canvas_window
 
+        # Extra scrollroom at the bottom lets the last row scroll clear of the floating mini-bar.
+        extra_bottom = 96 if active_tab_title != "Programme details" else 0
+
         def update_scrollregion(event):
             if canvas_pane.winfo_exists() and not getattr(self, "_transition_active", False):
-                canvas_pane.configure(scrollregion=(0, 0, event.width, event.height))
+                canvas_pane.configure(scrollregion=(0, 0, event.width, event.height + extra_bottom))
 
         content_pane.bind("<Configure>", update_scrollregion)
         self.current_page = content_pane
@@ -853,6 +856,7 @@ class EffectsMixin:
         bar_key = (podcast_id, title, category, avg_text)
         if existing is not None and existing.winfo_exists() and getattr(self, "_shell_bottom_bar_key", None) == bar_key:
             self._bottom_bar_info = (shell, existing, podcast_id, title, category)
+            tk.Misc.lift(existing)
             return
 
         if existing is not None and existing.winfo_exists():
@@ -1105,11 +1109,10 @@ class EffectsMixin:
             return
 
         footer = self.create_card_frame(shell, bg=MINI_BAR_BG)
-        area_frame = getattr(self, "_shell_area_frame", None)
-        if area_frame is not None and area_frame.winfo_exists() and area_frame.master is shell:
-            footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10), before=area_frame)
-        else:
-            footer.pack(side="bottom", fill="x", padx=18, pady=(4, 10))
+        # Float the mini-bar over the scrollable page (leaving space for the right scrollbar)
+        # so there is no solid black strip reserved behind or beside it.
+        footer.place(relx=0.0, rely=1.0, anchor="sw", x=18, y=-10, relwidth=1.0, width=-52)
+        tk.Misc.lift(footer)
         tk.Frame(footer, bg=ORANGE_ACCENT, width=3).pack(side="left", fill="y")
         row = tk.Frame(footer, bg=footer.cget("bg"))
         row.pack(fill="x", padx=10, pady=7)
@@ -1214,6 +1217,14 @@ class EffectsMixin:
         """Elastically migrate a podcast's Play button and cover art into the bottom mini-bar."""
         if self._is_busy_transitioning():
             return
+        existing_bar = getattr(self, "_shell_bottom_bar", None)
+        bar_info = getattr(self, "_bottom_bar_info", None)
+        already_in_mini_bar = (
+            existing_bar is not None
+            and existing_bar.winfo_exists()
+            and bar_info is not None
+            and str(bar_info[2]) == str(podcast_id)
+        )
         if not self.listen(podcast_id, open_detail=False):
             return
 
@@ -1222,7 +1233,7 @@ class EffectsMixin:
             return
 
         show_avg = getattr(self, "_active_nav_tab", "") != "Settings"
-        if source_widget is None or not source_widget.winfo_exists():
+        if already_in_mini_bar or source_widget is None or not source_widget.winfo_exists():
             self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
             bar = getattr(self, "_shell_bottom_bar", None)
             if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
@@ -1544,7 +1555,13 @@ class EffectsMixin:
         # and title paint atomically in one BitBlt per frame with zero tearing and lively elastic motion.
         is_mini = source_kind == "mini_bar"
         clip_top = target_y
-        clip_bottom = shell_h if is_mini else (target_y + max(1, area_frame.winfo_height()))
+        live_footer = getattr(self, "_shell_bottom_bar", None)
+        if is_mini:
+            clip_bottom = shell_h
+        elif live_footer is not None and live_footer.winfo_exists() and live_footer.winfo_y() > target_y:
+            clip_bottom = live_footer.winfo_y()
+        else:
+            clip_bottom = target_y + max(1, area_frame.winfo_height())
 
         expander = tk.Canvas(shell, bg=start_bg, bd=0, highlightthickness=0)
         accent_item = (
@@ -1580,7 +1597,7 @@ class EffectsMixin:
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             expander, podcast_id, title, category, cov_start_sz, cov_start_sz,
-            corner_radius=10, backdrop=start_bg,
+            corner_radius=8, backdrop=start_bg,
         )
         expander._cur_photo = photo0
 
@@ -1618,7 +1635,7 @@ class EffectsMixin:
             if step_sz not in cover_cache:
                 p_img, p_ico, _ = self._get_cover_photo(
                     expander, podcast_id, title, category, step_sz, step_sz,
-                    corner_radius=max(10, round(step_sz * 0.09)), backdrop=DARK_BG,
+                    corner_radius=8, backdrop=DARK_BG,
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
@@ -1755,7 +1772,7 @@ class EffectsMixin:
                     if last_cov_sz[0] != final_sz:
                         p_img, p_ico, _ = self._get_cover_photo(
                             expander, podcast_id, title, category, final_sz, final_sz,
-                            corner_radius=round(final_sz * 0.09), backdrop=DARK_BG,
+                            corner_radius=8, backdrop=DARK_BG,
                         )
                         expander._cur_photo = p_img
                         expander.itemconfigure(cover_item, image=p_img)
@@ -1935,7 +1952,7 @@ class EffectsMixin:
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             shrinker, podcast_id, title, category, cov_start_sz, cov_start_sz,
-            corner_radius=max(10, round(cov_start_sz * 0.09)), backdrop=DARK_BG,
+            corner_radius=8, backdrop=DARK_BG,
         )
         shrinker._cur_photo = photo0
         cx0 = cov_start_x + cov_start_sz / 2.0
@@ -1994,7 +2011,11 @@ class EffectsMixin:
             clip_top, clip_bottom = start_y, shell_h
         else:
             clip_top = new_area.winfo_y()
-            clip_bottom = clip_top + max(1, new_area.winfo_height())
+            dest_footer = getattr(self, "_shell_bottom_bar", None)
+            if dest_footer is not None and dest_footer.winfo_exists() and dest_footer.winfo_y() > clip_top:
+                clip_bottom = dest_footer.winfo_y()
+            else:
+                clip_bottom = clip_top + max(1, new_area.winfo_height())
 
         if is_mini:
             dest_footer = getattr(self, "_shell_bottom_bar", None)
@@ -2032,7 +2053,7 @@ class EffectsMixin:
             if step_sz not in cover_cache:
                 p_img, p_ico, _ = self._get_cover_photo(
                     shrinker, podcast_id, title, category, step_sz, step_sz,
-                    corner_radius=max(8, round(step_sz * 0.09)), backdrop=target_bg,
+                    corner_radius=8, backdrop=target_bg,
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
@@ -2185,66 +2206,135 @@ class EffectsMixin:
                 pass
         return best
 
+    def _is_scrolling(self):
+        """Return True while the user is actively scrolling so hover animations don't stutter frames."""
+        return monotonic() < getattr(self, "_scroll_priority_until", 0.0)
+
     def bind_page_scroll(self, canvas, scrollbar):
-        """Ease wheel detents briefly and keep direct scrolling responsive."""
+        """Coalesced 60Hz smooth scrolling with continuous velocity across wheel notches and touchpads."""
+        import math as _math
         fraction = 0.0
         pending_frame = None
         target = None
+        float_pos = None
+        last_tick = None
+        pending_touchpad = 0.0
+        cached_max = [0]
 
         def cancel_animation():
-            nonlocal pending_frame, target
+            nonlocal pending_frame, target, float_pos, last_tick, pending_touchpad
             if pending_frame is not None:
-                canvas.after_cancel(pending_frame)
+                try:
+                    canvas.after_cancel(pending_frame)
+                except tk.TclError:
+                    pass
                 pending_frame = None
             target = None
+            float_pos = None
+            last_tick = None
+            pending_touchpad = 0.0
+
+        def refresh_max_scroll():
+            try:
+                region = canvas.cget("scrollregion")
+                if region:
+                    bottom = int(float(region.split()[3]))
+                    cached_max[0] = max(0, bottom - canvas.winfo_height())
+                    return cached_max[0]
+            except (tk.TclError, ValueError, IndexError):
+                pass
+            cached_max[0] = 0
+            return 0
 
         def drag_scrollbar(*args):
             cancel_animation()
-            self._scroll_priority_until = monotonic() + 0.080
+            self._scroll_priority_until = monotonic() + 0.160
             canvas.yview(*args)
 
-        def draw_frame(start, started):
-            nonlocal pending_frame, target
+        def step_scroll():
+            nonlocal pending_frame, target, float_pos, last_tick, pending_touchpad
             pending_frame = None
-            frame_t0 = monotonic()
-            progress = min(1.0, (frame_t0 - started) / 0.165)
-            position = round(start + (target - start) * (1 - (1 - progress) ** 4))
-            canvas.yview_scroll(position - round(canvas.canvasy(0)), "units")
-            if progress < 1 and position != target:
-                spent_ms = (monotonic() - frame_t0) * 1000.0
-                pending_frame = canvas.after(max(1, round(16 - spent_ms)), draw_frame, start, started)
-            else:
-                target = None
-
-        def on_wheel(event):
-            nonlocal fraction, target
-            if not event.delta:
-                return "break"
-            self._scroll_priority_until = monotonic() + 0.080
-            if event.delta % 120:
+            if not canvas.winfo_exists():
                 cancel_animation()
-                fraction -= event.delta * 48 / 120
-                pixels = int(fraction)
-                fraction -= pixels
+                return
+            frame_t0 = monotonic()
+            self._scroll_priority_until = frame_t0 + 0.140
+
+            # Flush coalesced high-frequency precision touchpad deltas once per 60Hz frame.
+            if pending_touchpad:
+                pixels = int(pending_touchpad)
+                pending_touchpad -= pixels
                 if pixels:
                     canvas.yview_scroll(pixels, "units")
+                if abs(pending_touchpad) >= 1.0:
+                    spent_ms = (monotonic() - frame_t0) * 1000.0
+                    pending_frame = canvas.after(max(1, round(16 - spent_ms)), step_scroll)
+                return
+
+            if target is None:
+                return
+
+            dt = 0.016 if last_tick is None else max(0.004, min(0.050, frame_t0 - last_tick))
+            last_tick = frame_t0
+            cur_int = round(canvas.canvasy(0))
+            if float_pos is None:
+                float_pos = float(cur_int)
+
+            # Continuous exponential smoothing keeps velocity fluid across rapid wheel notches.
+            factor = 1.0 - _math.exp(-dt / 0.052)
+            float_pos += (target - float_pos) * factor
+            if abs(target - float_pos) < 0.75:
+                float_pos = float(target)
+
+            next_int = round(float_pos)
+            delta = next_int - cur_int
+            if delta:
+                canvas.yview_scroll(delta, "units")
+
+            if next_int != target:
+                spent_ms = (monotonic() - frame_t0) * 1000.0
+                pending_frame = canvas.after(max(1, round(16 - spent_ms)), step_scroll)
+            else:
+                target = None
+                float_pos = None
+                last_tick = None
+
+        def on_wheel(event):
+            nonlocal fraction, target, float_pos, last_tick, pending_frame, pending_touchpad
+            if not event.delta or not canvas.winfo_exists():
+                return "break"
+            now = monotonic()
+            self._scroll_priority_until = now + 0.160
+
+            # Precision touchpad (sub-120 deltas): coalesce into the 60Hz frame loop instead of 240Hz moves.
+            if event.delta % 120:
+                target = None
+                float_pos = None
+                last_tick = None
+                pending_touchpad -= event.delta * 48.0 / 120.0
+                if pending_frame is None:
+                    pending_frame = canvas.after(1, step_scroll)
                 return "break"
 
+            # Detented mouse wheel: extend target smoothly without resetting velocity on each notch.
+            pending_touchpad = 0.0
+            maximum = refresh_max_scroll()
+            if maximum <= 0:
+                return "break"
             current = round(canvas.canvasy(0))
-            distance = -event.delta * 48 // 120
-            queued = target - current if target is not None else 0
-            cancel_animation()
-            if queued * distance > 0:
-                distance += queued
-            region = canvas.cget("scrollregion")
-            if region:
-                bottom = int(float(region.split()[3]))
-                maximum = max(0, bottom - canvas.winfo_height())
-                target = max(0, min(maximum, current + max(-144, min(144, distance))))
-                if target != current:
-                    draw_frame(current, monotonic())
-                else:
-                    target = None
+            step_px = -event.delta * 56 // 120
+            base = target if (target is not None and (target - current) * step_px >= 0) else current
+            new_target = max(0, min(maximum, base + step_px))
+            # Cap lookahead distance so fast wheel spins stay snappy and never drift far ahead.
+            new_target = max(current - 260, min(current + 260, new_target))
+            new_target = max(0, min(maximum, new_target))
+            if new_target != current or target is not None:
+                target = new_target
+                if float_pos is None:
+                    float_pos = float(current)
+                if pending_frame is None:
+                    last_tick = now
+                    pending_frame = canvas.after(1, step_scroll)
             return "break"
 
         scrollbar.configure(command=drag_scrollbar)

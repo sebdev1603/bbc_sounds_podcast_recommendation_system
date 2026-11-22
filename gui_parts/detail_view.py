@@ -334,7 +334,7 @@ class DetailViewMixin:
                 cover_art = self.generate_podcast_cover(
                     cover_holder, podcast_id, podcast_rec[1], podcast_rec[2],
                     cover_size, cover_size,
-                    corner_radius=round(cover_size * 0.09), backdrop=DARK_BG,
+                    corner_radius=8, backdrop=DARK_BG,
                 )
                 cover_art.pack()
 

@@ -500,6 +500,8 @@ class PagesMixin:
                         state["job"] = None
                         if not cvs.winfo_exists() or getattr(self, "_transition_active", False):
                             return
+                        if state["target"] > 0 and self._is_scrolling():
+                            return
                         cur = state["step"]
                         tgt = state["target"]
                         if cur == tgt:

@@ -160,7 +160,11 @@ class WidgetsMixin:
         """Ease a button's hover state smoothly toward target_step (0..12) with elastic spring."""
         if not button.winfo_exists():
             return
-        if target_step > 0 and str(button.cget("state")) == "disabled":
+        if target_step > 0 and (
+            str(button.cget("state")) == "disabled"
+            or getattr(self, "_transition_active", False)
+            or self._is_scrolling()
+        ):
             return
         button._hover_target = target_step
         if getattr(button, "_hover_job", None) is not None:
@@ -1079,6 +1083,8 @@ class WidgetsMixin:
             hover_state["job"] = None
             if not card_frame.winfo_exists() or getattr(self, "_transition_active", False):
                 return
+            if hover_state["target"] > 0 and self._is_scrolling():
+                return
             cur = hover_state["step"]
             tgt = hover_state["target"]
             if cur == tgt:
@@ -1126,8 +1132,8 @@ class WidgetsMixin:
                 apply_frame()
 
         def on_enter(_event=None):
-            # Ignore synthetic Enter events fired while hero overlays slide under a stationary pointer.
-            if getattr(self, "_transition_active", False):
+            # Ignore synthetic Enter events fired while hero overlays or scrolling slide cards under the cursor.
+            if getattr(self, "_transition_active", False) or self._is_scrolling():
                 return
             if hover_state["leave_job"] is not None:
                 try:
