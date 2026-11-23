@@ -3,12 +3,14 @@ import ctypes
 import math
 from pathlib import Path
 import re
+import struct
 import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import font as tkfont
 import unicodedata
 import xml.etree.ElementTree as ET
+import zlib
 
 from gui_parts.i18n import translate
 from gui_parts.theme import (
@@ -260,6 +262,74 @@ class WidgetsMixin:
         button._normal_image = self.rounded_button_image(width, height, face, inset=5, y_shift=y_shift, lift=0)
         button.configure(image=button._normal_image)
 
+    @staticmethod
+    def _build_aa_pill_png(w, h, left, top, right, bottom, radius, rgb, lift=0):
+        """Pure-Python signed-distance anti-aliased RGBA PNG rounded pill (zero Pillow dependency)."""
+        r, g, b = rgb
+        buf = bytearray(w * h * 4)
+        # Soft translucent drop shadow underneath the pill when popped out on hover.
+        if lift > 0:
+            sh_drop = min(3, lift + 1)
+            sh_a = 50 if lift == 1 else (75 if lift == 2 else 95)
+            sl, sr = left + 1, right - 1
+            st, sb = top + sh_drop, min(h, bottom + sh_drop)
+            srad = float(min(radius, (sr - sl) / 2.0, (sb - st) / 2.0))
+            sh_span = bytes((0, 0, 0, sh_a))
+            s_in_l = int(math.ceil(sl + srad))
+            s_in_r = int(math.floor(sr - srad))
+            for y in range(max(0, st), min(h, sb)):
+                dy = (st + srad - 0.5 - y) if y < st + srad else (y - (sb - srad - 0.5) if y >= sb - srad else 0.0)
+                row_off = y * w * 4
+                if dy <= 0.0:
+                    if sr > sl:
+                        buf[row_off + sl * 4:row_off + sr * 4] = sh_span * (sr - sl)
+                else:
+                    if s_in_r > s_in_l:
+                        buf[row_off + s_in_l * 4:row_off + s_in_r * 4] = sh_span * (s_in_r - s_in_l)
+                    for x in (*range(max(0, sl), min(w, s_in_l)), *range(max(0, s_in_r), min(w, sr))):
+                        dx = (sl + srad - 0.5 - x) if x < sl + srad else (x - (sr - srad - 0.5))
+                        cov = max(0.0, min(1.0, srad + 0.5 - math.hypot(dx, dy)))
+                        if cov > 0.0:
+                            buf[row_off + x * 4 + 3] = int(sh_a * cov)
+
+        # Anti-aliased pill body with exact sub-pixel corner coverage.
+        rad = float(radius)
+        solid_rgba = bytes((r, g, b, 255))
+        inner_l = int(math.ceil(left + rad))
+        inner_r = int(math.floor(right - rad))
+        for y in range(max(0, top), min(h, bottom)):
+            dy = (top + rad - 0.5 - y) if y < top + rad else (y - (bottom - rad - 0.5) if y >= bottom - rad else 0.0)
+            row_off = y * w * 4
+            if dy <= 0.0:
+                if right > left:
+                    buf[row_off + left * 4:row_off + right * 4] = solid_rgba * (right - left)
+            else:
+                if inner_r > inner_l:
+                    buf[row_off + inner_l * 4:row_off + inner_r * 4] = solid_rgba * (inner_r - inner_l)
+                for x in (*range(max(0, left), min(w, inner_l)), *range(max(0, inner_r), min(w, right))):
+                    dx = (left + rad - 0.5 - x) if x < left + rad else (x - (right - rad - 0.5))
+                    cov = max(0.0, min(1.0, rad + 0.5 - math.hypot(dx, dy)))
+                    if cov > 0.0:
+                        idx = row_off + x * 4
+                        da = buf[idx + 3] / 255.0
+                        oa = cov + da * (1.0 - cov)
+                        if oa > 0.0:
+                            buf[idx] = round((r * cov) / oa)
+                            buf[idx + 1] = round((g * cov) / oa)
+                            buf[idx + 2] = round((b * cov) / oa)
+                            buf[idx + 3] = round(oa * 255)
+
+        stride = w * 4
+        raw = bytearray((stride + 1) * h)
+        for y in range(h):
+            raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)] = buf[y * stride:(y + 1) * stride]
+
+        def _chunk(tag, data):
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 1)) + _chunk(b"IEND", b"")
+
     def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0):
         """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
         key = (width, height, colour, inset, y_shift, lift)
@@ -276,13 +346,14 @@ class WidgetsMixin:
             bottom = height + margin * 2 - inset
             pill_w, pill_h = right - left, bottom - top
             radius = min(10, pill_h // 2, pill_w // 2)
+            c = str(colour).lstrip("#")
+            rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
             image = None
             try:
                 import io
                 from PIL import Image, ImageDraw
                 resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-                c = str(colour).lstrip("#")
-                rgba = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), 255)
+                rgba = (*rgb, 255)
                 ss = 3
                 hi = Image.new("RGBA", (canvas_w * ss, canvas_h * ss), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(hi)
@@ -311,6 +382,15 @@ class WidgetsMixin:
                 image = tk.PhotoImage(master=self, data=buf.getvalue())
             except Exception:
                 image = None
+            if image is None:
+                # Zero-dependency anti-aliased RGBA PNG fallback so Windows without Pillow matches Linux exactly.
+                try:
+                    png_bytes = self._build_aa_pill_png(
+                        canvas_w, canvas_h, left, top, right, bottom, radius, rgb, lift=lift,
+                    )
+                    image = tk.PhotoImage(master=self, data=png_bytes)
+                except Exception:
+                    image = None
             if image is None:
                 image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
                 image.put(colour, to=(left, top + radius, right, bottom - radius))
