@@ -1814,6 +1814,10 @@ class EffectsMixin:
             shell._expanding_bar = False
             if expander.winfo_exists():
                 try:
+                    # Lower expander behind area_frame and immediately flush all Expose repaints
+                    # via update_idletasks() so the picture & UI widgets paint in the same composited frame.
+                    tk.Misc.lower(expander)
+                    self.update_idletasks()
                     expander.destroy()
                 except tk.TclError:
                     pass
@@ -1911,12 +1915,8 @@ class EffectsMixin:
                         return
                     # Apply responsive UI scaling synchronously now (while covered by expander) so an
                     # after_idle rescale can never shift back_row/detail_column after the overlay drops.
-                    if (
-                        (abs(self._ui_scale_factor - 1.0) >= 0.025 or abs(getattr(self, "_text_scale", 1.0) - 1.0) >= 0.025)
-                        and self.current_page is not None
-                        and self.current_page.winfo_exists()
-                    ):
-                        self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+                    if self.current_page is not None and self.current_page.winfo_exists():
+                        self.apply_interface_scaling(force=True, target_widget=self.current_page)
                     # Lift expander BEFORE update_idletasks so the newly built detail page never flashes on top.
                     tk.Misc.lift(expander)
                     self.update_idletasks()
