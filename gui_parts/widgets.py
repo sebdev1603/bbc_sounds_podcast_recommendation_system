@@ -131,7 +131,7 @@ class WidgetsMixin:
             relief="flat",
             bd=0,
             cursor="hand2",
-            padx=0, pady=0, highlightthickness=1,
+            padx=0, pady=0, highlightthickness=0 if sys.platform != "win32" else 1,
             highlightbackground=background, highlightcolor=ORANGE_HL,
             **kwargs,
         )
@@ -141,7 +141,7 @@ class WidgetsMixin:
         button._hover_step = 0
         button._hover_target = 0
         self.style_rounded_button(button, face, ORANGE_HL if primary else SECONDARY_HOVER_BG)
-        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 12))
+        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 5))
         button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
         button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
         return button
@@ -157,7 +157,7 @@ class WidgetsMixin:
             button._hover_job = None
 
     def animate_button_hover(self, button, target_step):
-        """Ease a button's hover state smoothly toward target_step (0..12) with elastic spring."""
+        """Ease a button's hover state smoothly toward target_step (0..5) with shared cached frames."""
         if not button.winfo_exists():
             return
         if target_step > 0 and (
@@ -167,6 +167,12 @@ class WidgetsMixin:
         ):
             return
         button._hover_target = target_step
+        if self._is_reduced_motion():
+            self.cancel_button_hover(button)
+            if getattr(button, "_hover_step", 0) != target_step:
+                button._hover_step = target_step
+                self._apply_button_hover_frame(button, target_step)
+            return
         if getattr(button, "_hover_job", None) is not None:
             return
 
@@ -182,20 +188,21 @@ class WidgetsMixin:
             button._hover_step = current
             self._apply_button_hover_frame(button, current)
             if current != target:
-                button._hover_job = self.after(16, step_frame)
+                button._hover_job = self.after(self._anim_frame_interval(18), step_frame)
 
         step_frame()
 
     def _apply_button_hover_frame(self, button, step):
-        """Render a single intermediate frame of a button's elastic hover expansion and tint."""
+        """Render a single quantized hover frame so enter and leave share cached PhotoImages."""
         face, hover = button._rounded_colours
         width, height = button._hover_size
         base_fg = button._hover_base_fg
-        t = step / 12.0
-        # Fluid damped elastic spring on enter; smooth cubic ease-out on leave.
-        eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if getattr(button, "_hover_target", 0) > 0 else 1.0 - (1.0 - t) ** 3
+        t = max(0.0, min(1.0, step / 5.0))
+        # Quantize to 5 shared levels (0.0, 0.25, 0.5, 0.75, 1.0) to slash PhotoImage churn on low-end devices.
+        raw_eased = ease_out_elastic(t, damping=5.0, frequency=1.10) if getattr(button, "_hover_target", 0) > 0 else 1.0 - (1.0 - t) ** 2
+        eased = max(0.0, min(1.0, round(raw_eased * 4.0) / 4.0))
         colour = blend_colour(face, hover, eased)
-        inset = max(0, min(3, round(3.0 - 2.0 * eased)))
+        inset = max(1, min(3, round(3.0 - 2.0 * eased)))
         image = self.rounded_button_image(width, height, colour, inset=inset)
         button._current_image = image
         config = {"image": image}
@@ -272,8 +279,8 @@ class WidgetsMixin:
         tile = max(26, round(28 * scaling))
         gap = max(4, round(5 * scaling))
         word_gap = max(9, round(10 * scaling))
-        tile_font = ("Arial", -round(tile * 0.92), "bold")
-        sounds_font = ("Arial", -round(tile * 0.96), "bold")
+        tile_font = (DEFAULT_FONT, -round(tile * 0.86), "bold")
+        sounds_font = (DEFAULT_FONT, -round(tile * 0.90), "bold")
         sounds_metrics = self._get_cached_font(sounds_font)
 
         tiles_w = tile * 3 + gap * 2
@@ -764,38 +771,57 @@ class WidgetsMixin:
             if src_img.value:
                 dll.GdipDisposeImage(src_img)
 
+    def _get_rounded_mask(self, width_px, height_px, corner_radius):
+        """Return a cached anti-aliased L-mode rounded-rectangle mask for fast cover composition."""
+        cache = getattr(self, "_rounded_mask_cache", None)
+        if cache is None:
+            cache = {}
+            self._rounded_mask_cache = cache
+        key = (width_px, height_px, corner_radius)
+        mask = cache.get(key)
+        if mask is None:
+            from PIL import Image, ImageDraw
+            resample = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+            radius = min(corner_radius, width_px // 2, height_px // 2)
+            # 2x supersampled mask rendered once per (w, h, r) size and reused across all cards.
+            hi = Image.new("L", (width_px * 2, height_px * 2), 0)
+            draw = ImageDraw.Draw(hi)
+            draw.rounded_rectangle(
+                (0, 0, width_px * 2 - 1, height_px * 2 - 1),
+                radius=radius * 2,
+                fill=255,
+            )
+            mask = hi.resize((width_px, height_px), resample)
+            if len(cache) > 64:
+                cache.clear()
+            cache[key] = mask
+        return mask
+
     def _load_podcast_picture_image(self, img_path, width_px, height_px, corner_radius=0, backdrop=None):
         """Load, centre-crop, and optionally round-corner a podcast cover picture."""
-        # Preferred path: Pillow handles JPG/PNG/WEBP with LANCZOS centre-crop and anti-aliased rounded corners.
+        # Preferred path: Pillow handles JPG/PNG/WEBP with exact centre-crop and anti-aliased rounded corners,
+        # outputting PPM directly to tk.PhotoImage so python3-pillow-tk / ImageTk is NOT required on Linux.
         try:
-            from PIL import Image, ImageDraw, ImageOps, ImageTk
+            from PIL import Image, ImageOps
             resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             with Image.open(img_path) as raw_img:
                 fitted = ImageOps.fit(
-                    raw_img.convert("RGBA"),
+                    raw_img.convert("RGB"),
                     (width_px, height_px),
                     method=resample,
                     centering=(0.5, 0.5),
                 )
             if corner_radius > 0:
-                radius = min(corner_radius, width_px // 2, height_px // 2)
-                # Render a 2x supersampled rounded-rectangle mask for smooth anti-aliased corners.
-                mask = Image.new("L", (width_px * 2, height_px * 2), 0)
-                draw = ImageDraw.Draw(mask)
-                draw.rounded_rectangle(
-                    (0, 0, width_px * 2 - 1, height_px * 2 - 1),
-                    radius=radius * 2,
-                    fill=255,
-                )
-                mask = mask.resize((width_px, height_px), resample)
+                mask = self._get_rounded_mask(width_px, height_px, corner_radius)
                 if backdrop and isinstance(backdrop, str) and backdrop.startswith("#") and len(backdrop) == 7:
-                    bg_rgb = tuple(int(backdrop[p:p + 2], 16) for p in (1, 3, 5)) + (255,)
+                    bg_rgb = tuple(int(backdrop[p:p + 2], 16) for p in (1, 3, 5))
                 else:
-                    bg_rgb = (0, 0, 0, 0)
-                canvas_img = Image.new("RGBA", (width_px, height_px), bg_rgb)
+                    bg_rgb = (27, 29, 33)
+                canvas_img = Image.new("RGB", (width_px, height_px), bg_rgb)
                 canvas_img.paste(fitted, (0, 0), mask)
                 fitted = canvas_img
-            return ImageTk.PhotoImage(fitted, master=self)
+            ppm_header = f"P6\n{width_px} {height_px}\n255\n".encode("ascii")
+            return tk.PhotoImage(master=self, data=ppm_header + fitted.tobytes(), format="PPM")
         except Exception:
             pass
 
@@ -1092,8 +1118,8 @@ class WidgetsMixin:
             cur += 1 if tgt > cur else -1
             hover_state["step"] = cur
 
-            t = cur / 6.0
-            eased = 1.0 - (1.0 - t) ** 3 if tgt > 0 else t * t * (3.0 - 2.0 * t)
+            t = cur / 4.0
+            eased = 1.0 - (1.0 - t) ** 2 if tgt > 0 else t * t * (3.0 - 2.0 * t)
             inset = max(0, min(base_inset, round(base_inset * (1.0 - eased))))
             cur_bg = blend_colour(rest_bg, hover_bg, eased)
             cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, eased)
@@ -1124,10 +1150,21 @@ class WidgetsMixin:
                 hover_state["last_title"] = cur_title
 
             if cur != tgt:
-                hover_state["job"] = self.after(16, apply_frame)
+                hover_state["job"] = self.after(self._anim_frame_interval(18), apply_frame)
 
         def set_hover_target(target):
             hover_state["target"] = target
+            if self._is_reduced_motion():
+                if hover_state["job"] is not None:
+                    try:
+                        self.after_cancel(hover_state["job"])
+                    except tk.TclError:
+                        pass
+                    hover_state["job"] = None
+                if hover_state["step"] != target:
+                    hover_state["step"] = max(0, target - 1) if target > hover_state["step"] else min(4, target + 1)
+                    apply_frame()
+                return
             if hover_state["job"] is None and hover_state["step"] != target:
                 apply_frame()
 
@@ -1141,7 +1178,7 @@ class WidgetsMixin:
                 except tk.TclError:
                     pass
                 hover_state["leave_job"] = None
-            set_hover_target(6)
+            set_hover_target(4)
 
         def on_leave(_event=None):
             if hover_state["leave_job"] is not None:
@@ -1732,7 +1769,7 @@ class WidgetsMixin:
                 following.configure(state="disabled" if last else "normal")
             start = page_number * PODCASTS_PER_PAGE
 
-            if not animate or old_canvas is None or not old_canvas.winfo_exists():
+            if not animate or self._is_reduced_motion() or old_canvas is None or not old_canvas.winfo_exists():
                 for child in body.winfo_children():
                     child.destroy()
                 render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
@@ -1764,7 +1801,7 @@ class WidgetsMixin:
                     return
                 cur_offset = [round(direction * in_dist)]
                 new_canvas.move("all", cur_offset[0], 0)
-                in_started = [None]
+                in_st = {"progress": 0.0, "last_t": None}
 
                 def draw_in():
                     anim_state["job"] = None
@@ -1772,10 +1809,11 @@ class WidgetsMixin:
                         finish_slide()
                         return
                     f_t0 = monotonic()
-                    if in_started[0] is None:
-                        in_started[0] = f_t0
-                    p = min(1.0, (f_t0 - in_started[0]) / in_dur)
-                    eased = ease_out_elastic(p, damping=4.8, frequency=1.22)
+                    dt = 0.016 if in_st["last_t"] is None else max(0.004, min(0.042, f_t0 - in_st["last_t"]))
+                    in_st["last_t"] = f_t0
+                    in_st["progress"] = min(1.0, in_st["progress"] + dt / in_dur)
+                    p = in_st["progress"]
+                    eased = 1.0 - (1.0 - p) ** 3 if sys.platform != "win32" else ease_out_elastic(p, damping=4.8, frequency=1.22)
                     desired_x = round(direction * in_dist * (1.0 - eased))
                     dx = desired_x - cur_offset[0]
                     if dx:
@@ -1783,16 +1821,16 @@ class WidgetsMixin:
                         cur_offset[0] = desired_x
                     if p < 1.0:
                         spent = (monotonic() - f_t0) * 1000.0
-                        anim_state["job"] = body.after(max(1, round(16 - spent)), draw_in)
+                        anim_state["job"] = body.after(self._next_frame_delay(spent, 16), draw_in)
                     else:
                         if cur_offset[0] != 0:
                             new_canvas.move("all", -cur_offset[0], 0)
                         finish_slide()
 
-                body.after_idle(draw_in)
+                body.after(1, draw_in)
 
             out_offset = [0]
-            out_started = [None]
+            out_st = {"progress": 0.0, "last_t": None}
 
             def draw_out():
                 anim_state["job"] = None
@@ -1800,9 +1838,10 @@ class WidgetsMixin:
                     start_incoming()
                     return
                 f_t0 = monotonic()
-                if out_started[0] is None:
-                    out_started[0] = f_t0
-                p = min(1.0, (f_t0 - out_started[0]) / out_dur)
+                dt = 0.016 if out_st["last_t"] is None else max(0.004, min(0.042, f_t0 - out_st["last_t"]))
+                out_st["last_t"] = f_t0
+                out_st["progress"] = min(1.0, out_st["progress"] + dt / out_dur)
+                p = out_st["progress"]
                 desired_x = round(-direction * out_dist * (p * p))
                 dx = desired_x - out_offset[0]
                 if dx:
@@ -1810,7 +1849,7 @@ class WidgetsMixin:
                     out_offset[0] = desired_x
                 if p < 1.0:
                     spent = (monotonic() - f_t0) * 1000.0
-                    anim_state["job"] = body.after(max(1, round(16 - spent)), draw_out)
+                    anim_state["job"] = body.after(self._next_frame_delay(spent, 16), draw_out)
                 else:
                     start_incoming()
 

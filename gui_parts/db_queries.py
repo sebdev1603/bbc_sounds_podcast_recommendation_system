@@ -259,11 +259,52 @@ class DatabaseMixin:
             "ListenerID PRIMARY KEY NOT NULL, "
             "TextScale REAL NOT NULL DEFAULT 1.0, "
             "Theme TEXT NOT NULL DEFAULT 'dark', "
-            "Language TEXT NOT NULL DEFAULT 'en')"
+            "Language TEXT NOT NULL DEFAULT 'en', "
+            "ReducedMotion INTEGER NOT NULL DEFAULT 0)"
         )
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(user_accessibility)").fetchall()}
         if "language" not in cols:
             conn.execute("ALTER TABLE user_accessibility ADD COLUMN Language TEXT NOT NULL DEFAULT 'en'")
+        if "reducedmotion" not in cols:
+            conn.execute("ALTER TABLE user_accessibility ADD COLUMN ReducedMotion INTEGER NOT NULL DEFAULT 0")
+
+    def load_user_reduced_motion(self, listener_id):
+        """Load the listener's saved reduced-motion preference (bool), defaulting to False."""
+        if listener_id is None:
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                row = conn.execute(
+                    "SELECT ReducedMotion FROM user_accessibility WHERE ListenerID = ?",
+                    (listener_id,),
+                ).fetchone()
+            return bool(row and row[0])
+        except sqlite3.Error:
+            return False
+
+    def save_user_reduced_motion(self, listener_id, reduced_motion):
+        """Persist a listener's reduced-motion preference in database.db."""
+        if listener_id is None:
+            return
+        flag = 1 if reduced_motion else 0
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_accessibility_table(conn)
+                conn.execute(
+                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ListenerID) DO UPDATE SET ReducedMotion = excluded.ReducedMotion",
+                    (
+                        listener_id,
+                        getattr(self, "_text_scale", 1.0),
+                        getattr(self, "_theme_name", "dark"),
+                        getattr(self, "_language", "en"),
+                        flag,
+                    ),
+                )
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save motion setting", err)
 
     def load_user_language(self, listener_id):
         """Load the listener's saved UI language ('en' or 'cy'), defaulting to 'en'."""

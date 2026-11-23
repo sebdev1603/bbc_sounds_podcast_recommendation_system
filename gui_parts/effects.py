@@ -158,7 +158,8 @@ class EffectsMixin:
         ext = icon_path.suffix.lower()
         # Preferred path: Pillow removes outer grey/solid square, crops tight, and resizes cleanly.
         try:
-            from PIL import Image, ImageTk
+            import io
+            from PIL import Image
             resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             img = Image.open(icon_path).convert("RGBA")
             if max(img.size) > 256:
@@ -211,10 +212,11 @@ class EffectsMixin:
             square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
             square.paste(img, ((side - cw) // 2, (side - ch) // 2), img)
 
-            icons = [
-                ImageTk.PhotoImage(square.resize((sz, sz), resample), master=self)
-                for sz in (64, 32, 16)
-            ]
+            icons = []
+            for sz in (64, 32, 16):
+                buf = io.BytesIO()
+                square.resize((sz, sz), resample).save(buf, format="PNG")
+                icons.append(tk.PhotoImage(master=self, data=buf.getvalue()))
             self.iconphoto(True, *icons)
             self._window_icons = icons
             return True
@@ -484,14 +486,40 @@ class EffectsMixin:
             else:
                 self.show_login()
 
+    def _is_reduced_motion(self):
+        """Return True when the user enabled Reduced Motion for low-end devices or comfort."""
+        return bool(getattr(self, "_reduced_motion", False))
+
+    def _anim_frame_interval(self, base_ms=16):
+        """Return target frame interval (ms), keeping interactive animations crisp at 60Hz."""
+        return max(16, int(base_ms))
+
+    def _next_frame_delay(self, spent_ms, base_ms=16, min_yield_ms=4):
+        """Compute the next timer delay compensating for render time without starving input."""
+        clamped_spent = max(0.0, min(60.0, float(spent_ms)))
+        return max(min_yield_ms, round(float(base_ms) - clamped_spent))
+
+    def set_reduced_motion(self, enabled, refresh=True, persist=True):
+        """Toggle Reduced Motion mode, save per user, and refresh the Settings view if requested."""
+        flag = bool(enabled)
+        if bool(getattr(self, "_reduced_motion", False)) == flag and not refresh:
+            return
+        self._reduced_motion = flag
+        if persist and self.current_user is not None:
+            self.save_user_reduced_motion(self.current_user, flag)
+        if refresh and self.current_user is not None:
+            self.show_profile()
+
     def apply_user_accessibility(self, listener_id):
-        """Load and apply the signed-in listener's saved text size, theme, and language from database.db."""
+        """Load and apply the signed-in listener's saved text size, theme, language, and motion from database.db."""
         saved_scale, saved_theme = self.load_user_accessibility(listener_id)
         saved_lang = self.load_user_language(listener_id)
+        saved_reduced = self.load_user_reduced_motion(listener_id)
         theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
         self._text_scale = saved_scale
         self._theme_name = saved_theme
         self._language = saved_lang
+        self._reduced_motion = saved_reduced
         set_active_language(saved_lang)
         if theme_changed:
             apply_theme_palette(saved_theme)
@@ -500,20 +528,26 @@ class EffectsMixin:
             self._titlebar_colour = None
 
     def reset_accessibility_settings(self):
-        """Restore all accessibility settings (text size, theme, language) to defaults and save."""
+        """Restore all accessibility settings (text size, theme, language, motion) to defaults and save."""
         theme_changed = getattr(self, "_theme_name", "dark") != "dark"
         lang_changed = getattr(self, "_language", "en") != "en"
+        motion_changed = bool(getattr(self, "_reduced_motion", False))
         self._text_scale = 1.0
         self._language = "en"
+        self._reduced_motion = False
         set_active_language("en")
         if self.current_user is not None:
             self.save_user_accessibility(self.current_user, 1.0, "dark")
             self.save_user_language(self.current_user, "en")
+            self.save_user_reduced_motion(self.current_user, False)
         if theme_changed:
             self.set_theme("dark", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
         elif lang_changed:
             self.set_language("en", refresh=True, persist=False)
+            self.apply_interface_scaling(force=True)
+        elif motion_changed and self.current_user is not None:
+            self.show_profile()
             self.apply_interface_scaling(force=True)
         else:
             self.apply_interface_scaling(force=True)
@@ -676,7 +710,8 @@ class EffectsMixin:
             outgoing_info = None
             self._outgoing_page_info = None
             # Cold start: clear the login screen and construct the persistent header, search box, and scroll viewport.
-            self.unbind_all("<MouseWheel>")
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.unbind_all(seq)
             for widget in self.winfo_children():
                 if getattr(widget, "_preserve_during_shell_build", False):
                     continue
@@ -692,11 +727,11 @@ class EffectsMixin:
             topbar = tk.Frame(shell_box, bg=TOPBAR_BG, height=84)
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
-            logo_widget = self.draw_app_logo(topbar, 1.1)
-            logo_widget.pack(side="left", padx=(26, 18), pady=22)
+            logo_widget = self.draw_app_logo(topbar, 1.05)
+            logo_widget.pack(side="left", padx=(20, 12), pady=22)
 
             nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
-            nav_row.pack(side="left", padx=(12, 16), pady=18)
+            nav_row.pack(side="left", padx=(4, 10), pady=18)
             self._shell_nav_buttons = {}
             for label_text, handler in nav_links:
                 selected_flag = label_text == active_nav_tab
@@ -706,17 +741,23 @@ class EffectsMixin:
                     face=ORANGE_ACCENT if selected_flag else TOPBAR_BG,
                     fg=PRIMARY_BTN_FG if selected_flag else TEXT_GRAY,
                 )
+                btn._rounded_padding = (18, 12)
+                self.style_rounded_button(
+                    btn,
+                    ORANGE_ACCENT if selected_flag else TOPBAR_BG,
+                    ORANGE_HL if selected_flag else SECONDARY_HOVER_BG,
+                )
                 btn._nav_selected = selected_flag
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
             sign_out_btn = self.create_button(topbar, "Sign out", self.sign_out_to_login, compact=True)
             sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
-            search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=230, height=38)
-            search_container.pack(side="right", padx=(8, 12), pady=23)
+            search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=210, height=38)
+            search_container.pack(side="right", padx=(6, 10), pady=23)
             search_container.pack_propagate(False)
             self._search_container = search_container
 
-            last_search_size = [230, 38]
+            last_search_size = [210, 38]
 
             def resize_search_bar(_event=None):
                 if not topbar.winfo_exists() or not search_container.winfo_exists():
@@ -726,13 +767,13 @@ class EffectsMixin:
                     return
                 # Calculate remaining space between the nav links and Sign out button.
                 used_w = (
-                    logo_widget.winfo_reqwidth() + 44
-                    + nav_row.winfo_reqwidth() + 28
-                    + sign_out_btn.winfo_reqwidth() + 44
+                    logo_widget.winfo_reqwidth() + 36
+                    + nav_row.winfo_reqwidth() + 20
+                    + sign_out_btn.winfo_reqwidth() + 36
                 )
                 available = bar_w - used_w
-                # Grow longer on wider windows (up to 480px) and shrink cleanly on smaller windows (down to 135px).
-                target_w = max(135, min(480, available))
+                # Grow longer on wider windows (up to 460px) and shrink cleanly on smaller/Linux screens (down to 110px).
+                target_w = max(110, min(460, available))
                 target_h = max(34, min(44, round(38 * getattr(self, "_ui_scale_factor", 1.0))))
                 if abs(target_w - last_search_size[0]) >= 2 or target_h != last_search_size[1]:
                     last_search_size[0] = target_w
@@ -746,7 +787,7 @@ class EffectsMixin:
             self._search_entry = tk.Entry(
                 search_container, textvariable=self.search_text, font=(DEFAULT_FONT, 10),
                 bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
-                highlightthickness=0,
+                bd=0, highlightthickness=0,
             )
             self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
             self._search_prompt = tk.Label(
@@ -768,8 +809,11 @@ class EffectsMixin:
             canvas_pane = tk.Canvas(
                 area_frame, bg=DARK_BG, highlightthickness=0, borderwidth=0, yscrollincrement=1,
             )
-            scroll_bar = tk.Scrollbar(area_frame, orient="vertical", command=canvas_pane.yview,
-                                      bg=SIDEBAR_BG, troughcolor=DARK_BG, activebackground=ORANGE_ACCENT)
+            scroll_bar = tk.Scrollbar(
+                area_frame, orient="vertical", command=canvas_pane.yview,
+                bg=SIDEBAR_BG, troughcolor=DARK_BG, activebackground=ORANGE_ACCENT,
+                bd=0, highlightthickness=0, relief="flat",
+            )
             scroll_bar.pack(side="right", fill="y")
             canvas_pane.pack(side="left", fill="both", expand=True)
             canvas_pane.configure(yscrollcommand=scroll_bar.set)
@@ -953,6 +997,16 @@ class EffectsMixin:
                 )
                 return
 
+        if self._is_reduced_motion():
+            self._outgoing_page_info = None
+            self._tab_transition_direction = None
+            self._detail_hero_origin = None
+            canvas._leaving_page = False
+            self._transition_active = False
+            destination()
+            self._finish_transition()
+            return
+
         # Slide the current page completely off-screen before building and sliding in the destination page.
         def open_next_page():
             self._outgoing_page_info = None
@@ -964,9 +1018,15 @@ class EffectsMixin:
                 self._tab_transition_direction = None
                 self._tab_transition_distance = 1
 
+        # On Linux/macOS, skip sliding the outgoing heavy widget tree (which triggers per-child X11 repaints)
+        # and go straight into a crisp, fast incoming slide.
+        if sys.platform != "win32":
+            open_next_page()
+            return
+
         self.slide_page(
             canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page,
-            frame_ms=16,
+            frame_ms=self._anim_frame_interval(16),
         )
 
     def _prerender_initial_batch(self, max_items=2):
@@ -988,9 +1048,14 @@ class EffectsMixin:
         tab_distance = max(1, getattr(self, "_tab_transition_distance", 1))
         max_span = max(1, len(getattr(self, "_tab_order", [])) - 2)
         ratio = min(1.0, (tab_distance - 1) / max_span)
-        entry_ms = round(210 + 50 * ratio)
-        damping = 6.8 - 1.6 * ratio
-        frequency = 0.95 + 0.25 * ratio
+        if sys.platform != "win32":
+            entry_ms = 240
+            damping = 7.2
+            frequency = 0.85
+        else:
+            entry_ms = round(210 + 50 * ratio)
+            damping = 6.8 - 1.6 * ratio
+            frequency = 0.95 + 0.25 * ratio
 
         def finish_entry():
             if canvas.winfo_exists() and canvas_window == getattr(self, "_shell_canvas_window", None):
@@ -1016,7 +1081,9 @@ class EffectsMixin:
                     self._scale_widget_tree(self.current_page, self._ui_scale_factor)
                 width = max(1, canvas.winfo_width())
                 canvas.itemconfigure(canvas_window, width=width)
-                canvas.coords(canvas_window, direction * width, 0)
+                # On Linux/macOS, slide from a crisp 260px offset instead of full window width to reduce X11 repaint load.
+                slide_offset = min(width, 260) if sys.platform != "win32" else width
+                canvas.coords(canvas_window, direction * slide_offset, 0)
                 canvas.update_idletasks()
             except tk.TclError:
                 self._finish_transition()
@@ -1026,14 +1093,14 @@ class EffectsMixin:
                 damping=damping, frequency=frequency, frame_ms=16,
             )
 
-        # Wait one idle tick so the destination page finishes building off-screen before sliding in.
-        canvas.after_idle(begin_slide)
+        # Start promptly on the next tick so tab switches never feel delayed behind idle work.
+        canvas.after(1, begin_slide)
 
     def slide_page(
         self, canvas, canvas_window, end_x, duration_ms, on_complete=None, *,
         damping=5.4, frequency=1.15, frame_ms=16,
     ):
-        """Animate the scrollable content window horizontally to end_x in real elapsed time."""
+        """Animate the scrollable content window horizontally to end_x with clamped dt so slow frames never jump."""
         previous_frame = getattr(canvas, "_slide_frame", None)
         if previous_frame is not None:
             try:
@@ -1046,21 +1113,29 @@ class EffectsMixin:
             self._finish_transition()
             return
         start_x = coords[0] if coords else 0
-        duration_sec = max(0.05, float(duration_ms) / 1000.0)
-        started = monotonic()
+        duration_sec = max(0.08, float(duration_ms) / 1000.0)
+        progress = 0.0
+        last_t = None
         last_x = round(start_x)
         self._transition_active = True
 
         def draw_frame():
-            nonlocal last_x
+            nonlocal last_x, progress, last_t
             canvas._slide_frame = None
             if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
                 self._finish_transition()
                 return
             frame_t0 = monotonic()
-            progress = min(1.0, (frame_t0 - started) / duration_sec)
-            # Outgoing pages accelerate cleanly off-screen; incoming pages settle with a gentle elastic curve.
-            eased = progress ** 2.2 if end_x else ease_out_elastic(progress, damping=damping, frequency=frequency)
+            dt = 0.016 if last_t is None else max(0.004, min(0.042, frame_t0 - last_t))
+            last_t = frame_t0
+            progress = min(1.0, progress + dt / duration_sec)
+            # Outgoing pages accelerate cleanly off-screen; incoming pages settle smoothly (cubic on Linux/macOS, elastic on Windows).
+            if end_x:
+                eased = progress ** 2.2
+            elif sys.platform != "win32":
+                eased = 1.0 - (1.0 - progress) ** 3
+            else:
+                eased = ease_out_elastic(progress, damping=damping, frequency=frequency)
             new_x = round(start_x + (end_x - start_x) * eased)
             if new_x != last_x:
                 try:
@@ -1071,7 +1146,7 @@ class EffectsMixin:
                 last_x = new_x
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
-                canvas._slide_frame = canvas.after(max(1, round(frame_ms - spent_ms)), draw_frame)
+                canvas._slide_frame = canvas.after(self._next_frame_delay(spent_ms, frame_ms), draw_frame)
             elif on_complete:
                 on_complete()
             else:
@@ -1233,7 +1308,7 @@ class EffectsMixin:
             return
 
         show_avg = getattr(self, "_active_nav_tab", "") != "Settings"
-        if already_in_mini_bar or source_widget is None or not source_widget.winfo_exists():
+        if self._is_reduced_motion() or already_in_mini_bar or source_widget is None or not source_widget.winfo_exists():
             self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
             bar = getattr(self, "_shell_bottom_bar", None)
             if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
@@ -1300,8 +1375,8 @@ class EffectsMixin:
         tk.Misc.lift(migrator)
         tk.Misc.lift(floating_cover)
 
-        duration = 0.420
-        started = monotonic()
+        duration = 0.360
+        mig_state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_cov_pos = [None]
         last_bg = [ORANGE_ACCENT]
@@ -1325,7 +1400,10 @@ class EffectsMixin:
                 finish_migration()
                 return
             frame_t0 = monotonic()
-            progress = min(1.0, (frame_t0 - started) / duration)
+            dt = 0.016 if mig_state["last_t"] is None else max(0.004, min(0.042, frame_t0 - mig_state["last_t"]))
+            mig_state["last_t"] = frame_t0
+            mig_state["progress"] = min(1.0, mig_state["progress"] + dt / duration)
+            progress = mig_state["progress"]
             # Lively damped elastic spring for both the migrating bar and the flying cover art.
             eased = ease_out_elastic(progress, damping=4.5, frequency=1.30)
             clamped_color = round(max(0.0, min(1.0, 1.0 - (1.0 - progress) ** 3)) * 6) / 6.0
@@ -1361,7 +1439,7 @@ class EffectsMixin:
 
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
-                self.after(max(1, round(16 - spent_ms)), draw_migration)
+                self.after(self._next_frame_delay(spent_ms, 16), draw_migration)
             else:
                 finish_migration()
 
@@ -1387,12 +1465,15 @@ class EffectsMixin:
             (source_card is not None and source_card.winfo_exists())
             or (source_cover is not None and source_cover.winfo_exists())
         )
-        if shell is not None and shell.winfo_exists() and has_source:
+        if shell is not None and shell.winfo_exists() and has_source and not self._is_reduced_motion():
             self.expand_card_to_detail(
                 shell, source_card, source_cover, podcast_id,
                 str(title or "Programme"), category or "",
                 title_widget=source_title,
             )
+            return
+        if self._is_reduced_motion():
+            self.show_detail(podcast_id)
             return
         self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
 
@@ -1401,6 +1482,9 @@ class EffectsMixin:
     ):
         """Seamlessly expand a clicked podcast card and grow its cover art into the detail page."""
         if self._is_busy_transitioning() or not shell.winfo_exists():
+            return
+        if self._is_reduced_motion():
+            self.show_detail(podcast_id)
             return
         canvas, _window = self._page_transition_target
         if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
@@ -1456,6 +1540,9 @@ class EffectsMixin:
         """Seamlessly expand the bottom mini-bar and grow its cover art into the podcast detail page."""
         if self._is_busy_transitioning() or not shell.winfo_exists():
             return
+        if self._is_reduced_motion():
+            self.show_detail(podcast_id)
+            return
         canvas, _window = self._page_transition_target
         if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
             return
@@ -1495,6 +1582,9 @@ class EffectsMixin:
     ):
         """Shared hero transition engine expanding a source surface + cover + title into the detail page."""
         if self._is_busy_transitioning() or not shell.winfo_exists():
+            return
+        if self._is_reduced_motion():
+            self.show_detail(podcast_id)
             return
         canvas, _window = self._page_transition_target
         if not canvas.winfo_exists() or getattr(canvas, "_leaving_page", False):
@@ -1624,12 +1714,9 @@ class EffectsMixin:
         )
         tk.Misc.lift(expander)
 
-        # Pre-warm 5 cover sizes (including a subtle +5% elastic overshoot) with constant DARK_BG backdrop.
-        overshoot_sz = round(cov_end_sz * 1.05) if cov_end_sz > cov_start_sz else cov_end_sz
-        size_steps = tuple(sorted({
-            *(round(cov_start_sz + (cov_end_sz - cov_start_sz) * (i / 4.0)) for i in range(5)),
-            overshoot_sz,
-        }))
+        # Pre-warm 3 cover sizes (start, mid, end) instead of 6 to avoid startup stutter on low-end devices.
+        mid_sz = round((cov_start_sz + cov_end_sz) / 2.0)
+        size_steps = tuple(sorted({cov_start_sz, mid_sz, cov_end_sz}))
         cover_cache = {cov_start_sz: (photo0, icon0)}
         for step_sz in size_steps:
             if step_sz not in cover_cache:
@@ -1639,8 +1726,8 @@ class EffectsMixin:
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
-        duration = 0.370
-        started = [None]
+        duration = 0.310 if sys.platform != "win32" else 0.370
+        anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [start_bg]
         last_fade_step = [-1]
         last_rect = [None]
@@ -1662,9 +1749,10 @@ class EffectsMixin:
                 cleanup()
                 return
             frame_start = monotonic()
-            if started[0] is None:
-                started[0] = frame_start
-            progress = min(1.0, (frame_start - started[0]) / duration)
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, frame_start - anim_st["last_t"]))
+            anim_st["last_t"] = frame_start
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            progress = anim_st["progress"]
             # Outer surface expands swiftly and cleanly; cover & title use a juicy elastic spring inside the canvas.
             box_eased = min(1.0, max(0.0, ease_out_elastic(progress, damping=5.2, frequency=1.15)))
             hero_eased = ease_out_elastic(progress, damping=4.3, frequency=1.28)
@@ -1728,7 +1816,7 @@ class EffectsMixin:
 
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_start) * 1000.0
-                self.after(max(1, round(16 - spent_ms)), draw_expand)
+                self.after(self._next_frame_delay(spent_ms, 16), draw_expand)
             else:
                 def handoff_to_detail():
                     if not expander.winfo_exists() or not shell.winfo_exists():
@@ -1818,7 +1906,7 @@ class EffectsMixin:
                         expander.coords(title_item, px, py + cat_line_h)
                         if a_prog < 1.0:
                             spent = (monotonic() - f_t0) * 1000.0
-                            self.after(max(1, round(16 - spent)), draw_align)
+                            self.after(self._next_frame_delay(spent, 16), draw_align)
                         else:
                             start_reveal()
 
@@ -2043,11 +2131,9 @@ class EffectsMixin:
         cx1 = cov_end_x + cov_end_sz / 2.0
         cy1 = cov_end_y + cov_end_sz / 2.0
 
-        # Pre-warm 5 cover sizes with constant target_bg backdrop (~30ms worst case, 0ms cached).
-        size_steps = tuple(sorted({
-            round(cov_start_sz + (cov_end_sz - cov_start_sz) * (i / 4.0))
-            for i in range(5)
-        }))
+        # Pre-warm 3 cover sizes (start, mid, end) with constant target_bg backdrop for snappy low-end performance.
+        mid_sz = round((cov_start_sz + cov_end_sz) / 2.0)
+        size_steps = tuple(sorted({cov_start_sz, mid_sz, cov_end_sz}))
         cover_cache = {cov_start_sz: (photo0, icon0)}
         for step_sz in size_steps:
             if step_sz not in cover_cache:
@@ -2057,9 +2143,9 @@ class EffectsMixin:
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
-        duration = 0.360
+        duration = 0.290 if sys.platform != "win32" else 0.360
         frame_ms = 16
-        started = [None]
+        anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [DARK_BG]
         last_fade_step = [-1]
         preview_hidden = [False]
@@ -2087,9 +2173,10 @@ class EffectsMixin:
                 cleanup()
                 return
             frame_start = monotonic()
-            if started[0] is None:
-                started[0] = frame_start
-            progress = min(1.0, (frame_start - started[0]) / duration)
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, frame_start - anim_st["last_t"]))
+            anim_st["last_t"] = frame_start
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            progress = anim_st["progress"]
             # Outer card surface contracts smoothly (no re-covering underlying cards or mini-bar);
             # cover art inside the canvas uses a juicy elastic spring for tactile snap-back.
             box_eased = 1.0 - (1.0 - progress) ** 3.4
@@ -2161,7 +2248,7 @@ class EffectsMixin:
 
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_start) * 1000.0
-                self.after(max(1, round(frame_ms - spent_ms)), draw_shrink)
+                self.after(self._next_frame_delay(spent_ms, frame_ms), draw_shrink)
             else:
                 cleanup()
 
@@ -2279,7 +2366,7 @@ class EffectsMixin:
             frame_t0 = monotonic()
             self._scroll_priority_until = frame_t0 + 0.140
 
-            # Flush coalesced high-frequency precision touchpad deltas once per 60Hz frame.
+            # Flush coalesced high-frequency precision touchpad deltas once per frame.
             if pending_touchpad:
                 pixels = int(pending_touchpad)
                 pending_touchpad -= pixels
@@ -2287,7 +2374,7 @@ class EffectsMixin:
                     canvas.yview_scroll(pixels, "units")
                 if abs(pending_touchpad) >= 1.0:
                     spent_ms = (monotonic() - frame_t0) * 1000.0
-                    pending_frame = canvas.after(max(1, round(16 - spent_ms)), step_scroll)
+                    pending_frame = canvas.after(self._next_frame_delay(spent_ms, 16), step_scroll)
                 return
 
             if target is None:
@@ -2312,38 +2399,42 @@ class EffectsMixin:
 
             if next_int != target:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
-                pending_frame = canvas.after(max(1, round(16 - spent_ms)), step_scroll)
+                pending_frame = canvas.after(self._next_frame_delay(spent_ms, 16), step_scroll)
             else:
                 target = None
                 float_pos = None
                 last_tick = None
 
-        def on_wheel(event):
-            nonlocal fraction, target, float_pos, last_tick, pending_frame, pending_touchpad
-            if not event.delta or not canvas.winfo_exists():
+        def handle_scroll_step(step_px, *, is_precision=False):
+            nonlocal target, float_pos, last_tick, pending_frame, pending_touchpad
+            if not canvas.winfo_exists():
                 return "break"
             now = monotonic()
             self._scroll_priority_until = now + 0.160
 
-            # Precision touchpad (sub-120 deltas): coalesce into the 60Hz frame loop instead of 240Hz moves.
-            if event.delta % 120:
+            if self._is_reduced_motion():
+                cancel_animation()
+                px = round(step_px)
+                if px:
+                    canvas.yview_scroll(px, "units")
+                return "break"
+
+            if is_precision:
                 target = None
                 float_pos = None
                 last_tick = None
-                pending_touchpad -= event.delta * 48.0 / 120.0
+                pending_touchpad += step_px
                 if pending_frame is None:
                     pending_frame = canvas.after(1, step_scroll)
                 return "break"
 
-            # Detented mouse wheel: extend target smoothly without resetting velocity on each notch.
             pending_touchpad = 0.0
             maximum = refresh_max_scroll()
             if maximum <= 0:
                 return "break"
             current = round(canvas.canvasy(0))
-            step_px = -event.delta * 56 // 120
             base = target if (target is not None and (target - current) * step_px >= 0) else current
-            new_target = max(0, min(maximum, base + step_px))
+            new_target = max(0, min(maximum, base + round(step_px)))
             # Cap lookahead distance so fast wheel spins stay snappy and never drift far ahead.
             new_target = max(current - 260, min(current + 260, new_target))
             new_target = max(0, min(maximum, new_target))
@@ -2356,8 +2447,26 @@ class EffectsMixin:
                     pending_frame = canvas.after(1, step_scroll)
             return "break"
 
+        def on_wheel(event):
+            if not event.delta or not canvas.winfo_exists():
+                return "break"
+            if sys.platform == "darwin":
+                # macOS delivers small pixel/line deltas directly (typically ±1..±10).
+                return handle_scroll_step(-event.delta * 18.0, is_precision=abs(event.delta) <= 2)
+            # Precision touchpad (sub-120 deltas): coalesce into the frame loop instead of 240Hz moves.
+            if event.delta % 120:
+                return handle_scroll_step(-event.delta * 48.0 / 120.0, is_precision=True)
+            return handle_scroll_step(-event.delta * 56.0 / 120.0, is_precision=False)
+
+        def on_linux_button(event):
+            # Linux X11/XWayland mouse wheel fires Button-4 (up) and Button-5 (down).
+            step_px = -56.0 if event.num == 4 else 56.0
+            return handle_scroll_step(step_px, is_precision=False)
+
         scrollbar.configure(command=drag_scrollbar)
         canvas.bind_all("<MouseWheel>", on_wheel)
+        canvas.bind_all("<Button-4>", on_linux_button)
+        canvas.bind_all("<Button-5>", on_linux_button)
         canvas.bind("<Destroy>", lambda _event: cancel_animation(), add="+")
 
     def schedule_live_search(self, _event=None):

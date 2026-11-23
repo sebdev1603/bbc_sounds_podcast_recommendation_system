@@ -107,9 +107,9 @@ class DetailViewMixin:
                 if not play_canvas.winfo_exists():
                     return
                 size = play_state["size"]
-                t = play_state["step"] / 12.0
+                t = play_state["step"] / 6.0
                 # Smooth damped elastic spring stretches the play circle and settles seamlessly.
-                eased = ease_out_elastic(t, damping=4.6, frequency=1.20) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 3
+                eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 2
                 inset = max(0.5, 5.0 - 3.5 * eased)
                 colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, eased)
                 play_canvas.delete("all")
@@ -130,6 +130,12 @@ class DetailViewMixin:
 
             def animate_play_hover(target):
                 play_state["target"] = target
+                if self._is_reduced_motion():
+                    cancel_play_hover()
+                    if play_state["step"] != target:
+                        play_state["step"] = target
+                        draw_play_button()
+                    return
                 if play_state["job"] is not None:
                     return
 
@@ -142,7 +148,7 @@ class DetailViewMixin:
                     play_state["step"] += 1 if play_state["target"] > play_state["step"] else -1
                     draw_play_button()
                     if play_state["step"] != play_state["target"]:
-                        play_state["job"] = self.after(16, step_play)
+                        play_state["job"] = self.after(self._anim_frame_interval(18), step_play)
 
                 step_play()
 
@@ -155,7 +161,7 @@ class DetailViewMixin:
                     play_state["job"] = None
 
             for play_widget in (play_canvas, listen_label):
-                play_widget.bind("<Enter>", lambda _e: animate_play_hover(12))
+                play_widget.bind("<Enter>", lambda _e: animate_play_hover(6))
                 play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
             play_canvas.bind("<Destroy>", cancel_play_hover)
 

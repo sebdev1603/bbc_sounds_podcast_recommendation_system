@@ -1,5 +1,6 @@
 """Application pages: Home, Genres/Search, For you, Favourites, History, Ratings, Report, Profile, and Survey."""
 import sqlite3
+import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import messagebox
@@ -419,7 +420,7 @@ class PagesMixin:
 
                 hi_top = blend_colour(top_col, "#ffffff", 0.14 if is_light_mode else 0.16)
                 hi_bot = blend_colour(bot_col, "#ffffff", 0.14 if is_light_mode else 0.16)
-                card_state = {"step": 0, "target": 0, "job": None, "w": 0, "h": 0, "cache": {}}
+                card_state = {"step": 0, "target": 0, "job": None, "cfg_job": None, "w": 0, "h": 0, "cache": {}}
 
                 def paint_gradient_card(
                     cvs=card_canvas,
@@ -453,20 +454,22 @@ class PagesMixin:
                         state["cache"].clear()
 
                     step = state["step"]
-                    t = step / 6.0
-                    eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
-                    inset = max(0, min(3, round(3.0 - 2.0 * eased)))
+                    t = step / 4.0
+                    raw_eased = ease_out_elastic(t, damping=5.0, frequency=1.10) if state["target"] > 0 else 1.0 - (1.0 - t) ** 2
+                    # Quantize to 4 shared levels so enter/leave reuse cached gradient PhotoImages.
+                    level = max(0, min(3, round(raw_eased * 3.0)))
+                    eased = level / 3.0
+                    inset = max(1, min(3, round(3.0 - 2.0 * eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
                     cur_bot = blend_colour(b_base, b_hi, eased)
                     cur_border = blend_colour(bd_base, acc, eased)
                     cur_ico_bg = blend_colour(ib_base, ib_hi, eased)
                     cur_act_fg = blend_colour("#ffffff", act_hi, eased)
 
-                    cache_key = (step, state["target"] > 0)
-                    photo = state["cache"].get(cache_key)
+                    photo = state["cache"].get(level)
                     if photo is None:
                         photo = make_gradient_card_photo(w, h, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
-                        state["cache"][cache_key] = photo
+                        state["cache"][level] = photo
                     cvs._grad_img = photo
                     cvs.itemconfigure(bi, image=photo)
 
@@ -482,17 +485,41 @@ class PagesMixin:
                     cvs.itemconfigure(acti, fill=cur_act_fg)
 
                 def cancel_card_hover(state=card_state):
-                    if state["job"] is not None:
+                    for jkey in ("job", "cfg_job"):
+                        if state[jkey] is not None:
+                            try:
+                                self.after_cancel(state[jkey])
+                            except tk.TclError:
+                                pass
+                            state[jkey] = None
+
+                def schedule_card_paint(_event=None, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
+                    # First paint runs immediately; subsequent resizes debounce 45ms to avoid rasterizing on every pixel.
+                    if state["w"] == 0:
+                        paint_fn()
+                        return
+                    if state["cfg_job"] is not None:
                         try:
-                            self.after_cancel(state["job"])
+                            self.after_cancel(state["cfg_job"])
                         except tk.TclError:
                             pass
-                        state["job"] = None
+                    state["cfg_job"] = self.after(45, lambda: (state.__setitem__("cfg_job", None), paint_fn()))
 
                 def animate_card_hover(target, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
                     if not cvs.winfo_exists():
                         return
                     state["target"] = target
+                    if self._is_reduced_motion():
+                        if state["job"] is not None:
+                            try:
+                                self.after_cancel(state["job"])
+                            except tk.TclError:
+                                pass
+                            state["job"] = None
+                        if state["step"] != target:
+                            state["step"] = target
+                            paint_fn()
+                        return
                     if state["job"] is not None:
                         return
 
@@ -510,7 +537,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(16, step_card)
+                            state["job"] = self.after(self._anim_frame_interval(18), step_card)
 
                     step_card()
 
@@ -526,16 +553,16 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 6.0
-                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 3)
+                    t = state["step"] / 4.0
+                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
                         lambda: (self.search_text.set(name), perform_search_action()),
                         programmes_heading, page,
                     )
 
-                card_canvas.bind("<Configure>", lambda _e, paint_fn=paint_gradient_card: paint_fn())
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(6))
+                card_canvas.bind("<Configure>", schedule_card_paint)
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(4))
                 card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
                 card_canvas.bind("<Button-1>", open_genre)
                 card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -564,10 +591,18 @@ class PagesMixin:
         target_w = max(1, area_frame.winfo_width())
         target_h = max(1, area_frame.winfo_height())
 
-        if target_w <= 1 or target_h <= 1:
+        if target_w <= 1 or target_h <= 1 or self._is_reduced_motion():
             area_frame._expanding_genre = False
             self._finish_transition()
             apply_filter()
+            if canvas_pane.winfo_exists() and heading_widget.winfo_exists() and page.winfo_exists():
+                self.update_idletasks()
+                region = canvas_pane.cget("scrollregion")
+                if region:
+                    total_h = int(float(region.split()[3]))
+                    if total_h > 0:
+                        offset = heading_widget.winfo_rooty() - page.winfo_rooty()
+                        canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             return
 
         is_light_mode = getattr(self, "_theme_name", "dark") == "light"
@@ -600,8 +635,8 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.260
-        expand_started = monotonic()
+        expand_duration = 0.240
+        expand_st = {"progress": 0.0, "last_t": None}
         last_colors = [(start_col, overlay_title_fg, overlay_desc_fg, badge_bg, badge_fg)]
         last_rect = [None]
 
@@ -621,40 +656,46 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.220
-            reveal_started = None
+            reveal_duration = 0.210
+            reveal_st = {"progress": 0.0, "last_t": None}
             last_y = [0]
 
             def draw_reveal():
-                nonlocal reveal_started
                 if not expander.winfo_exists() or not area_frame.winfo_exists():
                     area_frame._expanding_genre = False
                     self._finish_transition()
                     return
-                if reveal_started is None:
-                    reveal_started = monotonic()
-                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 4
+                t0 = monotonic()
+                dt = 0.016 if reveal_st["last_t"] is None else max(0.004, min(0.042, t0 - reveal_st["last_t"]))
+                reveal_st["last_t"] = t0
+                reveal_st["progress"] = min(1.0, reveal_st["progress"] + dt / reveal_duration)
+                progress = reveal_st["progress"]
+                eased = 1.0 - (1.0 - progress) ** 3
                 cur_y = round(-target_h * eased)
                 if cur_y != last_y[0]:
                     expander.place(x=0, y=cur_y, width=target_w, height=target_h)
                     last_y[0] = cur_y
                 if progress < 1.0:
-                    self.after(16, draw_reveal)
+                    spent = (monotonic() - t0) * 1000.0
+                    self.after(self._next_frame_delay(spent, 16), draw_reveal)
                 else:
                     expander.destroy()
                     area_frame._expanding_genre = False
                     self._finish_transition()
 
-            self.after(16, draw_reveal)
+            self.after(1, draw_reveal)
 
         def draw_expand():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
                 area_frame._expanding_genre = False
                 self._finish_transition()
                 return
-            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
+            t0 = monotonic()
+            dt = 0.016 if expand_st["last_t"] is None else max(0.004, min(0.042, t0 - expand_st["last_t"]))
+            expand_st["last_t"] = t0
+            expand_st["progress"] = min(1.0, expand_st["progress"] + dt / expand_duration)
+            progress = expand_st["progress"]
+            eased = 1.0 - (1.0 - progress) ** 3 if sys.platform != "win32" else ease_out_elastic(progress, damping=5.8, frequency=1.05)
             cur_x = max(0, round(start_x * (1.0 - eased)))
             cur_y = max(0, round(start_y * (1.0 - eased)))
             cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
@@ -689,7 +730,7 @@ class PagesMixin:
                 last_rect[0] = rect
 
             if progress < 1.0:
-                self.after(16, draw_expand)
+                self.after(self._anim_frame_interval(16), draw_expand)
             else:
                 # Brief hold at full expansion before sliding the curtain up to reveal programmes.
                 self.after(80, start_reveal)
@@ -1009,7 +1050,7 @@ class PagesMixin:
         name_entry = tk.Entry(
             name_box, textvariable=name_var, font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE,
-            relief="flat", highlightthickness=0,
+            relief="flat", bd=0, highlightthickness=0,
         )
         name_entry.pack(fill="both", expand=True, padx=10, pady=5)
         name_placeholder = tk.Label(
@@ -1172,6 +1213,32 @@ class PagesMixin:
                 compact=True,
             ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
 
+        # Divider and Motion / Animations selector row (Smooth / Reduced) for low-end devices & comfort.
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        motion_row = tk.Frame(access_card, bg=CARD_BG)
+        motion_row.pack(fill="x", padx=18, pady=16)
+
+        active_reduced = self._is_reduced_motion()
+        motion_info = tk.Frame(motion_row, bg=CARD_BG)
+        motion_info.pack(side="left", fill="x", expand=True)
+        self.create_label(motion_info, "ANIMATIONS", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        self.create_label(
+            motion_info,
+            "Reduced motion  ·  Faster on older devices" if active_reduced else "Smooth  ·  Default",
+            13, TEXT_WHITE, "bold",
+        ).pack(anchor="w", pady=(4, 0))
+
+        motion_controls = tk.Frame(motion_row, bg=CARD_BG)
+        motion_controls.pack(side="right")
+        for is_red, caption in ((False, "Smooth"), (True, "Reduced motion")):
+            self.create_button(
+                motion_controls,
+                caption,
+                lambda flag=is_red: self.set_reduced_motion(flag),
+                primary=(active_reduced == is_red),
+                compact=True,
+            ).pack(side="left", padx=(0 if not is_red else 8, 0))
+
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
             if pct == 100:
@@ -1182,10 +1249,11 @@ class PagesMixin:
             scale_val = getattr(self, "_text_scale", 1.0)
             cur_theme = getattr(self, "_theme_name", "dark")
             cur_lang = getattr(self, "_language", "en")
+            cur_reduced = self._is_reduced_motion()
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en"
+            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en" and not cur_reduced
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
@@ -1428,7 +1496,8 @@ class PagesMixin:
 
             layout_qa()
             if any_active:
-                qa_loop["job"] = self.after(16, tick_qa_animations)
+                spent = (monotonic() - now) * 1000.0
+                qa_loop["job"] = self.after(self._next_frame_delay(spent, 16), tick_qa_animations)
             else:
                 qa_loop["last_t"] = None
 
@@ -1438,7 +1507,10 @@ class PagesMixin:
                     st["open"] = not st["open"]
                     st["target"] = 1.0 if st["open"] else 0.0
                     qa_canvas.itemconfigure(st["arrow_id"], text="▾" if st["open"] else "▸")
-                    if qa_loop["job"] is None:
+                    if self._is_reduced_motion():
+                        st["progress"] = st["target"]
+                        layout_qa()
+                    elif qa_loop["job"] is None:
                         qa_loop["last_t"] = None
                         tick_qa_animations()
                     break

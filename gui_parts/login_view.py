@@ -33,7 +33,8 @@ class LoginViewMixin:
             self.after_cancel(self._search_after_id)
             self._search_after_id = None
         self._live_search_callback = None
-        self.unbind_all("<MouseWheel>")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.unbind_all(seq)
         self.current_user = None
         self._armed_easter_egg = None
         for attr in ("_snake_window", "_memory_window", "_flappy_window"):
@@ -96,7 +97,7 @@ class LoginViewMixin:
         text_entry = tk.Entry(
             input_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
             disabledbackground=INPUT_BG, disabledforeground=TEXT_WHITE,
-            insertbackground=TEXT_WHITE, relief="flat", highlightthickness=0,
+            insertbackground=TEXT_WHITE, relief="flat", bd=0, highlightthickness=0,
         )
         text_entry.pack(fill="x", padx=12, pady=5, ipady=4)
 
@@ -276,12 +277,241 @@ class LoginViewMixin:
         except Exception:
             pass
 
+    def _expand_login_in_window(self, start_x, start_y, start_w, start_h, start_colour):
+        """Cross-platform in-window pill expansion for Linux (Wayland/X11), macOS, and low-end devices."""
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+        if win_w <= 1 or win_h <= 1 or self._is_reduced_motion():
+            self.show_home()
+            return
+
+        overlay = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        overlay._preserve_during_shell_build = True
+        overlay.place(x=0, y=0, width=win_w, height=win_h)
+        tk.Misc.lift(overlay)
+
+        pill_items = (
+            overlay.create_rectangle(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+            overlay.create_rectangle(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
+        )
+
+        def set_pill(x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
+            if r <= 1:
+                overlay.coords(pill_items[0], x0, y0, x1, y1)
+                for extra in pill_items[1:]:
+                    overlay.coords(extra, 0, 0, 0, 0)
+            else:
+                d = r * 2
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                overlay.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
+                overlay.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
+                overlay.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
+                overlay.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
+                overlay.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
+                overlay.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                overlay.itemconfigure("pill", fill=fill_col)
+
+        start_r = min(10, start_h // 2, start_w // 2)
+        set_pill(start_x, start_y, start_x + start_w, start_y + start_h, start_r)
+        # Paint the initial overlay frame immediately so clicking Continue feels instant.
+        overlay.update_idletasks()
+
+        # Build Home underneath while covered by the lightweight in-window overlay.
+        self._transition_active = True
+        self.show_home()
+        if not self.winfo_exists() or not overlay.winfo_exists():
+            self._transition_active = False
+            if overlay.winfo_exists():
+                overlay.destroy()
+            return
+        tk.Misc.lift(overlay)
+
+        duration = 0.360
+        anim_st = {"progress": 0.0, "last_t": None}
+        last_bg = [start_colour]
+
+        def finish():
+            if overlay.winfo_exists():
+                try:
+                    overlay.destroy()
+                except tk.TclError:
+                    pass
+            self._finish_transition()
+
+        def draw_frame():
+            if not overlay.winfo_exists() or not self.winfo_exists():
+                finish()
+                return
+            t0 = monotonic()
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, t0 - anim_st["last_t"]))
+            anim_st["last_t"] = t0
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            p = anim_st["progress"]
+            eased = 1.0 - (1.0 - p) ** 3
+            cur_x = round(start_x * (1.0 - eased))
+            cur_y = round(start_y * (1.0 - eased))
+            cur_w = max(1, min(win_w, round(start_w + (win_w - start_w) * eased)))
+            cur_h = max(1, min(win_h, round(start_h + (win_h - start_h) * eased)))
+            cur_r = round(start_r * (1.0 - eased))
+            cur_bg = blend_colour(start_colour, DARK_BG, min(1.0, p / 0.85))
+            fill_upd = cur_bg if cur_bg != last_bg[0] else None
+            set_pill(cur_x, cur_y, cur_x + cur_w, cur_y + cur_h, cur_r, fill_upd)
+            if fill_upd is not None:
+                last_bg[0] = fill_upd
+            if p < 1.0:
+                spent = (monotonic() - t0) * 1000.0
+                self.after(self._next_frame_delay(spent, 16), draw_frame)
+            else:
+                finish()
+
+        self.after(1, draw_frame)
+
+    def _sign_out_in_window(self):
+        """Cross-platform in-window sign-out transition for Linux (Wayland/X11), macOS, and low-end devices."""
+        win_w = max(1, self.winfo_width())
+        win_h = max(1, self.winfo_height())
+        if win_w <= 1 or win_h <= 1 or self._is_reduced_motion():
+            self._signing_out = False
+            self.show_login()
+            return
+
+        overlay = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        overlay._preserve_during_shell_build = True
+        overlay.place(x=0, y=0, width=win_w, height=win_h)
+        tk.Misc.lift(overlay)
+
+        self._transition_active = True
+        self.show_login()
+        if not self.winfo_exists() or not overlay.winfo_exists():
+            self._signing_out = False
+            self._transition_active = False
+            if overlay.winfo_exists():
+                overlay.destroy()
+            return
+        self.apply_interface_scaling(force=True)
+        self.update_idletasks()
+        # Paint the login vinyl graphic statically while hidden behind overlay (spin stays paused until finish).
+        disc_canvas = getattr(self, "_login_disc_canvas", None)
+        if disc_canvas is not None and disc_canvas.winfo_exists():
+            class _StaticPaintEvent:
+                widget = disc_canvas
+                width = max(240, disc_canvas.winfo_width())
+                height = max(240, disc_canvas.winfo_height())
+            self.paint_vinyl_record(_StaticPaintEvent())
+            self.update_idletasks()
+        tk.Misc.lift(overlay)
+
+        target_btn = getattr(self, "_login_button", None)
+        if target_btn is not None and target_btn.winfo_exists() and target_btn.winfo_width() > 1:
+            end_x = target_btn.winfo_rootx() - self.winfo_rootx() + 3
+            end_y = target_btn.winfo_rooty() - self.winfo_rooty() + 3
+            end_w = max(1, target_btn.winfo_width() - 6)
+            end_h = max(1, target_btn.winfo_height() - 6)
+        else:
+            end_x, end_y, end_w, end_h = 80, win_h // 2, 160, 44
+
+        pill_items = (
+            overlay.create_rectangle(0, 0, win_w, win_h, fill=DARK_BG, outline="", tags="pill"),
+            overlay.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
+        )
+
+        def set_pill(x0, y0, x1, y1, radius, fill_col=None):
+            w = max(1, x1 - x0)
+            h = max(1, y1 - y0)
+            r = max(0, min(radius, w // 2, h // 2))
+            if r <= 1:
+                overlay.coords(pill_items[0], x0, y0, x1, y1)
+                for extra in pill_items[1:]:
+                    overlay.coords(extra, 0, 0, 0, 0)
+            else:
+                d = r * 2
+                ox1 = max(x0, x1 - 1)
+                oy1 = max(y0, y1 - 1)
+                overlay.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
+                overlay.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
+                overlay.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
+                overlay.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
+                overlay.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
+                overlay.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
+            if fill_col is not None:
+                overlay.itemconfigure("pill", fill=fill_col)
+
+        duration = 0.320
+        anim_st = {"progress": 0.0, "last_t": None}
+        last_bg = [DARK_BG]
+        end_r = min(10, end_h // 2, end_w // 2)
+
+        def finish():
+            if overlay.winfo_exists():
+                try:
+                    overlay.destroy()
+                except tk.TclError:
+                    pass
+            self._signing_out = False
+            self._finish_transition()
+            disc = getattr(self, "_login_disc_canvas", None)
+            if disc is not None and disc.winfo_exists():
+                resume = getattr(disc, "_resume_spin", None)
+                if resume is not None:
+                    resume()
+                else:
+                    class _PaintEvt:
+                        widget = disc
+                        width = max(240, disc.winfo_width())
+                        height = max(240, disc.winfo_height())
+                    self.paint_vinyl_record(_PaintEvt())
+
+        def draw_frame():
+            if not overlay.winfo_exists() or not self.winfo_exists():
+                finish()
+                return
+            t0 = monotonic()
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, t0 - anim_st["last_t"]))
+            anim_st["last_t"] = t0
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            p = anim_st["progress"]
+            eased = p * p * (3.0 - 2.0 * p)
+            cur_x = round(end_x * eased)
+            cur_y = round(end_y * eased)
+            cur_w = max(1, round(win_w + (end_w - win_w) * eased))
+            cur_h = max(1, round(win_h + (end_h - win_h) * eased))
+            cur_r = round(end_r * eased)
+            cur_bg = blend_colour(DARK_BG, ORANGE_ACCENT, min(1.0, p / 0.85))
+            fill_upd = cur_bg if cur_bg != last_bg[0] else None
+            # Keep overlay Canvas fixed-size (zero X11 ConfigureNotify resizes per frame) and animate items inside it.
+            set_pill(cur_x, cur_y, cur_x + cur_w, cur_y + cur_h, cur_r, fill_upd)
+            if fill_upd is not None:
+                last_bg[0] = fill_upd
+            if p < 1.0:
+                spent = (monotonic() - t0) * 1000.0
+                self.after(self._next_frame_delay(spent, 16), draw_frame)
+            else:
+                finish()
+
+        self.after(1, draw_frame)
+
     def expand_login_button_to_home(self, login_button):
         """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
         # Sample the button's exact current hover colour, inset, and screen geometry before expanding.
         self.cancel_button_hover(login_button)
+        if self._is_reduced_motion():
+            self.show_home()
+            return
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
-        hover_t = getattr(login_button, "_hover_step", 0) / 12.0
+        hover_t = getattr(login_button, "_hover_step", 0) / 5.0
         hover_eased = (
             ease_out_elastic(hover_t, damping=4.8, frequency=1.15)
             if getattr(login_button, "_hover_target", 0) > 0
@@ -308,6 +538,11 @@ class LoginViewMixin:
 
         if start_w <= 1 or start_h <= 1:
             self.show_home()
+            return
+
+        # On Linux (Wayland/X11) and macOS, -transparentcolor Toplevels are unsupported; use the fast in-window overlay.
+        if sys.platform != "win32":
+            self._expand_login_in_window(start_x, start_y, start_w, start_h, start_colour)
             return
 
         # Capture the clean login screen BEFORE modifying the button, then clear its text.
@@ -530,7 +765,8 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(16, draw_frame)
+                spent_ms = (monotonic() - now) * 1000.0
+                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
             else:
                 finish()
 
@@ -549,9 +785,13 @@ class LoginViewMixin:
         win_w = max(1, self.winfo_width())
         win_h = max(1, self.winfo_height())
 
-        if win_w <= 1 or win_h <= 1:
+        if win_w <= 1 or win_h <= 1 or self._is_reduced_motion():
             self._signing_out = False
             self.show_login()
+            return
+
+        if sys.platform != "win32":
+            self._sign_out_in_window()
             return
 
         # Capture the live current page BEFORE switching to the login screen underneath.
@@ -786,6 +1026,12 @@ class LoginViewMixin:
                 resume = getattr(disc, "_resume_spin", None)
                 if resume is not None:
                     resume()
+                else:
+                    class _PaintEvt:
+                        widget = disc
+                        width = max(240, disc.winfo_width())
+                        height = max(240, disc.winfo_height())
+                    self.paint_vinyl_record(_PaintEvt())
 
         def draw_frame():
             if not pill_win.winfo_exists() or not page_win.winfo_exists() or not self.winfo_exists():
@@ -871,7 +1117,8 @@ class LoginViewMixin:
                     return
 
             if progress < 1.0:
-                self.after(16, draw_frame)
+                spent_ms = (monotonic() - now) * 1000.0
+                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
             else:
                 finish()
 
@@ -912,6 +1159,10 @@ class LoginViewMixin:
         gdi_rings = self._create_gdiplus_ring_renderer(
             canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs,
         )
+        if gdi_rings is None:
+            gdi_rings = self._create_pillow_ring_renderer(
+                canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs,
+            )
         sheen_1 = sheen_2 = glint_1 = glint_2 = None
         label_marker = label_top = label_bottom = None
         label_r = vinyl_r * 0.36
@@ -1026,8 +1277,8 @@ class LoginViewMixin:
             fill=ORANGE_ACCENT, outline="",
         )
 
-        # Continuous time-based 60fps rotation loop batched into a single Tcl eval per frame,
-        # automatically pausing while the user drags/resizes the window so dragging stays lag-free.
+        # Continuous time-based rotation loop that adapts its frame rate on lower-end devices
+        # and pauses automatically while dragging/resizing or when Reduced Motion is enabled.
         state = {
             "tick": getattr(canvas_obj, "_spin_tick", 0.0),
             "last_t": None,
@@ -1040,6 +1291,8 @@ class LoginViewMixin:
         deg2rad = math.pi / 180.0
         top_r = label_r * 0.45
         bot_r = label_r * 0.48
+        # Use ~30fps on Linux/macOS or Canvas fallback so the turntable looks smooth while staying light on CPU.
+        spin_base_ms = 22 if sys.platform == "win32" else 33
 
         def animate_spin():
             canvas_obj._spin_job = None
@@ -1051,16 +1304,16 @@ class LoginViewMixin:
             now = monotonic()
             if now < getattr(self, "_window_moving_until", 0.0):
                 state["last_t"] = None
-                canvas_obj._spin_job = self.after(40, animate_spin)
+                canvas_obj._spin_job = self.after(50, animate_spin)
                 return
 
-            # Advance in real elapsed time (30 ticks/sec matches the original speed at 60fps).
-            dt = 0.016 if state["last_t"] is None else max(0.004, min(0.033, now - state["last_t"]))
+            # Advance in real elapsed time (30 ticks/sec matches the original speed).
+            dt = (spin_base_ms / 1000.0) if state["last_t"] is None else max(0.004, min(0.060, now - state["last_t"]))
             state["last_t"] = now
             state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
             canvas_obj._spin_tick = state["tick"]
             t = state["tick"]
-            bucket = state["frame_n"] % 3
+            bucket = state["frame_n"] % 6
             state["frame_n"] += 1
 
             if gdi_rings is not None:
@@ -1068,46 +1321,181 @@ class LoginViewMixin:
             else:
                 cmds = []
                 append = cmds.append
-                # Fallback for non-Windows: update (x, y) at 60Hz and stagger float -angle across 3 buckets.
+                # Lightweight Canvas fallback: stagger expensive FreeType -angle updates across 6 buckets.
                 for item_id, base_deg, radius, speed, slot in ring_items:
                     deg = (base_deg + t * speed) % 360.0
                     rad = (deg - 90.0) * deg2rad
-                    append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.2f} {center_y + radius * sin(rad):.2f}")
-                    if slot == bucket:
-                        append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.2f}")
+                    append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.1f} {center_y + radius * sin(rad):.1f}")
+                    if (slot == bucket % 3) and (bucket < 3):
+                        append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.1f}")
 
                 # Rotate the vinyl highlights and specular glints clockwise.
                 vinyl_deg = (t * 2.2) % 360.0
-                append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.2f}")
-                append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.2f}")
-                append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.2f}")
-                append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.1f}")
+                append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.1f}")
+                append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.1f}")
+                append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.1f}")
 
-                # Orbit the centre label dot and "BBC / SOUNDS" text with continuous float angles every frame.
+                # Orbit the centre label dot and "BBC / SOUNDS" text.
                 v_rad = (vinyl_deg - 90.0) * deg2rad
                 cv, sv = cos(v_rad), sin(v_rad)
                 mx = center_x + label_dot_r * cv
                 my = center_y + label_dot_r * sv
-                append(f"{canvas_path} coords {label_marker} {mx - 3:.2f} {my - 3:.2f} {mx + 3:.2f} {my + 3:.2f}")
-                append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.2f} {center_y + top_r * sv:.2f}")
-                append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.2f} {center_y - bot_r * sv:.2f}")
-                append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.2f}")
-                append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.2f}")
+                append(f"{canvas_path} coords {label_marker} {mx - 3:.1f} {my - 3:.1f} {mx + 3:.1f} {my + 3:.1f}")
+                append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.1f} {center_y + top_r * sv:.1f}")
+                append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.1f} {center_y - bot_r * sv:.1f}")
+                append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.1f}")
+                append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.1f}")
 
                 try:
                     tk_eval("\n".join(cmds))
                 except tk.TclError:
                     return
 
-            # Compensate for frame render time so the spin locks cleanly to 60Hz instead of drifting to ~53fps.
+            # Adapt frame delay so typing/clicks stay responsive even on lower-end CPUs.
             spent_ms = (monotonic() - now) * 1000.0
-            canvas_obj._spin_job = self.after(max(1, round(16 - spent_ms)), animate_spin)
+            delay_ms = self._next_frame_delay(spent_ms, base_ms=spin_base_ms, min_yield_ms=10)
+            canvas_obj._spin_job = self.after(delay_ms, animate_spin)
 
         canvas_obj._resume_spin = animate_spin
         if not getattr(self, "_signing_out", False):
             animate_spin()
         elif gdi_rings is not None:
             gdi_rings(state["tick"])
+
+    def _create_pillow_ring_renderer(self, canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs):
+        """Cross-platform Pillow renderer: pre-renders cropped L-mode text rings + vinyl once, outputs PPM (no ImageTk needed)."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            from gui_parts.theme import ROOT_PATH
+        except Exception:
+            return None
+
+        try:
+            pad = max(22, round(ring_specs[0][2] * 2.1))
+            size = int(math.ceil((outer_r + pad) * 2))
+            if size < 64 or size > 1100:
+                return None
+
+            # Locate bundled BBC Reith Sans Bold (or any system sans-serif TTF/OTF) for crisp ring letters.
+            font_path = None
+            reith_dir = ROOT_PATH / "BBCReithSans"
+            if reith_dir.is_dir():
+                for candidate in sorted(reith_dir.rglob("*.ttf")):
+                    n = candidate.stem.lower()
+                    if "sans" in n and ("bd" in n or "bold" in n) and "it" not in n and "cd" not in n:
+                        font_path = str(candidate)
+                        break
+            if font_path is None:
+                from pathlib import Path as _Path
+                for sys_font in (
+                    "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
+                    "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
+                    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
+                    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "/System/Library/Fonts/Helvetica.ttc",
+                ):
+                    if _Path(sys_font).is_file():
+                        font_path = sys_font
+                        break
+
+            def load_font(pt_size):
+                px = max(10, round(pt_size * 1.33))
+                if font_path:
+                    try:
+                        return ImageFont.truetype(font_path, px)
+                    except OSError:
+                        pass
+                return ImageFont.load_default()
+
+            def parse_rgb(hex_col):
+                c = str(hex_col).lstrip("#")
+                if len(c) != 6:
+                    return (255, 255, 255)
+                return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+
+            bg_rgb = parse_rgb(canvas_obj.cget("bg"))
+            resample_rot = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+            resample_aa = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+
+            # Pre-render each solid-colour text ring ONCE into a cropped 1-channel L-mode alpha mask (4x faster to rotate than RGBA).
+            step = 360.0 / len(ring_text)
+            ring_layers = []
+            for radius, colour, font_size, speed in ring_specs:
+                ring_pad = max(18, round(font_size * 1.9))
+                layer_sz = min(size, max(64, int(math.ceil((radius + ring_pad) * 2))))
+                l_half = layer_sz / 2.0
+                mask_layer = Image.new("L", (layer_sz, layer_sz), 0)
+                fnt = load_font(font_size)
+                glyph_box = max(32, round(font_size * 3.0))
+                g_half = glyph_box // 2
+                for idx, ch in enumerate(ring_text):
+                    if ch == " ":
+                        continue
+                    base_deg = idx * step
+                    glyph = Image.new("L", (glyph_box, glyph_box), 0)
+                    gd = ImageDraw.Draw(glyph)
+                    gd.text((g_half, g_half), ch, fill=255, font=fnt, anchor="mm")
+                    rot_g = glyph.rotate(-base_deg, resample=resample_aa, expand=False)
+                    rad = math.radians(base_deg - 90.0)
+                    gx = round(l_half + radius * math.cos(rad) - g_half)
+                    gy = round(l_half + radius * math.sin(rad) - g_half)
+                    mask_layer.paste(255, (gx, gy), rot_g)
+                off = (size - layer_sz) // 2
+                ring_layers.append((mask_layer, parse_rgb(colour), off, speed))
+
+            # Pre-render the anti-aliased vinyl disc ONCE at 2x resolution, cropped tightly around vinyl_r.
+            v_sz = min(size, max(64, int(math.ceil((vinyl_r + 6) * 2))))
+            v_off = (size - v_sz) // 2
+            s2 = v_sz * 2
+            h2 = s2 / 2.0
+            vr2 = vinyl_r * 2.0
+            vinyl_hi = Image.new("RGBA", (s2, s2), (0, 0, 0, 0))
+            vd = ImageDraw.Draw(vinyl_hi)
+            vd.ellipse((h2 - vr2, h2 - vr2, h2 + vr2, h2 + vr2), fill=(17, 18, 21, 255), outline=(46, 49, 56, 255), width=4)
+            vd.pieslice((h2 - vr2 + 6, h2 - vr2 + 6, h2 + vr2 - 6, h2 + vr2 - 6), start=-63, end=-25, fill=(36, 39, 46, 255))
+            vd.pieslice((h2 - vr2 + 6, h2 - vr2 + 6, h2 + vr2 - 6, h2 + vr2 - 6), start=117, end=155, fill=(36, 39, 46, 255))
+            for frac, col_hex in ((0.92, "#292c33"), (0.81, "#1e2026"), (0.70, "#2c2f36"), (0.58, "#1e2026"), (0.47, "#2a2d34")):
+                gr = vr2 * frac
+                vd.ellipse((h2 - gr, h2 - gr, h2 + gr, h2 + gr), outline=parse_rgb(col_hex) + (255,), width=2)
+            lr2 = vr2 * 0.36
+            vd.ellipse((h2 - lr2, h2 - lr2, h2 + lr2, h2 + lr2), fill=parse_rgb(ORANGE_ACCENT) + (255,), outline=parse_rgb(TEXT_WHITE) + (255,), width=4)
+            dot_r2 = lr2 * 0.68
+            vd.ellipse((h2 - 6, h2 - dot_r2 - 6, h2 + 6, h2 - dot_r2 + 6), fill=(17, 17, 17, 255))
+            bbc_f = load_font(max(7, round(vinyl_r * 0.36 * 0.28)) * 2)
+            snd_f = load_font(max(6, round(vinyl_r * 0.36 * 0.20)) * 2)
+            vd.text((h2, h2 - lr2 * 0.45), "BBC", fill=parse_rgb(TEXT_WHITE) + (255,), font=bbc_f, anchor="mm")
+            vd.text((h2, h2 + lr2 * 0.48), "SOUNDS", fill=(17, 17, 17, 255), font=snd_f, anchor="mm")
+            sp2 = max(10.0, vr2 * 0.08)
+            vd.ellipse((h2 - sp2, h2 - sp2, h2 + sp2, h2 + sp2), fill=(17, 17, 17, 255), outline=parse_rgb(TEXT_WHITE) + (255,), width=4)
+            vinyl_rgba = vinyl_hi.resize((v_sz, v_sz), resample_aa)
+            vinyl_rgb = vinyl_rgba.convert("RGB")
+            vinyl_alpha = vinyl_rgba.getchannel("A")
+
+            base_bg = Image.new("RGB", (size, size), bg_rgb)
+            ppm_header = f"P6\n{size} {size}\n255\n".encode("ascii")
+            photo = tk.PhotoImage(master=self, data=ppm_header + base_bg.tobytes(), format="PPM")
+            canvas_obj._ring_photo = photo
+            canvas_obj.create_image(center_x, center_y, image=photo, anchor="center")
+
+            def render_frame(t):
+                if not canvas_obj.winfo_exists():
+                    return
+                frame = base_bg.copy()
+                for mask_layer, rgb_col, off, speed in ring_layers:
+                    ang = -(t * speed) % 360.0
+                    rot_m = mask_layer.rotate(ang, resample=resample_rot, expand=False)
+                    frame.paste(rgb_col, (off, off), rot_m)
+                v_ang = -(t * 2.2) % 360.0
+                v_rot = vinyl_rgb.rotate(v_ang, resample=resample_rot, expand=False, fillcolor=bg_rgb)
+                frame.paste(v_rot, (v_off, v_off), vinyl_alpha)
+                photo.configure(data=ppm_header + frame.tobytes())
+
+            render_frame(0.0)
+            return render_frame
+        except Exception:
+            return None
 
     def _create_gdiplus_ring_renderer(self, canvas_obj, center_x, center_y, outer_r, vinyl_r, ring_text, ring_specs):
         """Build a Windows GDI+ sub-pixel anti-aliased renderer for the 3 rotating text rings and vinyl disc."""
