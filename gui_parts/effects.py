@@ -1702,12 +1702,14 @@ class EffectsMixin:
         geom_key = (target_w, target_h, round(text_scale, 2))
         cached_geom = getattr(self, "_detail_hero_geom", {}).get(geom_key)
         if cached_geom is not None:
-            approx_cov_x, approx_cov_y, cov_end_sz, approx_rp_x, approx_rp_y = cached_geom
+            approx_cov_x, approx_cov_y, cov_end_sz, approx_cat_x, approx_cat_y, approx_title_x, approx_title_y = cached_geom
         else:
             approx_cov_x = max(48, round((target_w - 16 - (cov_end_sz + hero_gap + title_wrap)) / 2))
             approx_cov_y = target_y + round(85 + 30 * detail_scale)
-            approx_rp_x = approx_cov_x + cov_end_sz + hero_gap
-            approx_rp_y = approx_cov_y + 4
+            approx_cat_x = approx_cov_x + cov_end_sz + hero_gap + 1
+            approx_cat_y = approx_cov_y + 5
+            approx_title_x = approx_cat_x
+            approx_title_y = approx_cat_y + max(16, round(max(10, round(11 * font_scale)) * 1.45)) + 6
 
         # Use a single double-buffered tk.Canvas (zero child HWNDs) so background, accent bar, cover art,
         # and title paint atomically in one BitBlt per frame with zero tearing and lively elastic motion.
@@ -1750,8 +1752,10 @@ class EffectsMixin:
             canvas_inner_w = max(1, target_w - 17)
             approx_cov_x = max(48, round((canvas_inner_w - (cov_end_sz + hero_gap + est_rp_w)) / 2))
             approx_cov_y = target_y + round(85 + 30 * detail_scale)
-            approx_rp_x = approx_cov_x + cov_end_sz + hero_gap
-            approx_rp_y = approx_cov_y + 4
+            approx_cat_x = approx_cov_x + cov_end_sz + hero_gap + 1
+            approx_cat_y = approx_cov_y + 5
+            approx_title_x = approx_cat_x
+            approx_title_y = approx_cat_y + cat_line_h
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             expander, podcast_id, title, category, cov_start_sz, cov_start_sz,
@@ -1801,7 +1805,8 @@ class EffectsMixin:
         last_rect = [None]
         last_cov_sz = [cov_start_sz]
         last_cov_abs = [(cov_start_x, cov_start_y)]
-        last_rp_abs = [(rp_start_x, rp_start_y)]
+        last_cat_abs = [(rp_start_x, rp_start_y)]
+        last_title_abs = [(rp_start_x, rp_start_y + cat_line_h)]
 
         def cleanup():
             shell._expanding_bar = False
@@ -1876,11 +1881,14 @@ class EffectsMixin:
                     expander.itemconfigure(cat_item, fill=blend_colour(cur_bg, ORANGE_HL, fade))
                     expander.itemconfigure(title_item, fill=blend_colour(cur_bg, TEXT_WHITE, fade))
                     last_fade_step[0] = fade_step
-                rp_x = round(rp_start_x + (approx_rp_x - rp_start_x) * hero_eased)
-                rp_y = round(rp_start_y + (approx_rp_y - rp_start_y) * hero_eased)
-                last_rp_abs[0] = (rp_x, rp_y)
-                expander.coords(cat_item, rp_x - vx0, rp_y - vy0)
-                expander.coords(title_item, rp_x - vx0, rp_y - vy0 + cat_line_h)
+                cat_x = round(rp_start_x + (approx_cat_x - rp_start_x) * hero_eased)
+                cat_y = round(rp_start_y + (approx_cat_y - rp_start_y) * hero_eased)
+                tit_x = round(rp_start_x + (approx_title_x - rp_start_x) * hero_eased)
+                tit_y = round(rp_start_y + cat_line_h + (approx_title_y - (rp_start_y + cat_line_h)) * hero_eased)
+                last_cat_abs[0] = (cat_x, cat_y)
+                last_title_abs[0] = (tit_x, tit_y)
+                expander.coords(cat_item, cat_x - vx0, cat_y - vy0)
+                expander.coords(title_item, tit_x - vx0, tit_y - vy0)
 
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_start) * 1000.0
@@ -1901,11 +1909,15 @@ class EffectsMixin:
                         return
                     self.update_idletasks()
                     tk.Misc.lift(expander)
-
                     self.update_idletasks()
+
                     holder = getattr(self, "_detail_cover_holder", None)
-                    rp_widget = getattr(self, "_detail_right_pane", None)
+                    dw = getattr(self, "_detail_widgets", {}) or {}
+                    cat_lbl = dw.get("category_label")
+                    tit_lbl = dw.get("title_label")
                     sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+
+                    # Measure exact pixel geometry of the real cover, category label, and title label on detail_view.
                     if holder is not None and holder.winfo_exists() and holder.winfo_width() > 1:
                         final_x = holder.winfo_rootx() - sh_rx
                         final_y = holder.winfo_rooty() - sh_ry
@@ -1913,17 +1925,39 @@ class EffectsMixin:
                     else:
                         final_x, final_y, final_sz = approx_cov_x, approx_cov_y, cov_end_sz
 
-                    if rp_widget is not None and rp_widget.winfo_exists() and rp_widget.winfo_width() > 1:
-                        final_rp_x = rp_widget.winfo_rootx() - sh_rx
-                        final_rp_y = rp_widget.winfo_rooty() - sh_ry
+                    if cat_lbl is not None and cat_lbl.winfo_exists() and cat_lbl.winfo_width() > 1:
+                        # Account for tk.Label's 1px default internal padx/pady so text aligns pixel-for-pixel.
+                        final_cat_x = cat_lbl.winfo_rootx() - sh_rx + 1
+                        final_cat_y = cat_lbl.winfo_rooty() - sh_ry + 1
+                        try:
+                            expander.itemconfigure(cat_item, font=cat_lbl.cget("font"))
+                        except tk.TclError:
+                            pass
                     else:
-                        final_rp_x, final_rp_y = approx_rp_x, approx_rp_y
+                        final_cat_x, final_cat_y = approx_cat_x, approx_cat_y
+
+                    if tit_lbl is not None and tit_lbl.winfo_exists() and tit_lbl.winfo_width() > 1:
+                        final_title_x = tit_lbl.winfo_rootx() - sh_rx + 1
+                        final_title_y = tit_lbl.winfo_rooty() - sh_ry + 1
+                        try:
+                            expander.itemconfigure(
+                                title_item,
+                                font=tit_lbl.cget("font"),
+                                width=max(200, int(tit_lbl.cget("wraplength"))),
+                            )
+                        except (tk.TclError, ValueError, TypeError):
+                            pass
+                    else:
+                        final_title_x, final_title_y = approx_title_x, approx_title_y
 
                     geom_cache = getattr(self, "_detail_hero_geom", None)
                     if geom_cache is None:
                         geom_cache = {}
                         self._detail_hero_geom = geom_cache
-                    geom_cache[geom_key] = (final_x, final_y, final_sz, final_rp_x, final_rp_y)
+                    geom_cache[geom_key] = (
+                        final_x, final_y, final_sz,
+                        final_cat_x, final_cat_y, final_title_x, final_title_y,
+                    )
 
                     if last_cov_sz[0] != final_sz:
                         p_img, p_ico, _ = self._get_cover_photo(
@@ -1936,51 +1970,182 @@ class EffectsMixin:
                             expander.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, final_sz // 6), "bold"))
                         last_cov_sz[0] = final_sz
 
+                    # Collect exact coordinates of the detail controls so they expand elastically from nowhere
+                    # instead of popping in abruptly when expander is dropped.
+                    def _rounded_pts(rx0, ry0, rx1, ry1, rad):
+                        rad = max(1.0, min(rad, (rx1 - rx0) / 2.0, (ry1 - ry0) / 2.0))
+                        return (
+                            rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
+                            rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
+                            rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
+                        )
+
+                    play_w = dw.get("play_canvas")
+                    play_spec = None
+                    if play_w is not None and play_w.winfo_exists() and play_w.winfo_width() > 4:
+                        psz = min(play_w.winfo_width(), play_w.winfo_height())
+                        pcx = (play_w.winfo_rootx() - sh_rx) + play_w.winfo_width() / 2.0
+                        pcy = (play_w.winfo_rooty() - sh_ry - target_y) + play_w.winfo_height() / 2.0
+                        oval_id = expander.create_oval(pcx, pcy, pcx, pcy, fill=ORANGE_ACCENT, outline="")
+                        tri_id = expander.create_polygon(pcx, pcy, pcx, pcy, pcx, pcy, fill="#000000", outline="")
+                        play_spec = (oval_id, tri_id, pcx, pcy, psz)
+
+                    pill_specs = []
+                    from gui_parts.theme import ACTION_BTN_BG, ACTION_BTN_FG, DIVIDER_LINE, GOLD_STAR, SUBCARD_BG
+                    for b_idx, (b_key, is_prim, stagger) in enumerate((
+                        ("fav_button", bool(dw.get("fav_primary")), 0.08),
+                        ("rate_button", False, 0.16),
+                        ("back_btn", False, 0.04),
+                    )):
+                        btn_w = dw.get(b_key)
+                        if btn_w is not None and btn_w.winfo_exists() and btn_w.winfo_width() > 10:
+                            y_sh = getattr(btn_w, "_hover_y_shift", 0)
+                            h_sz = getattr(btn_w, "_hover_size", None)
+                            bw = (h_sz[0] + 2) if h_sz else max(12, btn_w.winfo_width() - 10)
+                            bh = (h_sz[1] + 2) if h_sz else max(12, btn_w.winfo_height() - 10 - y_sh * 2)
+                            bcx = (btn_w.winfo_rootx() - sh_rx) + btn_w.winfo_width() / 2.0
+                            bcy = (btn_w.winfo_rooty() - sh_ry - target_y) + btn_w.winfo_height() / 2.0 - y_sh
+                            fill_c = ORANGE_ACCENT if is_prim else (INPUT_BG if b_key == "back_btn" else ACTION_BTN_BG)
+                            fg_c = PRIMARY_BTN_FG if is_prim else (TEXT_GRAY if b_key == "back_btn" else ACTION_BTN_FG)
+                            poly_id = expander.create_polygon(bcx, bcy, bcx, bcy, smooth=True, fill=fill_c, outline="")
+                            txt_id = expander.create_text(
+                                bcx, bcy + y_sh, text=btn_w.cget("text"), fill=fill_c,
+                                font=btn_w.cget("font"), anchor="center",
+                            )
+                            pill_specs.append((poly_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stagger))
+
+                    fade_items = []
+                    for lbl_key, target_fg in (
+                        ("now_playing_lbl", ORANGE_HL),
+                        ("meta_label", TEXT_GRAY),
+                        ("avg_label", GOLD_STAR),
+                        ("listen_label", TEXT_WHITE),
+                    ):
+                        lw = dw.get(lbl_key)
+                        if lw is not None and lw.winfo_exists() and lw.winfo_width() > 2:
+                            lx = lw.winfo_rootx() - sh_rx + 1
+                            ly = lw.winfo_rooty() - sh_ry - target_y + 1
+                            tid = expander.create_text(
+                                lx, ly, text=lw.cget("text"), fill=DARK_BG,
+                                font=lw.cget("font"), anchor="nw",
+                            )
+                            fade_items.append((tid, DARK_BG, target_fg, None))
+
+                    for rule_key in ("top_rule", "bottom_rule", "v_divider"):
+                        rw = dw.get(rule_key)
+                        if rw is not None and rw.winfo_exists() and rw.winfo_width() > 0 and rw.winfo_height() > 0:
+                            rx = rw.winfo_rootx() - sh_rx
+                            ry = rw.winfo_rooty() - sh_ry - target_y
+                            rid = expander.create_rectangle(
+                                rx, ry, rx + rw.winfo_width(), ry + rw.winfo_height(),
+                                fill=DARK_BG, outline="",
+                            )
+                            fade_items.append((rid, DARK_BG, DIVIDER_LINE, None))
+
+                    sub_w = dw.get("sub_card")
+                    if sub_w is not None and sub_w.winfo_exists() and sub_w.winfo_width() > 20:
+                        sx0 = sub_w.winfo_rootx() - sh_rx + 1
+                        sy0 = sub_w.winfo_rooty() - sh_ry - target_y + 1
+                        sx1 = sx0 + sub_w.winfo_width() - 2
+                        sy1 = sy0 + sub_w.winfo_height() - 2
+                        sid = expander.create_polygon(
+                            *_rounded_pts(sx0, sy0, sx1, sy1, 12),
+                            smooth=True, fill=DARK_BG, outline=DARK_BG,
+                        )
+                        fade_items.append((sid, DARK_BG, SUBCARD_BG, BORDER_LINE))
+                        for sub_key, sub_fg in (
+                            ("listening_heading", ORANGE_HL),
+                            ("summary_label", dw.get("summary_color", TEXT_WHITE)),
+                            ("rating_caption", TEXT_GRAY),
+                        ):
+                            sw = dw.get(sub_key)
+                            if sw is not None and sw.winfo_exists() and sw.winfo_width() > 2:
+                                slx = sw.winfo_rootx() - sh_rx + 1
+                                sly = sw.winfo_rooty() - sh_ry - target_y + 1
+                                stid = expander.create_text(
+                                    slx, sly, text=sw.cget("text"), fill=DARK_BG,
+                                    font=sw.cget("font"), anchor="nw",
+                                )
+                                fade_items.append((stid, DARK_BG, sub_fg, None))
+
                     from_x, from_y = last_cov_abs[0]
-                    from_rp_x, from_rp_y = last_rp_abs[0]
-                    needs_align = (
-                        abs(final_x - from_x) > 2 or abs(final_y - from_y) > 2
-                        or abs(final_rp_x - from_rp_x) > 2 or abs(final_rp_y - from_rp_y) > 2
-                    )
-                    align_duration = 0.055 if needs_align else 0.0
-                    reveal_duration = 0.135
-                    align_started = monotonic()
-                    last_top = [target_y]
+                    from_cat_x, from_cat_y = last_cat_abs[0]
+                    from_tit_x, from_tit_y = last_title_abs[0]
+                    bloom_dur = 0.290
+                    bloom_st = {"progress": 0.0, "last_t": None}
 
-                    def start_reveal():
-                        # Hero cover and title are already aligned pixel-for-pixel with the real detail page underneath,
-                        # so drop the overlay cleanly without a second full-screen HWND wipe.
-                        cleanup()
-
-                    if not needs_align:
-                        start_reveal()
-                        return
-
-                    def draw_align():
+                    def draw_bloom():
                         if not expander.winfo_exists() or not shell.winfo_exists():
                             cleanup()
                             return
                         f_t0 = monotonic()
-                        a_prog = min(1.0, (f_t0 - align_started) / align_duration)
-                        a_eased = 1.0 - (1.0 - a_prog) ** 2
-                        sx = round(from_x + (final_x - from_x) * a_eased + final_sz / 2.0)
-                        sy = round(from_y + (final_y - from_y) * a_eased + final_sz / 2.0) - target_y
+                        dt = 0.016 if bloom_st["last_t"] is None else max(0.004, min(0.042, f_t0 - bloom_st["last_t"]))
+                        bloom_st["last_t"] = f_t0
+                        bloom_st["progress"] = min(1.0, bloom_st["progress"] + dt / bloom_dur)
+                        bp = bloom_st["progress"]
+
+                        # 1. Pixel-perfectly align cover, category, and title during the first 30% of the bloom.
+                        ap = min(1.0, bp / 0.30)
+                        ae = 1.0 - (1.0 - ap) ** 2
+                        sx = round(from_x + (final_x - from_x) * ae + final_sz / 2.0)
+                        sy = round(from_y + (final_y - from_y) * ae + final_sz / 2.0) - target_y
                         expander.coords(cover_item, sx, sy)
                         if icon_item is not None:
                             expander.coords(icon_item, sx, sy)
-                        px = round(from_rp_x + (final_rp_x - from_rp_x) * a_eased)
-                        py = round(from_rp_y + (final_rp_y - from_rp_y) * a_eased) - target_y
-                        expander.coords(cat_item, px, py)
-                        expander.coords(title_item, px, py + cat_line_h)
-                        if a_prog < 1.0:
+                        cx_t = round(from_cat_x + (final_cat_x - from_cat_x) * ae)
+                        cy_t = round(from_cat_y + (final_cat_y - from_cat_y) * ae) - target_y
+                        tx_t = round(from_tit_x + (final_title_x - from_tit_x) * ae)
+                        ty_t = round(from_tit_y + (final_title_y - from_tit_y) * ae) - target_y
+                        expander.coords(cat_item, cx_t, cy_t)
+                        expander.coords(title_item, tx_t, ty_t)
+
+                        # 2. Expand the circular Play button elastically from 0 -> full size.
+                        if play_spec is not None:
+                            oval_id, tri_id, pcx, pcy, psz = play_spec
+                            pe = max(0.0, ease_out_elastic(bp, damping=3.8, frequency=1.45))
+                            rad = max(0.5, ((psz / 2.0) - 5.0) * pe)
+                            expander.coords(oval_id, pcx - rad, pcy - rad, pcx + rad, pcy + rad)
+                            ts = max(0.0, pe)
+                            s_pts = (
+                                pcx + (-psz * 0.11) * ts, pcy + (-psz * 0.24) * ts,
+                                pcx + (-psz * 0.11) * ts, pcy + (psz * 0.24) * ts,
+                                pcx + (psz * 0.26) * ts, pcy,
+                            )
+                            expander.coords(tri_id, *s_pts)
+
+                        # 3. Expand each pill button elastically from nowhere (0x0 center -> full rounded pill).
+                        for poly_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stag in pill_specs:
+                            lp = max(0.0, min(1.0, (bp - stag) / max(0.20, 1.0 - stag)))
+                            if lp <= 0.0:
+                                continue
+                            pe = max(0.0, ease_out_elastic(lp, damping=3.8, frequency=1.45))
+                            hw = max(1.0, (bw / 2.0) * pe)
+                            hh = max(1.0, (bh / 2.0) * pe)
+                            expander.coords(poly_id, *_rounded_pts(bcx - hw, bcy - hh, bcx + hw, bcy + hh, 10.0 * min(1.0, pe)))
+                            tf = max(0.0, min(1.0, (lp - 0.30) / 0.55))
+                            expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
+
+                        # 4. Smoothly fade in metadata, divider rules, and bottom listening card (including border & text).
+                        fp = min(1.0, bp / 0.80)
+                        for fid, c0, c1, out_c in fade_items:
+                            if out_c is not None:
+                                expander.itemconfigure(
+                                    fid,
+                                    fill=blend_colour(c0, c1, fp),
+                                    outline=blend_colour(c0, out_c, fp),
+                                )
+                            else:
+                                expander.itemconfigure(fid, fill=blend_colour(c0, c1, fp))
+
+                        if bp < 1.0:
                             spent = (monotonic() - f_t0) * 1000.0
-                            self.after(self._next_frame_delay(spent, 16), draw_align)
+                            self.after(self._next_frame_delay(spent, 16), draw_bloom)
                         else:
-                            start_reveal()
+                            cleanup()
 
-                    draw_align()
+                    draw_bloom()
 
-                self.after(16, handoff_to_detail)
+                self.after(1, handoff_to_detail)
 
         draw_expand()
 

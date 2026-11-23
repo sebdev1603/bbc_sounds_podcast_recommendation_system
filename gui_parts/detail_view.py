@@ -55,11 +55,13 @@ class DetailViewMixin:
             )
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 12))
-            self.create_button(
+            back_btn = self.create_button(
                 back_row, f"←  Back to {back_name}",
                 lambda: self.transition_to(back_handler, back_tab, direction=-1), compact=True,
-            ).pack(side="left")
-            self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
+            )
+            back_btn.pack(side="left")
+            now_playing_lbl = self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold")
+            now_playing_lbl.pack(side="right", pady=8)
 
             # Centered content column framed by top and bottom rules, matching 5.svg.
             detail_column = tk.Frame(page, bg=DARK_BG)
@@ -387,6 +389,27 @@ class DetailViewMixin:
 
             detail_column.bind("<Configure>", schedule_detail_scale)
             apply_detail_scale()
+            self._detail_widgets = {
+                "back_btn": back_btn,
+                "now_playing_lbl": now_playing_lbl,
+                "top_rule": top_rule,
+                "bottom_rule": bottom_rule,
+                "category_label": category_label,
+                "title_label": title_label,
+                "meta_label": meta_label,
+                "avg_label": avg_label,
+                "play_canvas": play_canvas,
+                "listen_label": listen_label,
+                "v_divider": v_divider,
+                "fav_button": fav_button,
+                "fav_primary": is_fav,
+                "rate_button": rate_button,
+                "sub_card": sub_card,
+                "listening_heading": listening_heading,
+                "summary_label": summary_label,
+                "summary_color": summary_color,
+                "rating_caption": rating_caption,
+            }
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
@@ -620,14 +643,26 @@ class DetailViewMixin:
                 id_tokens = [item.strip() for item in current_str.split(",") if item.strip()]
                 target_str = str(podcast_id)
                 # Toggle membership: remove if already saved, otherwise append.
-                if target_str in id_tokens:
-                    id_tokens.remove(target_str)
-                else:
+                was_added = target_str not in id_tokens
+                if was_added:
                     id_tokens.append(target_str)
+                else:
+                    id_tokens.remove(target_str)
                 conn.execute(
                     "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
                     (",".join(id_tokens), self.current_user),
                 )
+            if was_added and not self._is_reduced_motion():
+                self._detail_hero_origin = None
+                self._pending_card_insert = {
+                    "mode": "favourites",
+                    "podcast_id": podcast_id,
+                    "target_rating": None,
+                    "return_tab": "Programme details",
+                    "return_fn": lambda pid=podcast_id: self.show_detail(pid),
+                }
+                self.transition_to(self.show_favourites, "Favourites")
+                return
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
