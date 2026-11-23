@@ -2454,20 +2454,17 @@ class EffectsMixin:
 
         # Pre-render the visible batch of cards underneath shrinker BEFORE animation starts so grid pages
         # (For you, Favourites, History, Ratings, Search) are already populated rather than blank during shrink.
-        self._prerender_initial_batch(4)
+        self._prerender_initial_batch(6)
         saved_scroll = float(origin.get("scroll_y") or 0.0)
         new_target = getattr(self, "_page_transition_target", None)
         if restore_scroll and saved_scroll > 0.0 and new_target:
-            self._prerender_initial_batch(4)
-
-        # Keep shrinker above any newly created footer/page BEFORE the single layout pass so nothing
-        # flashes on top or leaves a blank frame before draw_shrink() starts.
+            self._prerender_initial_batch(6)
         tk.Misc.lift(shrinker)
-        shell.update_idletasks()
         if new_target:
             new_canvas, _new_win = new_target
             if new_canvas.winfo_exists():
                 try:
+                    new_canvas.update_idletasks()
                     if self.current_page is not None and self.current_page.winfo_exists():
                         new_canvas.configure(
                             scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
@@ -2476,6 +2473,9 @@ class EffectsMixin:
                         new_canvas.yview_moveto(saved_scroll)
                 except tk.TclError:
                     pass
+
+        shell.update_idletasks()
+        tk.Misc.lift(shrinker)
 
         sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
 
@@ -2676,10 +2676,13 @@ class EffectsMixin:
 
             rel_cx = round(cx0 + (cx1 - cx0) * cov_pos_eased) - vis_x0
             raw_rel_cy = round(cy0 + (cy1 - cy0) * cov_pos_eased) - vis_y0
-            # Keep the elastic overshoot cleanly visible inside the shrinking bar.
-            min_cy = quant_sz // 2 - 2
-            max_cy = max(min_cy, vis_h - quant_sz // 2 + 2)
-            rel_cy = max(min_cy, min(max_cy, raw_rel_cy))
+            if is_mini:
+                # Keep the elastic overshoot cleanly visible inside the shrinking mini-bar.
+                min_cy = quant_sz // 2 - 2
+                max_cy = max(min_cy, vis_h - quant_sz // 2 + 2)
+                rel_cy = max(min_cy, min(max_cy, raw_rel_cy))
+            else:
+                rel_cy = raw_rel_cy
             shrinker.coords(cover_item, rel_cx, rel_cy)
             if icon_item is not None:
                 shrinker.coords(icon_item, rel_cx, rel_cy)
