@@ -346,6 +346,8 @@ class DetailViewMixin:
                     corner_radius=8, backdrop=DARK_BG,
                 )
                 cover_art.pack()
+                self._detail_cover_art = cover_art
+                self._detail_cover_size = cover_size
 
                 play_state["size"] = play_size
                 play_canvas.configure(width=play_size, height=play_size)

@@ -1686,7 +1686,9 @@ class EffectsMixin:
         cov_start_x, cov_start_y, cov_start_sz = cov_start_rect
         rp_start_x, rp_start_y = rp_start_pos
         target_y = area_frame.winfo_y()
-        target_w = shell_w
+        # Match the scrollable canvas width (excluding the scrollbar) so the scrollbar never flashes on handoff.
+        cvs_w = canvas.winfo_width()
+        target_w = cvs_w if (not is_mini if "is_mini" in locals() else source_kind != "mini_bar") and cvs_w > 100 else shell_w
         target_h = max(1, shell_h - target_y)
 
         # Match detail_view.py's exact cover size, typography, and hero position (using cached geometry when available).
@@ -1907,22 +1909,36 @@ class EffectsMixin:
                     if not expander.winfo_exists() or not shell.winfo_exists():
                         cleanup()
                         return
+                    # Apply responsive UI scaling synchronously now (while covered by expander) so an
+                    # after_idle rescale can never shift back_row/detail_column after the overlay drops.
+                    if (
+                        (abs(self._ui_scale_factor - 1.0) >= 0.025 or abs(getattr(self, "_text_scale", 1.0) - 1.0) >= 0.025)
+                        and self.current_page is not None
+                        and self.current_page.winfo_exists()
+                    ):
+                        self._scale_widget_tree(self.current_page, self._ui_scale_factor)
                     # Lift expander BEFORE update_idletasks so the newly built detail page never flashes on top.
                     tk.Misc.lift(expander)
                     self.update_idletasks()
                     tk.Misc.lift(expander)
 
                     holder = getattr(self, "_detail_cover_holder", None)
+                    cover_art_w = getattr(self, "_detail_cover_art", None)
+                    exact_cov_sz = getattr(self, "_detail_cover_size", None)
                     dw = getattr(self, "_detail_widgets", {}) or {}
                     cat_lbl = dw.get("category_label")
                     tit_lbl = dw.get("title_label")
                     sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
 
-                    # Measure exact pixel geometry of the real cover, category label, and title label on detail_view.
-                    if holder is not None and holder.winfo_exists() and holder.winfo_width() > 1:
+                    # Measure exact pixel geometry of the real cover image (not +2px Label border) so there is zero jump.
+                    if cover_art_w is not None and cover_art_w.winfo_exists() and cover_art_w.winfo_width() > 1:
+                        final_sz = exact_cov_sz or max(cov_start_sz, cover_art_w.winfo_width())
+                        final_x = cover_art_w.winfo_rootx() - sh_rx + (cover_art_w.winfo_width() - final_sz) // 2
+                        final_y = cover_art_w.winfo_rooty() - sh_ry + (cover_art_w.winfo_height() - final_sz) // 2
+                    elif holder is not None and holder.winfo_exists() and holder.winfo_width() > 1:
+                        final_sz = exact_cov_sz or max(cov_start_sz, holder.winfo_width())
                         final_x = holder.winfo_rootx() - sh_rx
                         final_y = holder.winfo_rooty() - sh_ry
-                        final_sz = max(cov_start_sz, holder.winfo_width())
                     else:
                         final_x, final_y, final_sz = approx_cov_x, approx_cov_y, cov_end_sz
 
@@ -2009,11 +2025,20 @@ class EffectsMixin:
                             fill_c = ORANGE_ACCENT if is_prim else (INPUT_BG if b_key == "back_btn" else ACTION_BTN_BG)
                             fg_c = PRIMARY_BTN_FG if is_prim else (TEXT_GRAY if b_key == "back_btn" else ACTION_BTN_FG)
                             poly_id = expander.create_polygon(bcx, bcy, bcx, bcy, smooth=True, fill=fill_c, outline="")
+                            norm_img = getattr(btn_w, "_normal_image", None)
+                            img_id = (
+                                expander.create_image(
+                                    bcx,
+                                    (btn_w.winfo_rooty() - sh_ry - target_y) + btn_w.winfo_height() / 2.0,
+                                    image=norm_img, anchor="center", state="hidden",
+                                )
+                                if norm_img is not None else None
+                            )
                             txt_id = expander.create_text(
                                 bcx, bcy + y_sh, text=btn_w.cget("text"), fill=fill_c,
                                 font=btn_w.cget("font"), anchor="center",
                             )
-                            pill_specs.append((poly_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stagger))
+                            pill_specs.append([poly_id, img_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stagger, False])
 
                     fade_items = []
                     for lbl_key, target_fg in (
@@ -2136,17 +2161,26 @@ class EffectsMixin:
                             )
                             expander.coords(tri_id, *s_pts)
 
-                        # 3. Expand each pill button elastically from nowhere (0x0 center -> full rounded pill).
-                        for poly_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stag in pill_specs:
+                        # 3. Expand each pill button elastically from nowhere, then swap to the exact AA button image at settle.
+                        for pspec in pill_specs:
+                            poly_id, img_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stag, swapped = pspec
                             lp = max(0.0, min(1.0, (bp - stag) / max(0.20, 1.0 - stag)))
                             if lp <= 0.0:
                                 continue
-                            pe = max(0.0, ease_out_elastic(lp, damping=3.8, frequency=1.45))
-                            hw = max(1.0, (bw / 2.0) * pe)
-                            hh = max(1.0, (bh / 2.0) * pe)
-                            expander.coords(poly_id, *_rounded_pts(bcx - hw, bcy - hh, bcx + hw, bcy + hh, 10.0 * min(1.0, pe)))
-                            tf = max(0.0, min(1.0, (lp - 0.30) / 0.55))
-                            expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
+                            if lp >= 0.96 and img_id is not None:
+                                if not swapped:
+                                    expander.itemconfigure(poly_id, state="hidden")
+                                    expander.itemconfigure(img_id, state="normal")
+                                    expander.tag_raise(txt_id, img_id)
+                                    pspec[10] = True
+                                expander.itemconfigure(txt_id, fill=fg_c)
+                            else:
+                                pe = max(0.0, ease_out_elastic(lp, damping=3.8, frequency=1.45))
+                                hw = max(1.0, (bw / 2.0) * pe)
+                                hh = max(1.0, (bh / 2.0) * pe)
+                                expander.coords(poly_id, *_rounded_pts(bcx - hw, bcy - hh, bcx + hw, bcy + hh, 10.0 * min(1.0, pe)))
+                                tf = max(0.0, min(1.0, (lp - 0.30) / 0.55))
+                                expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
 
                         # 4. Smoothly fade in metadata, divider rules, and bottom listening card (including border & text).
                         fp = min(1.0, bp / 0.80)
@@ -2164,7 +2198,8 @@ class EffectsMixin:
                             spent = (monotonic() - f_t0) * 1000.0
                             self.after(self._next_frame_delay(spent, 16), draw_bloom)
                         else:
-                            cleanup()
+                            # Let the completed bp=1.0 frame paint cleanly before dropping the overlay.
+                            self.after(16, cleanup)
 
                     draw_bloom()
 
