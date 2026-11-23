@@ -2299,34 +2299,108 @@ class WidgetsMixin:
                 if return_fn is not None:
                     self.transition_to(return_fn, return_tab, direction=-1)
 
-            def animate_stars(star_idx):
+            def animate_stars(_unused=0):
+                """Smooth 60fps overlapped elastic wave lighting up stars 1..target_rating with spring overshoot."""
                 anim_job[0] = None
                 if not grid_canvas.winfo_exists():
                     self._transition_active = False
                     return
-                if target_rating is None or star_idx >= min(len(star_items), int(target_rating)):
-                    # Hold briefly so the user sees the final card & rating before transitioning back.
-                    anim_job[0] = grid_canvas.after(550, finish_and_return)
-                    return
-                s_id = star_items[star_idx]
-                try:
-                    grid_canvas.itemconfigure(s_id, fill=GOLD_STAR, font=star_pop_font)
-                except tk.TclError:
-                    self._transition_active = False
+                star_count = min(len(star_items), int(target_rating or 0))
+                if star_count <= 0:
+                    anim_job[0] = grid_canvas.after(520, finish_and_return)
                     return
 
-                def settle_star(sid=s_id, next_i=star_idx + 1):
+                # Measure each target star's exact center & radius from its Canvas bbox so the vector pop
+                # overlaps the real glyph cleanly.
+                pop_stars = []
+                for idx_s in range(star_count):
+                    sid = star_items[idx_s]
+                    bb = grid_canvas.bbox(sid)
+                    if bb:
+                        cx = (bb[0] + bb[2]) / 2.0
+                        cy = (bb[1] + bb[3]) / 2.0
+                        base_r = max(5.5, min(bb[2] - bb[0], bb[3] - bb[1]) * 0.44)
+                    else:
+                        coords = grid_canvas.coords(sid)
+                        cx = (coords[0] if coords else 0) + 7.0
+                        cy = (coords[1] if len(coords) > 1 else 0) + 8.0
+                        base_r = 6.5
+                    poly_id = grid_canvas.create_polygon(
+                        cx, cy, cx, cy, cx, cy,
+                        fill=GOLD_STAR, outline="", state="hidden", tags="star_pop_poly",
+                    )
+                    pop_stars.append([sid, poly_id, cx, cy, base_r, False, False])
+
+                stagger = 0.115
+                each_dur = 0.360
+                total_dur = (star_count - 1) * stagger + each_dur
+                s_st = {"elapsed": 0.0, "last_t": None}
+                flash_col = blend_colour(GOLD_STAR, "#ffffff", 0.55)
+                cos = math.cos
+                sin = math.sin
+                deg2rad = math.pi / 180.0
+
+                def star_polygon_pts(cx, cy, r_out, rot_deg):
+                    r_in = r_out * 0.42
+                    pts = []
+                    for pt_i in range(10):
+                        ang = (-90.0 + rot_deg + pt_i * 36.0) * deg2rad
+                        rad = r_out if (pt_i % 2 == 0) else r_in
+                        pts.append(cx + rad * cos(ang))
+                        pts.append(cy + rad * sin(ang))
+                    return pts
+
+                def step_stars():
                     anim_job[0] = None
                     if not grid_canvas.winfo_exists():
                         self._transition_active = False
                         return
-                    try:
-                        grid_canvas.itemconfigure(sid, font=star_font)
-                    except tk.TclError:
-                        pass
-                    anim_job[0] = grid_canvas.after(95, lambda: animate_stars(next_i))
+                    t0 = monotonic()
+                    dt = 0.016 if s_st["last_t"] is None else max(0.004, min(0.042, t0 - s_st["last_t"]))
+                    s_st["last_t"] = t0
+                    s_st["elapsed"] = min(total_dur, s_st["elapsed"] + dt)
+                    el = s_st["elapsed"]
 
-                anim_job[0] = grid_canvas.after(85, settle_star)
+                    for idx_s, ps in enumerate(pop_stars):
+                        sid, poly_id, cx, cy, base_r, started_flag, done_flag = ps
+                        if done_flag:
+                            continue
+                        start_t = idx_s * stagger
+                        if el < start_t:
+                            continue
+                        lp = min(1.0, (el - start_t) / each_dur)
+                        if not started_flag:
+                            grid_canvas.itemconfigure(sid, state="hidden")
+                            grid_canvas.itemconfigure(poly_id, state="normal")
+                            ps[5] = True
+                        if lp >= 1.0:
+                            grid_canvas.delete(poly_id)
+                            grid_canvas.itemconfigure(sid, fill=GOLD_STAR, state="normal")
+                            ps[6] = True
+                            continue
+                        # Bouncy elastic spring: shoots smoothly past 1.0 (~1.38x peak), wobbles, and settles to 1.0.
+                        spring = max(0.05, ease_out_elastic(lp, damping=2.8, frequency=1.75))
+                        r_now = base_r * spring
+                        # Subtle damped rotational wobble (-16deg -> +6deg -> 0deg) that sells the spring feel.
+                        rot = -16.0 * (1.0 - lp) * math.exp(-4.0 * lp) * cos(lp * math.pi * 3.0)
+                        # Bright golden glint at the peak of the pop, settling into GOLD_STAR.
+                        glint = max(0.0, 1.0 - abs(lp - 0.25) / 0.35)
+                        col = blend_colour(GOLD_STAR, flash_col, glint * 0.65)
+                        grid_canvas.coords(poly_id, *star_polygon_pts(cx, cy, r_now, rot))
+                        grid_canvas.itemconfigure(poly_id, fill=col)
+
+                    if el < total_dur:
+                        spent = (monotonic() - t0) * 1000.0
+                        anim_job[0] = grid_canvas.after(self._next_frame_delay(spent, 16), step_stars)
+                    else:
+                        try:
+                            grid_canvas.delete("star_pop_poly")
+                        except tk.TclError:
+                            pass
+                        # Hold briefly so the user sees the settled golden stars before transitioning back.
+                        anim_job[0] = grid_canvas.after(480, finish_and_return)
+
+                step_stars()
 
             def step_insert():
                 anim_job[0] = None
