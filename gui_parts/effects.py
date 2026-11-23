@@ -1025,7 +1025,7 @@ class EffectsMixin:
             return
 
         self.slide_page(
-            canvas, window, -direction * max(1, canvas.winfo_width()), 150, open_next_page,
+            canvas, window, -direction * max(1, canvas.winfo_width()), 175, open_next_page,
             frame_ms=self._anim_frame_interval(16),
         )
 
@@ -1053,18 +1053,22 @@ class EffectsMixin:
             damping = 7.2
             frequency = 0.85
         else:
-            entry_ms = round(210 + 50 * ratio)
-            damping = 6.8 - 1.6 * ratio
-            frequency = 0.95 + 0.25 * ratio
+            entry_ms = round(260 + 40 * ratio)
+            damping = 6.6 - 0.8 * ratio
+            frequency = 1.00 + 0.12 * ratio
 
         def finish_entry():
             if canvas.winfo_exists() and canvas_window == getattr(self, "_shell_canvas_window", None):
                 try:
                     canvas.coords(canvas_window, 0, 0)
-                    canvas.yview_moveto(0)
                     if self.current_page is not None and self.current_page.winfo_exists():
+                        extra_bottom = 96 if self._active_nav_tab != "Programme details" else 0
                         canvas.configure(
-                            scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
+                            scrollregion=(
+                                0, 0,
+                                self.current_page.winfo_reqwidth(),
+                                self.current_page.winfo_reqheight() + extra_bottom,
+                            )
                         )
                 except tk.TclError:
                     pass
@@ -1081,7 +1085,19 @@ class EffectsMixin:
                     self._scale_widget_tree(self.current_page, self._ui_scale_factor)
                 width = max(1, canvas.winfo_width())
                 canvas.itemconfigure(canvas_window, width=width)
-                # On Linux/macOS, slide from a crisp 260px offset instead of full window width to reduce X11 repaint load.
+                # Reset vertical scroll and update scrollregion BEFORE frame 0 so the incoming page
+                # never slides in clipped at the previous page's scroll offset.
+                canvas.update_idletasks()
+                if self.current_page is not None and self.current_page.winfo_exists():
+                    extra_bottom = 96 if self._active_nav_tab != "Programme details" else 0
+                    canvas.configure(
+                        scrollregion=(
+                            0, 0,
+                            max(width, self.current_page.winfo_reqwidth()),
+                            self.current_page.winfo_reqheight() + extra_bottom,
+                        )
+                    )
+                canvas.yview_moveto(0)
                 slide_offset = min(width, 260) if sys.platform != "win32" else width
                 canvas.coords(canvas_window, direction * slide_offset, 0)
                 canvas.update_idletasks()
@@ -1148,7 +1164,9 @@ class EffectsMixin:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
                 canvas._slide_frame = canvas.after(self._next_frame_delay(spent_ms, frame_ms), draw_frame)
             elif on_complete:
-                on_complete()
+                # Let Tk paint the final off-screen / resting frame before running on_complete so
+                # outgoing pages never cut off early while still partially visible.
+                canvas._slide_frame = canvas.after(frame_ms, on_complete)
             else:
                 self._finish_transition()
 
