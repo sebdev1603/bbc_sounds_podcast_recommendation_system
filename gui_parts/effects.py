@@ -1907,9 +1907,10 @@ class EffectsMixin:
                     if not expander.winfo_exists() or not shell.winfo_exists():
                         cleanup()
                         return
-                    self.update_idletasks()
+                    # Lift expander BEFORE update_idletasks so the newly built detail page never flashes on top.
                     tk.Misc.lift(expander)
                     self.update_idletasks()
+                    tk.Misc.lift(expander)
 
                     holder = getattr(self, "_detail_cover_holder", None)
                     dw = getattr(self, "_detail_widgets", {}) or {}
@@ -2067,6 +2068,28 @@ class EffectsMixin:
                                     font=sw.cget("font"), anchor="nw",
                                 )
                                 fade_items.append((stid, DARK_BG, sub_fg, None))
+                        sc_w = dw.get("star_canvas")
+                        sc_st = dw.get("star_state")
+                        if sc_w is not None and sc_w.winfo_exists() and sc_st is not None:
+                            import math as _m
+                            from gui_parts.theme import STAR_EMPTY
+                            sc_x0 = sc_w.winfo_rootx() - sh_rx
+                            sc_y0 = sc_w.winfo_rooty() - sh_ry - target_y
+                            s_sz = sc_st["size"]
+                            s_gap = sc_st["gap"]
+                            s_active = sc_st["score"]
+                            r_out = s_sz * 0.46
+                            r_in = s_sz * 0.20
+                            scy = sc_y0 + s_sz / 2.0
+                            for s_i in range(1, 6):
+                                scx = sc_x0 + (s_i - 1) * (s_sz + s_gap) + s_sz / 2.0
+                                pts = []
+                                for pt_i in range(10):
+                                    ang = _m.radians(-90 + pt_i * 36)
+                                    rad = r_out if pt_i % 2 == 0 else r_in
+                                    pts.extend((scx + rad * _m.cos(ang), scy + rad * _m.sin(ang)))
+                                star_id = expander.create_polygon(pts, fill=DARK_BG, outline="")
+                                fade_items.append((star_id, DARK_BG, GOLD_STAR if s_i <= s_active else STAR_EMPTY, None))
 
                     from_x, from_y = last_cov_abs[0]
                     from_cat_x, from_cat_y = last_cat_abs[0]

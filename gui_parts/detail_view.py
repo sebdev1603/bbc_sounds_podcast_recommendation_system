@@ -409,6 +409,8 @@ class DetailViewMixin:
                 "summary_label": summary_label,
                 "summary_color": summary_color,
                 "rating_caption": rating_caption,
+                "star_canvas": star_canvas,
+                "star_state": star_state,
             }
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
@@ -652,15 +654,23 @@ class DetailViewMixin:
                     "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
                     (",".join(id_tokens), self.current_user),
                 )
-            if was_added and not self._is_reduced_motion():
+            if not self._is_reduced_motion():
                 self._detail_hero_origin = None
-                self._pending_card_insert = {
-                    "mode": "favourites",
-                    "podcast_id": podcast_id,
-                    "target_rating": None,
-                    "return_tab": "Programme details",
-                    "return_fn": lambda pid=podcast_id: self.show_detail(pid),
-                }
+                if was_added:
+                    self._pending_card_insert = {
+                        "mode": "favourites",
+                        "podcast_id": podcast_id,
+                        "target_rating": None,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid),
+                    }
+                else:
+                    self._pending_card_evaporate = {
+                        "mode": "favourites",
+                        "podcast_id": podcast_id,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid),
+                    }
                 self.transition_to(self.show_favourites, "Favourites")
                 return
             self.show_detail(podcast_id)

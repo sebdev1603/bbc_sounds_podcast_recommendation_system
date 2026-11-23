@@ -1381,6 +1381,7 @@ class WidgetsMixin:
         self, parent_widget, items_list, columns_count=6,
         show_play=False, show_remove=False, max_count=8, single_row=False,
         rating_index=None, show_end=True, ratings_mode=False, insert_anim=None,
+        evaporate_anim=None,
     ):
         """Render a responsive single-Canvas grid of podcast cards (zero child HWNDs for tear-free scrolling)."""
         if not items_list:
@@ -1389,14 +1390,18 @@ class WidgetsMixin:
         displayed_items = items_list[:max_count]
         if not single_row and not ratings_mode and len(displayed_items) > PODCASTS_PER_PAGE:
             first_insert = [insert_anim]
+            first_evap = [evaporate_anim]
             def _render_paginated(parent, rows, last):
                 spec = first_insert[0]
                 first_insert[0] = None
+                espec = first_evap[0]
+                first_evap[0] = None
                 self.render_podcast_grid(
                     parent, rows, columns_count, show_play=show_play,
                     show_remove=show_remove, max_count=len(rows), rating_index=rating_index,
                     show_end=show_end and last and len(displayed_items) == len(items_list),
                     insert_anim=spec,
+                    evaporate_anim=espec,
                 )
             self.paginate_podcasts(parent_widget, displayed_items, _render_paginated)
             return
@@ -1715,7 +1720,7 @@ class WidgetsMixin:
 
         grid_canvas.bind("<Destroy>", cancel_hover_loop, add="+")
 
-        def evaporate_card(target_pid, on_complete):
+        def evaporate_card(target_pid, on_complete, *, force_callback=False):
             """Dissolve a removed card into ~110 cover-sampled rising particles (1 batched Tcl eval/frame),
             slide all following cards smoothly into place, and update in-place with zero page flicker."""
             card_idx = next(
@@ -1880,7 +1885,7 @@ class WidgetsMixin:
                     pass
 
                 # Update the grid in-place (zero page rebuild, zero flicker) whenever cards remain on this page.
-                can_update_in_place = len(state["cards"]) > 1 and show_end
+                can_update_in_place = (not force_callback) and len(state["cards"]) > 1 and show_end
                 if can_update_in_place:
                     # Shift geometry metadata of every card after card_idx to its new slot.
                     for k in range(len(state["cards"]) - 1, card_idx, -1):
@@ -2159,6 +2164,55 @@ class WidgetsMixin:
 
         if insert_anim and state["cards"] and str(state["cards"][0].get("pid")) == str(insert_anim.get("podcast_id")):
             self._run_grid_insert_animation(grid_canvas, state, insert_anim, star_font, f_scale)
+        elif evaporate_anim and state["cards"]:
+            evap_pid = evaporate_anim.get("podcast_id")
+            evap_return_tab = evaporate_anim.get("return_tab")
+            evap_return_fn = evaporate_anim.get("return_fn")
+            evap_wait_job = [None]
+
+            def cancel_evap_wait(_e=None):
+                if evap_wait_job[0] is not None:
+                    try:
+                        grid_canvas.after_cancel(evap_wait_job[0])
+                    except tk.TclError:
+                        pass
+                    evap_wait_job[0] = None
+
+            grid_canvas.bind("<Destroy>", cancel_evap_wait, add="+")
+
+            def return_after_evap():
+                if not grid_canvas.winfo_exists():
+                    return
+                def go_back():
+                    if not grid_canvas.winfo_exists():
+                        return
+                    if evap_return_tab == "Programme details":
+                        bar_info = getattr(self, "_bottom_bar_info", None)
+                        if (
+                            bar_info is not None
+                            and bar_info[0].winfo_exists()
+                            and bar_info[1].winfo_exists()
+                            and str(bar_info[2]) == str(evap_pid)
+                        ):
+                            self.expand_bottom_bar_to_detail(*bar_info)
+                            return
+                    if evap_return_fn is not None:
+                        self.transition_to(evap_return_fn, evap_return_tab, direction=-1)
+                evap_wait_job[0] = grid_canvas.after(340, go_back)
+
+            def start_pending_evap():
+                evap_wait_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    return
+                if getattr(self, "_transition_active", False):
+                    evap_wait_job[0] = grid_canvas.after(20, start_pending_evap)
+                    return
+                evap_wait_job[0] = grid_canvas.after(
+                    180,
+                    lambda: evaporate_card(evap_pid, return_after_evap, force_callback=True),
+                )
+
+            evap_wait_job[0] = grid_canvas.after(30, start_pending_evap)
 
     def _run_grid_insert_animation(self, grid_canvas, state, insert_anim, star_font, f_scale):
         """Slide existing cards over, spring the newly added card into slot 0, optionally fill stars 0..N,

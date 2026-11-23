@@ -812,7 +812,29 @@ class PagesMixin:
         """Render the Favourites tab listing saved podcasts."""
         page = self.build_shell("Favourites")
         self.render_page_title(page, "Your favourites", "The programmes you have saved for later.")
-        fav_rows = self.fetch_user_favourites()
+        fav_rows = list(self.fetch_user_favourites())
+        pending_ins = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending_ins if (pending_ins and pending_ins.get("mode") == "favourites") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            for idx_f, row_f in enumerate(fav_rows):
+                if str(row_f[0]) == target_pid:
+                    if idx_f != 0:
+                        fav_rows.insert(0, fav_rows.pop(idx_f))
+                    break
+
+        pending_evap = getattr(self, "_pending_card_evaporate", None)
+        evap_spec = pending_evap if (pending_evap and pending_evap.get("mode") == "favourites") else None
+        if evap_spec is not None:
+            self._pending_card_evaporate = None
+            target_pid = evap_spec["podcast_id"]
+            # Temporarily place the just-removed podcast at index 0 so the user sees it evaporate out of Favourites.
+            if not any(str(r[0]) == str(target_pid) for r in fav_rows):
+                rec = self.get_single_podcast(target_pid)
+                if rec:
+                    fav_rows.insert(0, rec)
+
         if not fav_rows:
             self.render_empty_message(page, "No favourites saved yet", "Open any programme and tap the heart to keep it here.")
             self.create_button(
@@ -820,9 +842,12 @@ class PagesMixin:
                 lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
             ).pack(anchor="w", pady=6)
             return
+
         self.render_podcast_grid(
             page, fav_rows, columns_count=6,
             show_play=True, max_count=len(fav_rows),
+            insert_anim=insert_spec,
+            evaporate_anim=evap_spec,
         )
 
     def show_history(self):
