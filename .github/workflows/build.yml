@@ -1,0 +1,38 @@
+name: Build Windows & Linux Executables
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:  # Adds a manual "Run workflow" button on GitHub
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux Tkinter support
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install PyInstaller and Pillow
+        run: pip install pyinstaller pillow
+
+      - name: Build executable
+        run: pyinstaller --clean --noconfirm bbc_sounds_program.spec
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbc-sounds-${{ runner.os }}
+          path: dist/
