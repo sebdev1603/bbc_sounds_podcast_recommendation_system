@@ -279,17 +279,21 @@ class WidgetsMixin:
         tile = max(26, round(28 * scaling))
         gap = max(4, round(5 * scaling))
         word_gap = max(9, round(10 * scaling))
-        tile_font = (DEFAULT_FONT, -round(tile * 0.86), "bold")
-        sounds_font = (DEFAULT_FONT, -round(tile * 0.90), "bold")
+        tile_font = (DEFAULT_FONT, -round(tile * 0.78), "bold")
+        sounds_font = (DEFAULT_FONT, -round(tile * 0.86), "bold")
+        tile_metrics = self._get_cached_font(tile_font)
         sounds_metrics = self._get_cached_font(sounds_font)
+        # Shift uppercase glyphs down by ~half the font's descent so cap-height sits optically centered.
+        tile_y_nudge = tile_metrics.metrics("descent") * 0.45
+        sounds_y_nudge = sounds_metrics.metrics("descent") * 0.45
 
         tiles_w = tile * 3 + gap * 2
         sounds_w = sounds_metrics.measure("SOUNDS")
-        canvas_w = tiles_w + word_gap + sounds_w + 2
+        canvas_w = tiles_w + word_gap + sounds_w + 4
         canvas_h = max(tile, sounds_metrics.metrics("linespace"))
         y0 = round((canvas_h - tile) / 2)
         y1 = y0 + tile
-        center_y = (y0 + y1) / 2
+        center_y = (y0 + y1) / 2.0
 
         logo_canvas = tk.Canvas(
             container,
@@ -306,8 +310,8 @@ class WidgetsMixin:
             tag = f"bbc_tile_{idx}"
             rect_id = logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="", tags=tag)
             text_id = logo_canvas.create_text(
-                (x0 + x1) / 2,
-                center_y,
+                (x0 + x1) / 2.0,
+                center_y + tile_y_nudge,
                 text=char,
                 fill=LOGO_TILE_FG,
                 font=tile_font,
@@ -317,7 +321,7 @@ class WidgetsMixin:
             tile_items.append((rect_id, text_id))
         logo_canvas.create_text(
             tiles_w + word_gap,
-            center_y,
+            center_y + sounds_y_nudge,
             text="SOUNDS",
             fill=ORANGE_ACCENT,
             font=sounds_font,
