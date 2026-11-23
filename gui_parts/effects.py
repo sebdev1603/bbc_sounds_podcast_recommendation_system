@@ -15,6 +15,7 @@ from gui_parts.theme import (
     CARD_BG,
     DARK_BG,
     DEFAULT_FONT,
+    GOLD_STAR,
     INPUT_BG,
     MINI_BAR_BG,
     ORANGE_ACCENT,
@@ -1399,75 +1400,214 @@ class EffectsMixin:
         shell_w = max(1, shell.winfo_width())
         shell_h = max(1, shell.winfo_height())
 
-        start_x = source_widget.winfo_rootx() - shell_x
-        start_y = source_widget.winfo_rooty() - shell_y
-        start_w = max(28, source_widget.winfo_width())
-        start_h = max(24, source_widget.winfo_height())
+        ps_w = max(28.0, float(source_widget.winfo_width()))
+        ps_h = max(24.0, float(source_widget.winfo_height()))
+        ps_cx = (source_widget.winfo_rootx() - shell_x) + ps_w / 2.0
+        ps_cy = (source_widget.winfo_rooty() - shell_y) + ps_h / 2.0
 
-        existing_bar = getattr(self, "_shell_bottom_bar", None)
-        if existing_bar is not None and existing_bar.winfo_exists() and existing_bar.winfo_width() > 1:
-            target_x = existing_bar.winfo_x()
-            target_y = existing_bar.winfo_y()
-            target_w = max(1, existing_bar.winfo_width())
-            target_h = max(1, existing_bar.winfo_height())
-        else:
-            target_x = 18
-            target_w = max(1, shell_w - 52)
-            target_h = 78
-            target_y = max(0, shell_h - 10 - target_h)
-
-        # Mini-bar cover slot sits 13px from left edge (3px accent + 10px padx) and vertically centred.
-        cov_target_x = target_x + 13
-        cov_target_y = target_y + max(7, (target_h - 62) // 2)
         if cover_widget is not None and cover_widget.winfo_exists() and cover_widget.winfo_width() > 1:
-            cov_start_x = cover_widget.winfo_rootx() - shell_x + max(0, (cover_widget.winfo_width() - 62) // 2)
-            cov_start_y = cover_widget.winfo_rooty() - shell_y + max(0, (cover_widget.winfo_height() - 62) // 2)
+            cw = cover_widget.winfo_width()
+            ch = cover_widget.winfo_height()
+            cov_start_sz = max(48, min(cw, ch))
+            cov_start_x = (cover_widget.winfo_rootx() - shell_x) + max(0, (cw - cov_start_sz) // 2)
+            cov_start_y = (cover_widget.winfo_rooty() - shell_y) + max(0, (ch - cov_start_sz) // 2)
         else:
-            cov_start_x = start_x
-            cov_start_y = start_y
+            cov_start_sz = 62
+            cov_start_x = round(ps_cx - 31)
+            cov_start_y = round(ps_cy - 31)
 
-        migrator = tk.Frame(shell, bg=ORANGE_ACCENT, bd=0, highlightthickness=1, highlightbackground=ORANGE_HL)
-        left_accent = tk.Frame(migrator, bg=ORANGE_ACCENT, width=3)
-        left_accent.pack(side="left", fill="y")
-        text_box = tk.Frame(migrator, bg=ORANGE_ACCENT)
-        text_box.pack(side="left", fill="both", expand=True, padx=(84, 14), pady=8)
-        title_lbl = tk.Label(
-            text_box, text=str(title or "Programme"),
-            font=(DEFAULT_FONT, 12, "bold"), fg=ORANGE_ACCENT, bg=ORANGE_ACCENT, anchor="w",
-        )
-        title_lbl.pack(fill="x", pady=(6, 1))
-        sub_lbl = tk.Label(
-            text_box, text=translate(f"Last played  ·  {category}" if category else "Last played"),
-            font=(DEFAULT_FONT, 9), fg=ORANGE_ACCENT, bg=ORANGE_ACCENT, anchor="w",
-        )
-        sub_lbl.pack(fill="x")
+        # Start the migrating canvas at the bounding box of the card's cover + Play button.
+        area_frame = getattr(self, "_shell_area_frame", None)
+        clip_top = area_frame.winfo_y() if (area_frame is not None and area_frame.winfo_exists()) else 0
+        raw_x0 = min(cov_start_x - 10, round(ps_cx - ps_w / 2.0) - 10)
+        raw_y0 = min(cov_start_y - 10, round(ps_cy - ps_h / 2.0) - 10)
+        raw_x1 = max(cov_start_x + cov_start_sz + 10, round(ps_cx + ps_w / 2.0) + 12)
+        raw_y1 = max(cov_start_y + cov_start_sz + 10, round(ps_cy + ps_h / 2.0) + 12)
+        start_x = max(0, min(shell_w - 20, raw_x0))
+        start_y = max(clip_top, min(shell_h - 20, raw_y0))
+        start_w = max(40, min(shell_w - start_x, raw_x1 - start_x))
+        start_h = max(40, min(shell_h - start_y, raw_y1 - start_y))
 
-        floating_cover = self.generate_podcast_cover(
-            shell, podcast_id, title, category, 62, 62,
-            corner_radius=10, backdrop=MINI_BAR_BG,
+        # Sync the live mini-bar now so we can measure every target child widget to the exact pixel,
+        # then temporarily unmap it during the flight so only our single-Canvas morph is visible.
+        self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
+        self.update_idletasks()
+        dest_footer = getattr(self, "_shell_bottom_bar", None)
+        if dest_footer is not None and dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
+            end_x = dest_footer.winfo_x()
+            end_y = dest_footer.winfo_y()
+            end_w = dest_footer.winfo_width()
+            end_h = dest_footer.winfo_height()
+            clip_bottom = min(shell_h, end_y + end_h)
+            dest_cov = getattr(dest_footer, "_cover", None)
+            if dest_cov is not None and dest_cov.winfo_exists() and dest_cov.winfo_width() > 1:
+                cov_end_x = dest_cov.winfo_rootx() - shell_x
+                cov_end_y = dest_cov.winfo_rooty() - shell_y
+                cov_end_sz = max(32, dest_cov.winfo_width())
+            else:
+                cov_end_x, cov_end_y, cov_end_sz = end_x + 13, end_y + max(7, (end_h - 62) // 2), 62
+
+            dest_title = getattr(dest_footer, "_title_label", None)
+            if dest_title is not None and dest_title.winfo_exists() and dest_title.winfo_width() > 1:
+                t_font = dest_title.cget("font")
+                t_vpad = max(0, round((dest_title.winfo_height() - self._get_cached_font(t_font).metrics("linespace")) / 2.0))
+                title_end = (dest_title.winfo_rootx() - shell_x + 1, dest_title.winfo_rooty() - shell_y + t_vpad, dest_title.cget("text"), t_font)
+            else:
+                title_end = (cov_end_x + cov_end_sz + 11, end_y + 12, str(title or "Programme"), (DEFAULT_FONT, 13, "bold"))
+
+            dest_sub = getattr(dest_footer, "_subtitle_label", None)
+            if dest_sub is not None and dest_sub.winfo_exists() and dest_sub.winfo_width() > 2:
+                sub_end = (
+                    dest_sub.winfo_rootx() - shell_x + 1,
+                    (dest_sub.winfo_rooty() - shell_y) + dest_sub.winfo_height() / 2.0,
+                    dest_sub.cget("text"), dest_sub.cget("font"),
+                )
+            else:
+                sub_end = None
+
+            dest_play = getattr(dest_footer, "_play_btn", None)
+            if dest_play is not None and dest_play.winfo_exists() and dest_play.winfo_width() > 8:
+                py_sh = getattr(dest_play, "_hover_y_shift", 0)
+                ph_sz = getattr(dest_play, "_hover_size", None)
+                pe_w = float(ph_sz[0] + 2) if ph_sz else max(24.0, dest_play.winfo_width() - 10.0)
+                pe_h = float(ph_sz[1] + 2) if ph_sz else max(18.0, dest_play.winfo_height() - 10.0 - py_sh * 2)
+                pe_cx = (dest_play.winfo_rootx() - shell_x) + dest_play.winfo_width() / 2.0
+                pe_cy = (dest_play.winfo_rooty() - shell_y) + dest_play.winfo_height() / 2.0 - py_sh
+                play_end = (pe_cx, pe_cy, pe_w, pe_h, dest_play.cget("text"), dest_play.cget("font"), py_sh, getattr(dest_play, "_normal_image", None))
+            else:
+                play_end = None
+
+            dest_dismiss = getattr(dest_footer, "_dismiss_btn", None)
+            if dest_dismiss is not None and dest_dismiss.winfo_exists() and dest_dismiss.winfo_width() > 8:
+                from gui_parts.theme import ACTION_BTN_BG, ACTION_BTN_FG
+                dy_sh = getattr(dest_dismiss, "_hover_y_shift", 0)
+                dh_sz = getattr(dest_dismiss, "_hover_size", None)
+                dw_p = float(dh_sz[0] + 2) if dh_sz else max(24.0, dest_dismiss.winfo_width() - 10.0)
+                dh_p = float(dh_sz[1] + 2) if dh_sz else max(18.0, dest_dismiss.winfo_height() - 10.0 - dy_sh * 2)
+                dcx = (dest_dismiss.winfo_rootx() - shell_x) + dest_dismiss.winfo_width() / 2.0
+                dcy = (dest_dismiss.winfo_rooty() - shell_y) + dest_dismiss.winfo_height() / 2.0 - dy_sh
+                d_fill = getattr(dest_dismiss, "_rounded_colours", (ACTION_BTN_BG,))[0]
+                d_fg = getattr(dest_dismiss, "_hover_base_fg", ACTION_BTN_FG)
+                dismiss_end = (dcx, dcy, dw_p, dh_p, d_fill, d_fg, dest_dismiss.cget("text"), dest_dismiss.cget("font"), dy_sh, getattr(dest_dismiss, "_normal_image", None))
+            else:
+                dismiss_end = None
+            dest_footer.place_forget()
+        else:
+            end_x, end_w, end_h = 18, max(1, shell_w - 52), 76
+            end_y = max(0, shell_h - 10 - end_h)
+            clip_bottom = min(shell_h, end_y + end_h)
+            cov_end_x, cov_end_y, cov_end_sz = end_x + 13, end_y + max(7, (end_h - 62) // 2), 62
+            title_end = (cov_end_x + cov_end_sz + 11, end_y + 12, str(title or "Programme"), (DEFAULT_FONT, 13, "bold"))
+            sub_end = play_end = dismiss_end = None
+
+        def _mig_pill_pts(cx, cy, w, h, rad):
+            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
+            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
+            return (
+                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
+                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
+                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
+            )
+
+        migrator = tk.Canvas(shell, bg=CARD_BG, bd=0, highlightthickness=0)
+        left_accent_item = migrator.create_rectangle(0, 6, 3, max(10, start_h - 6), fill=CARD_BG, outline="")
+
+        # Pre-warm quantized cover sizes so every frame is a zero-cost cached image swap.
+        raw_steps = {cov_start_sz, cov_end_sz, max(36, round(cov_end_sz * 0.92))}
+        for frac in (0.32, 0.66):
+            raw_steps.add(max(36, round(cov_start_sz + (cov_end_sz - cov_start_sz) * frac)))
+        size_steps = tuple(sorted(raw_steps))
+        photo0, icon0, _ = self._get_cover_photo(
+            migrator, podcast_id, title, category, cov_start_sz, cov_start_sz,
+            corner_radius=8, backdrop=CARD_BG,
         )
+        cover_cache = {cov_start_sz: (photo0, icon0)}
+        for step_sz in size_steps:
+            if step_sz not in cover_cache:
+                p_img, p_ico, _ = self._get_cover_photo(
+                    migrator, podcast_id, title, category, step_sz, step_sz,
+                    corner_radius=10, backdrop=MINI_BAR_BG,
+                )
+                cover_cache[step_sz] = (p_img, p_ico)
+
+        migrator._cur_photo = photo0
+        cx0, cy0 = cov_start_x + cov_start_sz / 2.0, cov_start_y + cov_start_sz / 2.0
+        cx1, cy1 = cov_end_x + cov_end_sz / 2.0, cov_end_y + cov_end_sz / 2.0
+        cover_item = migrator.create_image(round(cx0 - start_x), round(cy0 - start_y), image=photo0, anchor="center")
+        icon_item = (
+            migrator.create_text(
+                round(cx0 - start_x), round(cy0 - start_y), text=icon0, fill=TEXT_WHITE,
+                font=(DEFAULT_FONT, max(11, cov_start_sz // 6), "bold"), anchor="center",
+            )
+            if icon0 is not None else None
+        )
+
+        te_x, te_y, te_txt, te_font = title_end
+        title_item = migrator.create_text(
+            te_x - start_x, te_y - start_y, text=te_txt, fill=CARD_BG, font=te_font, anchor="nw", state="hidden",
+        )
+        sub_item = (
+            migrator.create_text(
+                sub_end[0] - start_x, sub_end[1] - start_y, text=sub_end[2],
+                fill=CARD_BG, font=sub_end[3], anchor="w", state="hidden",
+            )
+            if sub_end is not None else None
+        )
+
+        play_morph = None
+        if play_end is not None:
+            pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_font, pe_ysh, pe_norm = play_end
+            p_poly = migrator.create_polygon(
+                *_mig_pill_pts(ps_cx - start_x, ps_cy - start_y, ps_w, ps_h, 8.0),
+                smooth=True, fill=ORANGE_ACCENT, outline="",
+            )
+            p_img = (
+                migrator.create_image(ps_cx - start_x, ps_cy - start_y + pe_ysh, image=pe_norm, anchor="center", state="hidden")
+                if pe_norm is not None else None
+            )
+            p_lbl = migrator.create_text(
+                round(ps_cx - start_x), round(ps_cy - start_y),
+                text="▶", fill=PRIMARY_BTN_FG, font=pe_font, anchor="center",
+            )
+            play_morph = [p_poly, p_img, p_lbl, pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_ysh, False, False]
+
+        dismiss_bloom = None
+        if dismiss_end is not None:
+            dcx, dcy, dw_p, dh_p, d_fill, d_fg, d_text, d_font, dy_sh, d_norm = dismiss_end
+            d_poly = migrator.create_polygon(
+                dcx - start_x, dcy - start_y, dcx - start_x, dcy - start_y,
+                smooth=True, fill=d_fill, outline="", state="hidden",
+            )
+            d_img = (
+                migrator.create_image(dcx - start_x, dcy - start_y + dy_sh, image=d_norm, anchor="center", state="hidden")
+                if d_norm is not None else None
+            )
+            d_txt = migrator.create_text(
+                dcx - start_x, dcy - start_y + dy_sh, text=d_text, fill=d_fill,
+                font=d_font, anchor="center", state="hidden",
+            )
+            dismiss_bloom = [d_poly, d_img, d_txt, dcx, dcy, dw_p, dh_p, d_fill, d_fg, dy_sh, False]
 
         migrator.place(x=start_x, y=start_y, width=start_w, height=start_h)
-        floating_cover.place(x=cov_start_x, y=cov_start_y, width=62, height=62)
         tk.Misc.lift(migrator)
-        tk.Misc.lift(floating_cover)
 
-        duration = 0.720
+        duration = 0.540
         mig_state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
-        last_cov_pos = [None]
-        last_bg = [ORANGE_ACCENT]
+        last_bg = [CARD_BG]
+        last_cov_sz = [cov_start_sz]
 
         def finish_migration():
-            if shell.winfo_exists():
-                self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
-                self.update_idletasks()
-            for w in (floating_cover, migrator):
-                if w is not None and w.winfo_exists():
-                    try:
-                        w.destroy()
-                    except tk.TclError:
-                        pass
+            if dest_footer is not None and dest_footer.winfo_exists():
+                dest_footer.place(relx=0.0, rely=1.0, anchor="sw", x=18, y=-10, relwidth=1.0, width=-52)
+                tk.Misc.lift(dest_footer)
+            if migrator.winfo_exists():
+                try:
+                    tk.Misc.lower(migrator)
+                    self.update_idletasks()
+                    migrator.destroy()
+                except tk.TclError:
+                    pass
             if shell.winfo_exists():
                 bar = getattr(self, "_shell_bottom_bar", None)
                 if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
@@ -1479,66 +1619,129 @@ class EffectsMixin:
                 finish_migration()
                 return
             frame_t0 = monotonic()
-            dt = 0.016 if mig_state["last_t"] is None else max(0.004, min(0.032, frame_t0 - mig_state["last_t"]))
+            dt = 0.016 if mig_state["last_t"] is None else max(0.004, min(0.042, frame_t0 - mig_state["last_t"]))
             mig_state["last_t"] = frame_t0
             mig_state["progress"] = min(1.0, mig_state["progress"] + dt / duration)
             progress = mig_state["progress"]
 
-            # Smooth two-stage motion: unhurried cubic ease-in-out flight (0..0.78) so both the bar
-            # and cover art visibly travel all the way down, followed by a gentle settle (0.78..1.0).
-            if progress < 0.78:
-                u = progress / 0.78
-                eased = 4.0 * u ** 3 if u < 0.5 else 1.0 - ((-2.0 * u + 2.0) ** 3) / 2.0
-                # Slight overshoot right as it lands at u -> 1.0 (peaks at ~1.025).
-                eased = eased * 1.025 if u > 0.75 else eased
-            else:
-                u = (progress - 0.78) / 0.22
-                eased = 1.025 - 0.025 * (1.0 - (1.0 - u) ** 2)
+            # Match shrink_detail_to_origin's settled elastic feel: finish motion by 88%, then hold cleanly.
+            mp = min(1.0, progress / 0.88)
+            box_eased = 1.0 - (1.0 - mp) ** 3.2
+            cov_pos_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=4.8, frequency=1.22)
+            cov_sz_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=4.6, frequency=1.25)
+            play_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=5.0, frequency=1.18)
 
-            clamped_color = max(0.0, min(1.0, progress ** 1.2))
+            bg_step = round(box_eased * 8) / 8.0
+            cur_bg = blend_colour(CARD_BG, MINI_BAR_BG, bg_step)
 
-            if progress >= 1.0:
-                cur_x, cur_y, cur_w, cur_h = target_x, target_y, target_w, target_h
-            else:
-                cur_x = max(0, round(start_x + (target_x - start_x) * eased))
-                cur_y = max(0, min(shell_h - 10, round(start_y + (target_y - start_y) * eased)))
-                cur_w = max(1, min(shell_w - cur_x, round(start_w + (target_w - start_w) * eased)))
-                cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            cur_x = start_x + (end_x - start_x) * box_eased
+            cur_y = start_y + (end_y - start_y) * box_eased
+            cur_w = start_w + (end_w - start_w) * box_eased
+            cur_h = start_h + (end_h - start_h) * box_eased
 
-            cur_bg = blend_colour(ORANGE_ACCENT, MINI_BAR_BG, clamped_color)
-            if cur_bg != last_bg[0]:
-                migrator.configure(bg=cur_bg, highlightbackground=blend_colour(ORANGE_HL, BORDER_LINE, clamped_color))
-                text_box.configure(bg=cur_bg)
-                text_fade = max(0.0, (progress - 0.35) / 0.65)
-                title_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_WHITE, text_fade))
-                sub_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_GRAY, text_fade))
-                last_bg[0] = cur_bg
+            vis_x0 = max(0, round(cur_x))
+            vis_y0 = max(clip_top, round(cur_y))
+            vis_x1 = min(shell_w, round(cur_x + cur_w))
+            vis_y1 = min(clip_bottom, round(cur_y + cur_h))
+            vis_h = max(1, vis_y1 - vis_y0)
 
-            rect = (cur_x, cur_y, cur_w, cur_h)
+            rect = (vis_x0, vis_y0, max(1, vis_x1 - vis_x0), vis_h)
             if rect != last_rect[0]:
-                migrator.place(x=cur_x, y=cur_y, width=cur_w, height=cur_h)
+                migrator.place(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
+                migrator.coords(left_accent_item, 0, 6, 3, max(10, vis_h - 6))
                 last_rect[0] = rect
 
-            if floating_cover.winfo_exists():
-                if progress >= 1.0:
-                    cov_x, cov_y = cov_target_x, cov_target_y
+            acc_t = max(0.0, min(1.0, (progress - 0.42) / 0.44))
+            migrator.itemconfigure(left_accent_item, fill=blend_colour(cur_bg, ORANGE_ACCENT, acc_t))
+            if cur_bg != last_bg[0]:
+                migrator.configure(bg=cur_bg)
+                last_bg[0] = cur_bg
+
+            desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.10, cov_sz_eased))
+            quant_sz = min(size_steps, key=lambda s: abs(s - desired_sz))
+            if quant_sz != last_cov_sz[0]:
+                p_img, p_ico = cover_cache[quant_sz]
+                migrator._cur_photo = p_img
+                migrator.itemconfigure(cover_item, image=p_img)
+                if icon_item is not None and p_ico is not None:
+                    migrator.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, quant_sz // 6), "bold"))
+                last_cov_sz[0] = quant_sz
+
+            rel_cx = round(cx0 + (cx1 - cx0) * cov_pos_eased) - vis_x0
+            raw_rel_cy = round(cy0 + (cy1 - cy0) * cov_pos_eased) - vis_y0
+            min_cy = quant_sz // 2 + 2
+            max_cy = max(min_cy, vis_h - quant_sz // 2 - 2)
+            rel_cy = max(min_cy, min(max_cy, raw_rel_cy))
+            migrator.coords(cover_item, rel_cx, rel_cy)
+            if icon_item is not None:
+                migrator.coords(icon_item, rel_cx, rel_cy)
+
+            if play_morph is not None:
+                p_poly, p_img, p_lbl, pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_ysh, swapped_txt, swapped_img = play_morph
+                pm_cx = (ps_cx + (pe_cx - ps_cx) * play_eased) - vis_x0
+                raw_pm_cy = (ps_cy + (pe_cy - ps_cy) * play_eased) - vis_y0
+                pm_w = ps_w + (pe_w - ps_w) * box_eased
+                pm_h = ps_h + (pe_h - ps_h) * box_eased
+                pm_min_cy = pm_h / 2.0 + 2.0
+                pm_max_cy = max(pm_min_cy, vis_h - pm_h / 2.0 - 2.0)
+                pm_cy = max(pm_min_cy, min(pm_max_cy, raw_pm_cy))
+                if mp >= 0.98 and p_img is not None:
+                    if not swapped_img:
+                        migrator.itemconfigure(p_poly, state="hidden")
+                        migrator.itemconfigure(p_img, state="normal")
+                        migrator.tag_raise(p_lbl, p_img)
+                        play_morph[10] = True
+                    migrator.coords(p_img, round(pe_cx - vis_x0), round(pe_cy - vis_y0 + pe_ysh))
+                    migrator.coords(p_lbl, round(pe_cx - vis_x0), round(pe_cy - vis_y0 + pe_ysh))
+                    migrator.itemconfigure(p_lbl, text=pe_txt, fill=PRIMARY_BTN_FG)
                 else:
-                    # Graceful parabolic arc during flight that settles cleanly into the 62x62 cover slot.
-                    arc_p = min(1.0, progress / 0.85)
-                    arc_lift = -42.0 * (4.0 * arc_p * (1.0 - arc_p))
-                    cov_x = round(cov_start_x + (cov_target_x - cov_start_x) * eased)
-                    cov_y = round(cov_start_y + (cov_target_y - cov_start_y) * eased + arc_lift)
-                cov_pos = (cov_x, cov_y)
-                if cov_pos != last_cov_pos[0]:
-                    floating_cover.place(x=cov_x, y=cov_y, width=62, height=62)
-                    last_cov_pos[0] = cov_pos
+                    pm_r = 8.0 + (min(pe_w, pe_h) / 2.0 - 8.0) * box_eased
+                    migrator.coords(p_poly, *_mig_pill_pts(pm_cx, pm_cy, pm_w, pm_h, pm_r))
+                    if progress >= 0.48 and not swapped_txt:
+                        migrator.itemconfigure(p_lbl, text=pe_txt)
+                        play_morph[9] = True
+                    migrator.coords(p_lbl, round(pm_cx), round(pm_cy + pe_ysh * box_eased))
+                    if progress >= 0.48:
+                        lf = min(1.0, (progress - 0.48) / 0.34)
+                        migrator.itemconfigure(p_lbl, fill=blend_colour(ORANGE_ACCENT, PRIMARY_BTN_FG, lf))
+
+            if progress >= 0.44:
+                tp = min(1.0, (progress - 0.44) / 0.42)
+                migrator.coords(title_item, te_x - vis_x0, te_y - vis_y0)
+                migrator.itemconfigure(title_item, state="normal", fill=blend_colour(cur_bg, TEXT_WHITE, tp))
+                if sub_item is not None and sub_end is not None:
+                    migrator.coords(sub_item, sub_end[0] - vis_x0, sub_end[1] - vis_y0)
+                    migrator.itemconfigure(sub_item, state="normal", fill=blend_colour(cur_bg, TEXT_GRAY, tp))
+
+            if dismiss_bloom is not None and progress >= 0.44:
+                d_poly, d_img, d_txt, dcx, dcy, dw_p, dh_p, d_fill, d_fg, dy_sh, swapped = dismiss_bloom
+                dp = min(1.0, (progress - 0.44) / 0.44)
+                rcx = dcx - vis_x0
+                rcy = dcy - vis_y0
+                if dp >= 0.98 and d_img is not None:
+                    if not swapped:
+                        migrator.itemconfigure(d_poly, state="hidden")
+                        migrator.itemconfigure(d_img, state="normal")
+                        migrator.tag_raise(d_txt, d_img)
+                        dismiss_bloom[10] = True
+                    migrator.coords(d_img, round(rcx), round(rcy + dy_sh))
+                    migrator.coords(d_txt, round(rcx), round(rcy + dy_sh))
+                    migrator.itemconfigure(d_txt, state="normal", fill=d_fg)
+                else:
+                    pe = max(0.0, ease_out_elastic(dp, damping=5.0, frequency=1.20))
+                    bw_c = max(2.0, dw_p * pe)
+                    bh_c = max(2.0, dh_p * pe)
+                    migrator.coords(d_poly, *_mig_pill_pts(rcx, rcy, bw_c, bh_c, min(10.0, bw_c / 2.0, bh_c / 2.0)))
+                    migrator.itemconfigure(d_poly, state="normal")
+                    tf = max(0.0, min(1.0, (dp - 0.25) / 0.55))
+                    migrator.coords(d_txt, round(rcx), round(rcy + dy_sh))
+                    migrator.itemconfigure(d_txt, state="normal", fill=blend_colour(d_fill, d_fg, tf))
 
             if progress < 1.0:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
                 self.after(self._next_frame_delay(spent_ms, 16), draw_migration)
             else:
-                # Hold briefly once both bar and cover art have completely settled before swapping to the static mini-bar.
-                self.after(120, finish_migration)
+                self.after(90, finish_migration)
 
         draw_migration()
 
@@ -1646,21 +1849,70 @@ class EffectsMixin:
 
         shell_w = max(1, shell.winfo_width())
         shell_h = max(1, shell.winfo_height())
+        sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
+        mini_elements = {}
         if footer is not None and footer.winfo_exists() and footer.winfo_width() > 1 and footer.winfo_height() > 1:
             start_x = footer.winfo_x()
             start_y = footer.winfo_y()
             start_w = max(1, footer.winfo_width())
             start_h = max(1, footer.winfo_height())
+            src_cov = getattr(footer, "_cover", None)
+            if src_cov is not None and src_cov.winfo_exists() and src_cov.winfo_width() > 1:
+                cov_start_x = src_cov.winfo_rootx() - sh_rx
+                cov_start_y = src_cov.winfo_rooty() - sh_ry
+                cov_start_sz = max(32, src_cov.winfo_width())
+            else:
+                cov_start_sz = 62
+                cov_start_x = start_x + 13
+                cov_start_y = start_y + max(7, (start_h - cov_start_sz) // 2)
+            src_title = getattr(footer, "_title_label", None)
+            if src_title is not None and src_title.winfo_exists() and src_title.winfo_width() > 1:
+                rp_start_x = src_title.winfo_rootx() - sh_rx
+                rp_start_y = src_title.winfo_rooty() - sh_ry
+                mini_elements["title_pos"] = (rp_start_x, rp_start_y)
+            else:
+                rp_start_x = cov_start_x + cov_start_sz + 11
+                rp_start_y = start_y + 12
+            src_sub = getattr(footer, "_subtitle_label", None)
+            if src_sub is not None and src_sub.winfo_exists() and src_sub.winfo_width() > 1:
+                mini_elements["subtitle_start"] = (
+                    src_sub.winfo_rootx() - sh_rx,
+                    src_sub.winfo_rooty() - sh_ry,
+                    src_sub.cget("text"),
+                    src_sub.cget("font"),
+                )
+            src_play = getattr(footer, "_play_btn", None)
+            if src_play is not None and src_play.winfo_exists() and src_play.winfo_width() > 8:
+                py_sh = getattr(src_play, "_hover_y_shift", 0)
+                ph_sz = getattr(src_play, "_hover_size", None)
+                pw = float(ph_sz[0] + 2) if ph_sz else max(24.0, src_play.winfo_width() - 10.0)
+                ph = float(ph_sz[1] + 2) if ph_sz else max(18.0, src_play.winfo_height() - 10.0 - py_sh * 2)
+                pcx = (src_play.winfo_rootx() - sh_rx) + src_play.winfo_width() / 2.0
+                pcy = (src_play.winfo_rooty() - sh_ry) + src_play.winfo_height() / 2.0 - py_sh
+                mini_elements["play_start"] = (
+                    pcx, pcy, pw, ph, src_play.cget("text"), src_play.cget("font"), py_sh,
+                )
+            src_dismiss = getattr(footer, "_dismiss_btn", None)
+            if src_dismiss is not None and src_dismiss.winfo_exists() and src_dismiss.winfo_width() > 8:
+                dy_sh = getattr(src_dismiss, "_hover_y_shift", 0)
+                dh_sz = getattr(src_dismiss, "_hover_size", None)
+                dw_p = float(dh_sz[0] + 2) if dh_sz else max(24.0, src_dismiss.winfo_width() - 10.0)
+                dh_p = float(dh_sz[1] + 2) if dh_sz else max(18.0, src_dismiss.winfo_height() - 10.0 - dy_sh * 2)
+                dcx = (src_dismiss.winfo_rootx() - sh_rx) + src_dismiss.winfo_width() / 2.0
+                dcy = (src_dismiss.winfo_rooty() - sh_ry) + src_dismiss.winfo_height() / 2.0 - dy_sh
+                mini_elements["dismiss_start"] = (
+                    dcx, dcy, dw_p, dh_p, src_dismiss.cget("text"), src_dismiss.cget("font"), dy_sh,
+                )
         else:
             start_x = 18
             start_w = max(1, shell_w - 36)
             start_h = 80
             start_y = max(0, shell_h - 90)
-        cov_start_sz = 62
-        cov_start_x = start_x + 13
-        cov_start_y = start_y + max(7, (start_h - cov_start_sz) // 2)
-        rp_start_x = cov_start_x + cov_start_sz + 11
-        rp_start_y = start_y + 12
+            cov_start_sz = 62
+            cov_start_x = start_x + 13
+            cov_start_y = start_y + max(7, (start_h - cov_start_sz) // 2)
+            rp_start_x = cov_start_x + cov_start_sz + 11
+            rp_start_y = start_y + 12
 
         self._animate_hero_to_detail(
             shell, podcast_id, title, category,
@@ -1668,14 +1920,15 @@ class EffectsMixin:
             cov_start_rect=(cov_start_x, cov_start_y, cov_start_sz),
             rp_start_pos=(rp_start_x, rp_start_y),
             start_bg=MINI_BAR_BG,
-            accent_top_bar=True,
+            accent_top_bar=False,
             source_kind="mini_bar",
+            mini_elements=mini_elements,
         )
 
     def _animate_hero_to_detail(
         self, shell, podcast_id, title, category,
         start_rect, cov_start_rect, rp_start_pos, start_bg,
-        accent_top_bar=False, source_kind="card",
+        accent_top_bar=False, source_kind="card", mini_elements=None,
     ):
         """Shared hero transition engine expanding a source surface + cover + title into the detail page."""
         if self._is_busy_transitioning() or not shell.winfo_exists():
@@ -1759,9 +2012,14 @@ class EffectsMixin:
             expander.create_rectangle(0, 0, max(1, start_w), 3, fill=ORANGE_ACCENT, outline="")
             if accent_top_bar else None
         )
+        left_accent_item = (
+            expander.create_rectangle(0, 6, 3, max(10, start_h - 6), fill=ORANGE_ACCENT, outline="")
+            if is_mini else None
+        )
 
         cat_pt = max(10, round(11 * font_scale))
         title_pt = max(24, round(29 * font_scale))
+        mini_title_pt = max(10, round(12 * text_scale))
         cat_font = (DEFAULT_FONT, cat_pt, "bold")
         title_font = (DEFAULT_FONT, title_pt, "bold")
         cat_text = translate(str(category or "Programme")).upper()
@@ -1772,12 +2030,19 @@ class EffectsMixin:
             -9999, -9999, text=cat_text, fill=start_bg, font=cat_font, anchor="nw",
         )
         title_item = expander.create_text(
-            -9999, -9999, text=title_text, fill=start_bg, font=title_font,
+            -9999, -9999, text=title_text, fill=TEXT_WHITE if is_mini else start_bg,
+            font=(DEFAULT_FONT, mini_title_pt, "bold") if is_mini else title_font,
             anchor="nw", width=title_wrap, justify="left",
         )
 
+        if is_mini:
+            expander.itemconfigure(title_item, font=title_font)
+        tb = expander.bbox(title_item)
+        if is_mini:
+            expander.itemconfigure(title_item, font=(DEFAULT_FONT, mini_title_pt, "bold"))
+        est_title_h = max(round(52 * font_scale), (tb[3] - tb[1]) if tb else round(60 * font_scale))
+
         if cached_geom is None:
-            tb = expander.bbox(title_item)
             req_w = (tb[2] - tb[0]) if tb else title_wrap
             est_rp_w = max(round(460 * detail_scale), min(title_wrap, req_w))
             canvas_inner_w = max(1, target_w - 17)
@@ -1787,6 +2052,103 @@ class EffectsMixin:
             approx_cat_y = approx_cov_y + 5
             approx_title_x = approx_cat_x
             approx_title_y = approx_cat_y + cat_line_h
+
+        def _exp_pill_pts(cx, cy, w, h, rad):
+            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
+            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
+            return (
+                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
+                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
+                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
+            )
+
+        # When opening from the mini-bar, split its subtitle ("Last played · Genre · ★ reviews") into
+        # separate live items at their exact pixel offsets so the genre name and reviews glide directly
+        # into the details page's category eyebrow and average-rating label alongside title, Play, and Back.
+        mini_play_morph = None
+        mini_prefix_item = None
+        mini_avg_morph = None
+        mini_back_morph = None
+        approx_play_sz = round(82 * detail_scale)
+        meta_line_h = max(24, round(26 * font_scale))
+        avg_line_h = max(24, round(26 * font_scale))
+        approx_avg_x = approx_title_x
+        approx_avg_y = approx_title_y + est_title_h + round(6 * detail_scale) + meta_line_h + round(5 * detail_scale)
+        approx_play_cx = approx_title_x + approx_play_sz / 2.0
+        approx_play_cy = approx_avg_y + avg_line_h + round(28 * detail_scale) + approx_play_sz / 2.0
+        approx_back_cx = 117.0
+        approx_back_cy = float(target_y + 51)
+        cat_start_x, cat_start_y = rp_start_x, rp_start_y
+        if is_mini and mini_elements:
+            t_pos = mini_elements.get("title_pos")
+            if t_pos is not None:
+                title_start_x, title_start_y = t_pos
+            else:
+                title_start_x, title_start_y = rp_start_x, rp_start_y + 12
+            s_start = mini_elements.get("subtitle_start")
+            if s_start is not None:
+                sx0, sy0, s_txt, s_font = s_start
+                sub_f_obj = self._get_cached_font(s_font)
+                parts = str(s_txt).split("  ·  ")
+                cur_px = sx0
+                # Part 0: "Last played" prefix -> fades out cleanly.
+                if parts:
+                    pref_s = parts[0] + ("  ·  " if len(parts) > 1 else "")
+                    mini_prefix_item = [
+                        expander.create_text(
+                            cur_px - start_x, sy0 - start_y,
+                            text=pref_s, fill=TEXT_GRAY, font=s_font, anchor="nw",
+                        ),
+                        cur_px, sy0,
+                    ]
+                    cur_px += sub_f_obj.measure(pref_s)
+                # Part 1: Genre name -> reuse cat_item starting right here and gliding up to CATEGORY!
+                if len(parts) >= 2:
+                    genre_part = parts[1]
+                    cat_start_x, cat_start_y = cur_px, sy0
+                    expander.itemconfigure(cat_item, text=genre_part, fill=TEXT_GRAY, font=s_font)
+                    expander.coords(cat_item, cur_px - start_x, sy0 - start_y)
+                    cur_px += sub_f_obj.measure(genre_part + ("  ·  " if len(parts) > 2 else ""))
+                # Part 2: Reviews / average rating ("★ 4.2 (18)") -> glides straight to avg_label!
+                if len(parts) >= 3:
+                    avg_part = "  ·  ".join(parts[2:])
+                    avg_id = expander.create_text(
+                        cur_px - start_x, sy0 - start_y,
+                        text=avg_part, fill=TEXT_GRAY, font=s_font, anchor="nw",
+                    )
+                    mini_avg_morph = [avg_id, cur_px, sy0, approx_avg_x, approx_avg_y]
+            p_start = mini_elements.get("play_start")
+            if p_start is not None:
+                ps_cx, ps_cy, ps_w, ps_h, ps_txt, ps_font, ps_ysh = p_start
+                p_poly = expander.create_polygon(
+                    *_exp_pill_pts(ps_cx - start_x, ps_cy - start_y, ps_w, ps_h, min(ps_w, ps_h) / 2.0),
+                    smooth=True, fill=ORANGE_ACCENT, outline="",
+                )
+                p_lbl = expander.create_text(
+                    round(ps_cx - start_x), round(ps_cy - start_y + ps_ysh),
+                    text=ps_txt, fill=PRIMARY_BTN_FG, font=ps_font, anchor="center",
+                )
+                p_tri = expander.create_polygon(
+                    ps_cx - start_x, ps_cy - start_y,
+                    ps_cx - start_x, ps_cy - start_y,
+                    ps_cx - start_x, ps_cy - start_y,
+                    fill=ORANGE_ACCENT, outline="", state="hidden",
+                )
+                mini_play_morph = [p_poly, p_lbl, p_tri, ps_cx, ps_cy, ps_w, ps_h, ps_ysh, approx_play_cx, approx_play_cy]
+            d_start = mini_elements.get("dismiss_start")
+            if d_start is not None:
+                ds_cx, ds_cy, ds_w, ds_h, ds_txt, ds_font, ds_ysh = d_start
+                d_poly = expander.create_polygon(
+                    *_exp_pill_pts(ds_cx - start_x, ds_cy - start_y, ds_w, ds_h, 10.0),
+                    smooth=True, fill=INPUT_BG, outline="",
+                )
+                d_lbl = expander.create_text(
+                    round(ds_cx - start_x), round(ds_cy - start_y + ds_ysh),
+                    text=ds_txt, fill=TEXT_GRAY, font=ds_font, anchor="center",
+                )
+                mini_back_morph = [d_poly, d_lbl, ds_cx, ds_cy, ds_w, ds_h, ds_ysh, approx_back_cx, approx_back_cy]
+        else:
+            title_start_x, title_start_y = rp_start_x, rp_start_y + cat_line_h
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             expander, podcast_id, title, category, cov_start_sz, cov_start_sz,
@@ -1835,9 +2197,12 @@ class EffectsMixin:
         last_fade_step = [-1]
         last_rect = [None]
         last_cov_sz = [cov_start_sz]
+        last_title_pt = [mini_title_pt if is_mini else title_pt]
         last_cov_abs = [(cov_start_x, cov_start_y)]
         last_cat_abs = [(rp_start_x, rp_start_y)]
-        last_title_abs = [(rp_start_x, rp_start_y + cat_line_h)]
+        last_title_abs = [(title_start_x, title_start_y)]
+        if is_mini:
+            expander.coords(title_item, title_start_x - vis_x0, title_start_y - vis_y0)
 
         def cleanup():
             shell._expanding_bar = False
@@ -1887,7 +2252,12 @@ class EffectsMixin:
                 expander.place(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
                 if accent_item is not None:
                     expander.coords(accent_item, 0, 0, rect[2], 3)
+                if left_accent_item is not None:
+                    expander.coords(left_accent_item, 0, 6, 3, max(10, rect[3] - 6))
                 last_rect[0] = rect
+            if left_accent_item is not None:
+                acc_t = min(1.0, progress / 0.45)
+                expander.itemconfigure(left_accent_item, fill=blend_colour(ORANGE_ACCENT, cur_bg, acc_t))
 
             desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.08, hero_eased))
             quant_sz = min(size_steps, key=lambda s: abs(s - desired_sz))
@@ -1908,8 +2278,92 @@ class EffectsMixin:
                 expander.coords(icon_item, rel_cx, rel_cy)
             last_cov_abs[0] = (round(cur_cx - quant_sz / 2.0), round(cur_cy - quant_sz / 2.0))
 
-            # Fade the detail-sized title in smoothly once expander is large enough (progress >= 0.30).
-            if progress >= 0.30:
+            if is_mini:
+                # Smoothly glide & grow the mini-bar title from frame 0 right into the detail hero title.
+                step_pt = min(title_pt, max(mini_title_pt, round(mini_title_pt + (title_pt - mini_title_pt) * smooth_t)))
+                if abs(step_pt - last_title_pt[0]) >= 3 or (progress >= 0.95 and last_title_pt[0] != title_pt):
+                    last_title_pt[0] = title_pt if progress >= 0.95 else step_pt
+                    expander.itemconfigure(title_item, font=(DEFAULT_FONT, last_title_pt[0], "bold"))
+                tit_x = round(title_start_x + (approx_title_x - title_start_x) * hero_eased)
+                tit_y = round(title_start_y + (approx_title_y - title_start_y) * hero_eased)
+                last_title_abs[0] = (tit_x, tit_y)
+                expander.coords(title_item, tit_x - vx0, tit_y - vy0)
+
+                if mini_prefix_item is not None:
+                    pr_id, pr_x, pr_y = mini_prefix_item
+                    pf = min(1.0, progress / 0.30)
+                    expander.coords(pr_id, pr_x - vx0, pr_y - vy0)
+                    expander.itemconfigure(pr_id, fill=blend_colour(TEXT_GRAY, cur_bg, pf))
+
+                # Glide the genre name straight from the mini-bar subtitle up into the orange CATEGORY eyebrow.
+                cat_x = round(cat_start_x + (approx_cat_x - cat_start_x) * hero_eased)
+                cat_y = round(cat_start_y + (approx_cat_y - cat_start_y) * hero_eased)
+                last_cat_abs[0] = (cat_x, cat_y)
+                expander.coords(cat_item, cat_x - vx0, cat_y - vy0)
+                fade_step = min(6, round(progress * 6))
+                if fade_step != last_fade_step[0]:
+                    fade = fade_step / 6.0
+                    if fade >= 0.45:
+                        expander.itemconfigure(cat_item, text=cat_text, font=cat_font)
+                    expander.itemconfigure(cat_item, fill=blend_colour(TEXT_GRAY, ORANGE_HL, fade))
+                    if mini_avg_morph is not None:
+                        expander.itemconfigure(mini_avg_morph[0], fill=blend_colour(TEXT_GRAY, GOLD_STAR, fade))
+                    last_fade_step[0] = fade_step
+
+                if mini_avg_morph is not None:
+                    a_id, ax0, ay0, _lx, _ly = mini_avg_morph
+                    cur_ax = round(ax0 + (approx_avg_x - ax0) * hero_eased)
+                    cur_ay = round(ay0 + (approx_avg_y - ay0) * hero_eased)
+                    mini_avg_morph[3] = cur_ax
+                    mini_avg_morph[4] = cur_ay
+                    expander.coords(a_id, cur_ax - vx0, cur_ay - vy0)
+
+                if mini_back_morph is not None:
+                    d_poly, d_lbl, ds_cx, ds_cy, ds_w, ds_h, ds_ysh, _lcx, _lcy = mini_back_morph
+                    cur_dcx = ds_cx + (approx_back_cx - ds_cx) * hero_eased
+                    cur_dcy = ds_cy + (approx_back_cy - ds_cy) * hero_eased
+                    mini_back_morph[7] = cur_dcx
+                    mini_back_morph[8] = cur_dcy
+                    dm_cx = cur_dcx - vx0
+                    dm_cy = cur_dcy - vy0
+                    dm_w = ds_w + (136.0 - ds_w) * smooth_t
+                    expander.coords(d_poly, *_exp_pill_pts(dm_cx, dm_cy, dm_w, ds_h, 10.0))
+                    df = min(1.0, progress / 0.55)
+                    expander.coords(d_lbl, round(dm_cx), round(dm_cy + ds_ysh))
+                    expander.itemconfigure(d_lbl, fill=blend_colour(TEXT_GRAY, INPUT_BG, df))
+
+                if mini_play_morph is not None:
+                    p_poly, p_lbl, p_tri, ps_cx, ps_cy, ps_w, ps_h, ps_ysh, _lcx, _lcy = mini_play_morph
+                    cur_pcx = ps_cx + (approx_play_cx - ps_cx) * hero_eased
+                    cur_pcy = ps_cy + (approx_play_cy - ps_cy) * hero_eased
+                    mini_play_morph[8] = cur_pcx
+                    mini_play_morph[9] = cur_pcy
+                    pm_cx = cur_pcx - vx0
+                    pm_cy = cur_pcy - vy0
+                    target_d = max(48.0, approx_play_sz - 12.0)
+                    pm_w = ps_w + (target_d - ps_w) * smooth_t
+                    pm_h = ps_h + (target_d - ps_h) * smooth_t
+                    # Morph smoothly from the mini-bar pill into the details page's rounded square (rad = 0.24 * d).
+                    start_rad = min(ps_w, ps_h) / 2.0
+                    end_rad = max(6.0, target_d * 0.24)
+                    pm_r = start_rad + (end_rad - start_rad) * smooth_t
+                    expander.coords(p_poly, *_exp_pill_pts(pm_cx, pm_cy, pm_w, pm_h, pm_r))
+                    if progress < 0.45:
+                        lf = min(1.0, progress / 0.45)
+                        expander.coords(p_lbl, round(pm_cx), round(pm_cy + ps_ysh))
+                        expander.itemconfigure(p_lbl, fill=blend_colour(PRIMARY_BTN_FG, ORANGE_ACCENT, lf))
+                    else:
+                        expander.itemconfigure(p_lbl, state="hidden")
+                        tf = min(1.0, (progress - 0.45) / 0.45)
+                        tri_r = max(2.0, (target_d * 0.24) * (0.65 + 0.35 * tf))
+                        expander.coords(
+                            p_tri,
+                            pm_cx - tri_r * 0.65, pm_cy - tri_r * 0.92,
+                            pm_cx - tri_r * 0.65, pm_cy + tri_r * 0.92,
+                            pm_cx + tri_r * 1.15, pm_cy,
+                        )
+                        expander.itemconfigure(p_tri, state="normal", fill=blend_colour(ORANGE_ACCENT, "#000000", tf))
+            elif progress >= 0.30:
                 fade_step = min(6, round(((progress - 0.30) / 0.55) * 6))
                 if fade_step != last_fade_step[0]:
                     fade = fade_step / 6.0
@@ -2026,17 +2480,39 @@ class EffectsMixin:
                             rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
                         )
 
+                    if mini_prefix_item is not None:
+                        expander.delete(mini_prefix_item[0])
+
+                    if cat_lbl is not None and cat_lbl.winfo_exists():
+                        expander.itemconfigure(cat_item, text=cat_lbl.cget("text"), font=cat_lbl.cget("font"), fill=ORANGE_HL)
+                    if tit_lbl is not None and tit_lbl.winfo_exists():
+                        tw_live = int(tit_lbl.cget("wraplength") or title_wrap)
+                        expander.itemconfigure(title_item, text=tit_lbl.cget("text"), font=tit_lbl.cget("font"), width=tw_live, fill=TEXT_WHITE)
+
                     play_w = dw.get("play_canvas")
                     play_spec = None
+                    play_glide = None
                     if play_w is not None and play_w.winfo_exists() and play_w.winfo_width() > 4:
                         psz = min(play_w.winfo_width(), play_w.winfo_height())
                         pcx = (play_w.winfo_rootx() - sh_rx) + play_w.winfo_width() / 2.0
                         pcy = (play_w.winfo_rooty() - sh_ry - target_y) + play_w.winfo_height() / 2.0
-                        oval_id = expander.create_oval(pcx, pcy, pcx, pcy, fill=ORANGE_ACCENT, outline="")
-                        tri_id = expander.create_polygon(pcx, pcy, pcx, pcy, pcx, pcy, fill="#000000", outline="")
-                        play_spec = (oval_id, tri_id, pcx, pcy, psz)
+                        if mini_play_morph is not None:
+                            # Smoothly glide the already-morphed mini-bar Play rounded square onto the exact detail Play button.
+                            p_poly, p_lbl, p_tri = mini_play_morph[0], mini_play_morph[1], mini_play_morph[2]
+                            expander.itemconfigure(p_lbl, state="hidden")
+                            expander.itemconfigure(p_tri, state="normal", fill="#000000")
+                            play_glide = (
+                                p_poly, p_tri,
+                                mini_play_morph[8], mini_play_morph[9] - target_y,
+                                pcx, pcy, psz,
+                            )
+                        else:
+                            sq_id = expander.create_polygon(pcx, pcy, pcx, pcy, smooth=True, fill=ORANGE_ACCENT, outline="")
+                            tri_id = expander.create_polygon(pcx, pcy, pcx, pcy, pcx, pcy, fill="#000000", outline="")
+                            play_spec = (sq_id, tri_id, pcx, pcy, psz)
 
                     pill_specs = []
+                    back_glide = None
                     from gui_parts.theme import ACTION_BTN_BG, ACTION_BTN_FG, DIVIDER_LINE, GOLD_STAR, SUBCARD_BG
                     for b_idx, (b_key, is_prim, stagger) in enumerate((
                         ("fav_button", bool(dw.get("fav_primary")), 0.08),
@@ -2053,7 +2529,6 @@ class EffectsMixin:
                             bcy = (btn_w.winfo_rooty() - sh_ry - target_y) + btn_w.winfo_height() / 2.0 - y_sh
                             fill_c = ORANGE_ACCENT if is_prim else (INPUT_BG if b_key == "back_btn" else ACTION_BTN_BG)
                             fg_c = PRIMARY_BTN_FG if is_prim else (TEXT_GRAY if b_key == "back_btn" else ACTION_BTN_FG)
-                            poly_id = expander.create_polygon(bcx, bcy, bcx, bcy, smooth=True, fill=fill_c, outline="")
                             norm_img = getattr(btn_w, "_normal_image", None)
                             img_id = (
                                 expander.create_image(
@@ -2063,11 +2538,41 @@ class EffectsMixin:
                                 )
                                 if norm_img is not None else None
                             )
+                            if b_key == "back_btn" and mini_back_morph is not None:
+                                # Reuse the morphed mini-bar Dismiss pill directly as the Back button.
+                                d_poly, d_lbl = mini_back_morph[0], mini_back_morph[1]
+                                expander.itemconfigure(
+                                    d_lbl, text=btn_w.cget("text"), font=btn_w.cget("font"), fill=fill_c,
+                                )
+                                back_glide = [
+                                    d_poly, img_id, d_lbl,
+                                    mini_back_morph[7], mini_back_morph[8] - target_y,
+                                    bcx, bcy, bw, bh, fill_c, fg_c, y_sh, False,
+                                ]
+                                continue
+                            poly_id = expander.create_polygon(bcx, bcy, bcx, bcy, smooth=True, fill=fill_c, outline="")
                             txt_id = expander.create_text(
                                 bcx, bcy + y_sh, text=btn_w.cget("text"), fill=fill_c,
                                 font=btn_w.cget("font"), anchor="center",
                             )
                             pill_specs.append([poly_id, img_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stagger, False])
+
+                    avg_glide = None
+                    if mini_avg_morph is not None:
+                        avg_w = dw.get("avg_label")
+                        if avg_w is not None and avg_w.winfo_exists() and avg_w.winfo_width() > 2:
+                            ax1 = avg_w.winfo_rootx() - sh_rx + 1
+                            ay1 = avg_w.winfo_rooty() - sh_ry - target_y + 1
+                            expander.itemconfigure(
+                                mini_avg_morph[0], text=avg_w.cget("text"), font=avg_w.cget("font"), fill=GOLD_STAR,
+                            )
+                            avg_glide = (
+                                mini_avg_morph[0],
+                                mini_avg_morph[3], mini_avg_morph[4] - target_y,
+                                ax1, ay1,
+                            )
+                        else:
+                            expander.delete(mini_avg_morph[0])
 
                     fade_items = []
                     for lbl_key, target_fg in (
@@ -2076,6 +2581,8 @@ class EffectsMixin:
                         ("avg_label", GOLD_STAR),
                         ("listen_label", TEXT_WHITE),
                     ):
+                        if lbl_key == "avg_label" and avg_glide is not None:
+                            continue
                         lw = dw.get(lbl_key)
                         if lw is not None and lw.winfo_exists() and lw.winfo_width() > 2:
                             lx = lw.winfo_rootx() - sh_rx + 1
@@ -2148,7 +2655,7 @@ class EffectsMixin:
                     from_x, from_y = last_cov_abs[0]
                     from_cat_x, from_cat_y = last_cat_abs[0]
                     from_tit_x, from_tit_y = last_title_abs[0]
-                    bloom_dur = 0.290
+                    bloom_dur = 0.420
                     bloom_st = {"progress": 0.0, "last_t": None}
 
                     def draw_bloom():
@@ -2161,9 +2668,9 @@ class EffectsMixin:
                         bloom_st["progress"] = min(1.0, bloom_st["progress"] + dt / bloom_dur)
                         bp = bloom_st["progress"]
 
-                        # 1. Pixel-perfectly align cover, category, and title during the first 30% of the bloom.
-                        ap = min(1.0, bp / 0.30)
-                        ae = 1.0 - (1.0 - ap) ** 2
+                        # 1. Smoothly decelerate cover, category, title, reviews, Play, and Back onto exact pixels.
+                        ap = min(1.0, bp / 0.48)
+                        ae = 1.0 - (1.0 - ap) ** 3
                         sx = round(from_x + (final_x - from_x) * ae + final_sz / 2.0)
                         sy = round(from_y + (final_y - from_y) * ae + final_sz / 2.0) - target_y
                         expander.coords(cover_item, sx, sy)
@@ -2176,12 +2683,45 @@ class EffectsMixin:
                         expander.coords(cat_item, cx_t, cy_t)
                         expander.coords(title_item, tx_t, ty_t)
 
-                        # 2. Expand the circular Play button elastically from 0 -> full size.
-                        if play_spec is not None:
-                            oval_id, tri_id, pcx, pcy, psz = play_spec
-                            pe = max(0.0, ease_out_elastic(bp, damping=3.8, frequency=1.45))
-                            rad = max(0.5, ((psz / 2.0) - 5.0) * pe)
-                            expander.coords(oval_id, pcx - rad, pcy - rad, pcx + rad, pcy + rad)
+                        if avg_glide is not None:
+                            a_id, a_x0, a_y0, a_x1, a_y1 = avg_glide
+                            expander.coords(a_id, round(a_x0 + (a_x1 - a_x0) * ae), round(a_y0 + (a_y1 - a_y0) * ae))
+
+                        if back_glide is not None:
+                            d_poly, img_id, d_lbl, b_x0, b_y0, bcx, bcy, bw, bh, fill_c, fg_c, y_sh, swapped = back_glide
+                            if ap >= 0.98 and img_id is not None:
+                                if not swapped:
+                                    expander.itemconfigure(d_poly, state="hidden")
+                                    expander.itemconfigure(img_id, state="normal")
+                                    expander.tag_raise(d_lbl, img_id)
+                                    back_glide[12] = True
+                                expander.coords(d_lbl, bcx, bcy + y_sh)
+                                expander.itemconfigure(d_lbl, fill=fg_c)
+                            else:
+                                gcx = b_x0 + (bcx - b_x0) * ae
+                                gcy = b_y0 + (bcy - b_y0) * ae
+                                expander.coords(d_poly, *_exp_pill_pts(gcx, gcy, bw, bh, 10.0))
+                                expander.coords(d_lbl, round(gcx), round(gcy + y_sh))
+                                expander.itemconfigure(d_lbl, fill=blend_colour(fill_c, fg_c, min(1.0, bp / 0.55)))
+
+                        # 2. Align the morphed mini-bar rounded-square Play button or expand it cleanly from 0 -> full.
+                        if play_glide is not None:
+                            p_poly, p_tri, g_x0, g_y0, pcx, pcy, psz = play_glide
+                            gcx = g_x0 + (pcx - g_x0) * ae
+                            gcy = g_y0 + (pcy - g_y0) * ae
+                            gd = max(12.0, psz - 12.0)
+                            expander.coords(p_poly, *_exp_pill_pts(gcx, gcy, gd, gd, max(6.0, gd * 0.24)))
+                            expander.coords(
+                                p_tri,
+                                gcx - psz * 0.11, gcy - psz * 0.24,
+                                gcx - psz * 0.11, gcy + psz * 0.24,
+                                gcx + psz * 0.26, gcy,
+                            )
+                        elif play_spec is not None:
+                            sq_id, tri_id, pcx, pcy, psz = play_spec
+                            pe = 1.0 if bp >= 0.92 else max(0.0, ease_out_elastic(min(1.0, bp / 0.92), damping=5.2, frequency=1.18))
+                            gd = max(2.0, (psz - 12.0) * pe)
+                            expander.coords(sq_id, *_exp_pill_pts(pcx, pcy, gd, gd, max(2.0, gd * 0.24)))
                             ts = max(0.0, pe)
                             s_pts = (
                                 pcx + (-psz * 0.11) * ts, pcy + (-psz * 0.24) * ts,
@@ -2190,13 +2730,13 @@ class EffectsMixin:
                             )
                             expander.coords(tri_id, *s_pts)
 
-                        # 3. Expand each pill button elastically from nowhere, then swap to the exact AA button image at settle.
+                        # 3. Expand each pill button smoothly and let it settle before swapping to the exact AA image.
                         for pspec in pill_specs:
                             poly_id, img_id, txt_id, bcx, bcy, bw, bh, fill_c, fg_c, stag, swapped = pspec
-                            lp = max(0.0, min(1.0, (bp - stag) / max(0.20, 1.0 - stag)))
+                            lp = max(0.0, min(1.0, (bp - stag) / max(0.25, 0.92 - stag)))
                             if lp <= 0.0:
                                 continue
-                            if lp >= 0.96 and img_id is not None:
+                            if lp >= 0.98 and img_id is not None:
                                 if not swapped:
                                     expander.itemconfigure(poly_id, state="hidden")
                                     expander.itemconfigure(img_id, state="normal")
@@ -2204,15 +2744,15 @@ class EffectsMixin:
                                     pspec[10] = True
                                 expander.itemconfigure(txt_id, fill=fg_c)
                             else:
-                                pe = max(0.0, ease_out_elastic(lp, damping=3.8, frequency=1.45))
+                                pe = max(0.0, ease_out_elastic(lp, damping=5.2, frequency=1.18))
                                 hw = max(1.0, (bw / 2.0) * pe)
                                 hh = max(1.0, (bh / 2.0) * pe)
                                 expander.coords(poly_id, *_rounded_pts(bcx - hw, bcy - hh, bcx + hw, bcy + hh, 10.0 * min(1.0, pe)))
-                                tf = max(0.0, min(1.0, (lp - 0.30) / 0.55))
+                                tf = max(0.0, min(1.0, (lp - 0.25) / 0.50))
                                 expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
 
                         # 4. Smoothly fade in metadata, divider rules, and bottom listening card (including border & text).
-                        fp = min(1.0, bp / 0.80)
+                        fp = min(1.0, bp / 0.78)
                         for fid, c0, c1, out_c in fade_items:
                             if out_c is not None:
                                 expander.itemconfigure(
@@ -2227,8 +2767,8 @@ class EffectsMixin:
                             spent = (monotonic() - f_t0) * 1000.0
                             self.after(self._next_frame_delay(spent, 16), draw_bloom)
                         else:
-                            # Let the completed bp=1.0 frame paint cleanly before dropping the overlay.
-                            self.after(16, cleanup)
+                            # Hold settled for 90ms on exact final pixels so cutting to the static page is invisible.
+                            self.after(90, cleanup)
 
                     draw_bloom()
 
@@ -2495,6 +3035,9 @@ class EffectsMixin:
                 clip_bottom = clip_top + max(1, new_area.winfo_height())
 
         play_end = None
+        dismiss_bloom = None
+        sub_bloom = None
+        dest_title_font = None
         if is_mini:
             dest_footer = getattr(self, "_shell_bottom_bar", None)
             if dest_footer is not None and dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
@@ -2502,7 +3045,9 @@ class EffectsMixin:
                 fy = dest_footer.winfo_y()
                 fw = dest_footer.winfo_width()
                 fh = dest_footer.winfo_height()
+                # Match the live mini-bar's exact bounds and clip strictly at its bottom edge (never past it).
                 target_box[:] = [fx, fy, fw, fh]
+                clip_bottom = min(shell_h, fy + fh)
                 dest_cov = getattr(dest_footer, "_cover", None)
                 if dest_cov is not None and dest_cov.winfo_exists() and dest_cov.winfo_width() > 1:
                     cov_target[:] = [
@@ -2514,12 +3059,27 @@ class EffectsMixin:
                     cov_target[:] = [fx + 13, fy + max(7, (fh - 62) // 2), 62]
                 dest_title = getattr(dest_footer, "_title_label", None)
                 if dest_title is not None and dest_title.winfo_exists() and dest_title.winfo_width() > 1:
+                    dest_title_font = dest_title.cget("font")
+                    # Match tk.Label's default padx=1 and vertical centering inside its allocated height.
+                    t_fobj = self._get_cached_font(dest_title_font)
+                    t_linespace = t_fobj.metrics("linespace")
+                    t_vpad = max(0, round((dest_title.winfo_height() - t_linespace) / 2.0))
                     rp_target[:] = [
-                        dest_title.winfo_rootx() - sh_rx,
-                        dest_title.winfo_rooty() - sh_ry,
+                        dest_title.winfo_rootx() - sh_rx + 1,
+                        dest_title.winfo_rooty() - sh_ry + t_vpad,
                     ]
                 else:
                     rp_target[:] = [cov_target[0] + cov_target[2] + 11, fy + 12]
+                dest_sub = getattr(dest_footer, "_subtitle_label", None)
+                if dest_sub is not None and dest_sub.winfo_exists() and dest_sub.winfo_width() > 2:
+                    sub_x = dest_sub.winfo_rootx() - sh_rx + 1
+                    sub_cy = (dest_sub.winfo_rooty() - sh_ry) + dest_sub.winfo_height() / 2.0
+                    sub_id = shrinker.create_text(
+                        sub_x - start_x, sub_cy - start_y,
+                        text=dest_sub.cget("text"), fill=DARK_BG,
+                        font=dest_sub.cget("font"), anchor="w", state="hidden",
+                    )
+                    sub_bloom = (sub_id, sub_x, sub_cy)
                 dest_play = getattr(dest_footer, "_play_btn", None)
                 if dest_play is not None and dest_play.winfo_exists() and dest_play.winfo_width() > 8:
                     py_sh = getattr(dest_play, "_hover_y_shift", 0)
@@ -2531,7 +3091,37 @@ class EffectsMixin:
                     play_end = (
                         pe_cx, pe_cy, pe_w, pe_h,
                         dest_play.cget("text"), dest_play.cget("font"), py_sh,
+                        getattr(dest_play, "_normal_image", None),
                     )
+                dest_dismiss = getattr(dest_footer, "_dismiss_btn", None)
+                if dest_dismiss is not None and dest_dismiss.winfo_exists() and dest_dismiss.winfo_width() > 8:
+                    from gui_parts.theme import ACTION_BTN_BG, ACTION_BTN_FG
+                    dy_sh = getattr(dest_dismiss, "_hover_y_shift", 0)
+                    dh_sz = getattr(dest_dismiss, "_hover_size", None)
+                    dw_p = float(dh_sz[0] + 2) if dh_sz else max(24.0, dest_dismiss.winfo_width() - 10.0)
+                    dh_p = float(dh_sz[1] + 2) if dh_sz else max(18.0, dest_dismiss.winfo_height() - 10.0 - dy_sh * 2)
+                    dcx = (dest_dismiss.winfo_rootx() - sh_rx) + dest_dismiss.winfo_width() / 2.0
+                    dcy = (dest_dismiss.winfo_rooty() - sh_ry) + dest_dismiss.winfo_height() / 2.0 - dy_sh
+                    d_fill = getattr(dest_dismiss, "_rounded_colours", (ACTION_BTN_BG,))[0]
+                    d_fg = getattr(dest_dismiss, "_hover_base_fg", ACTION_BTN_FG)
+                    d_poly = shrinker.create_polygon(
+                        dcx - start_x, dcy - start_y, dcx - start_x, dcy - start_y,
+                        smooth=True, fill=d_fill, outline="", state="hidden",
+                    )
+                    d_norm = getattr(dest_dismiss, "_normal_image", None)
+                    d_img = (
+                        shrinker.create_image(
+                            dcx - start_x, dcy - start_y + dy_sh,
+                            image=d_norm, anchor="center", state="hidden",
+                        )
+                        if d_norm is not None else None
+                    )
+                    d_txt = shrinker.create_text(
+                        dcx - start_x, dcy - start_y + dy_sh,
+                        text=dest_dismiss.cget("text"), fill=d_fill,
+                        font=dest_dismiss.cget("font"), anchor="center", state="hidden",
+                    )
+                    dismiss_bloom = [d_poly, d_img, d_txt, dcx, dcy, dw_p, dh_p, d_fill, d_fg, dy_sh, False]
         else:
             live = self._find_live_podcast_card(podcast_id, target_box, sh_rx, sh_ry)
             if live is not None:
@@ -2557,16 +3147,23 @@ class EffectsMixin:
             cover_cache[cov_end_sz] = (p_img, p_ico)
             size_steps = tuple(sorted(set(size_steps) | {cov_end_sz}))
 
-        # Attach the mini-bar's "▶  Play" text item to the already-drawn morphing Play button.
+        # Attach the mini-bar's "▶  Play" text & exact AA button image to the morphing Play button.
         play_morph = None
         if play_items is not None and play_end is not None:
             p_poly, p_tri, ps_cx, ps_cy, ps_sz = play_items
-            pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_font, pe_ysh = play_end
+            pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_font, pe_ysh, pe_norm = play_end
+            p_img = (
+                shrinker.create_image(
+                    ps_cx - start_x, ps_cy - start_y + pe_ysh,
+                    image=pe_norm, anchor="center", state="hidden",
+                )
+                if pe_norm is not None else None
+            )
             p_lbl = shrinker.create_text(
                 ps_cx - start_x, ps_cy - start_y,
                 text=pe_txt, fill=ORANGE_ACCENT, font=pe_font, anchor="center", state="hidden",
             )
-            play_morph = (p_poly, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh)
+            play_morph = [p_poly, p_img, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh, False]
         elif play_items is not None:
             shrinker.delete(play_items[0], play_items[1])
 
@@ -2612,14 +3209,16 @@ class EffectsMixin:
             anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
             progress = anim_st["progress"]
             # Outer card surface contracts smoothly (no re-covering underlying cards or mini-bar);
-            # cover art inside the canvas uses a juicy elastic spring for tactile snap-back.
-            box_eased = 1.0 - (1.0 - progress) ** 3.2
+            # cover art and Play button finish their elastic settle by 88% so the mini-bar rests cleanly before swap.
             if is_mini:
-                cov_pos_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=3.2, frequency=1.55)
-                cov_sz_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=2.6, frequency=1.65)
-                play_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=3.6, frequency=1.35)
+                mp = min(1.0, progress / 0.88)
+                box_eased = 1.0 - (1.0 - mp) ** 3.2
+                cov_pos_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=4.8, frequency=1.22)
+                cov_sz_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=4.6, frequency=1.25)
+                play_eased = 1.0 if mp >= 1.0 else ease_out_elastic(mp, damping=5.0, frequency=1.18)
                 hero_eased = cov_pos_eased
             else:
+                box_eased = 1.0 - (1.0 - progress) ** 3.2
                 hero_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=4.5, frequency=1.25)
                 cov_pos_eased = hero_eased
                 cov_sz_eased = hero_eased
@@ -2677,9 +3276,9 @@ class EffectsMixin:
             rel_cx = round(cx0 + (cx1 - cx0) * cov_pos_eased) - vis_x0
             raw_rel_cy = round(cy0 + (cy1 - cy0) * cov_pos_eased) - vis_y0
             if is_mini:
-                # Keep the elastic overshoot cleanly visible inside the shrinking mini-bar.
-                min_cy = quant_sz // 2 - 2
-                max_cy = max(min_cy, vis_h - quant_sz // 2 + 2)
+                # Keep the elastic overshoot strictly inside the shrinking mini-bar bounds.
+                min_cy = quant_sz // 2 + 2
+                max_cy = max(min_cy, vis_h - quant_sz // 2 - 2)
                 rel_cy = max(min_cy, min(max_cy, raw_rel_cy))
             else:
                 rel_cy = raw_rel_cy
@@ -2688,34 +3287,51 @@ class EffectsMixin:
                 shrinker.coords(icon_item, rel_cx, rel_cy)
 
             if play_morph is not None:
-                p_poly, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh = play_morph
+                p_poly, p_img, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh, p_swapped = play_morph
                 pm_cx = (ps_cx + (pe_cx - ps_cx) * play_eased) - vis_x0
-                pm_cy = (ps_cy + (pe_cy - ps_cy) * play_eased) - vis_y0
+                raw_pm_cy = (ps_cy + (pe_cy - ps_cy) * play_eased) - vis_y0
                 shape_t = max(0.0, min(1.0, box_eased))
                 pm_w = ps_sz + (pe_w - ps_sz) * shape_t
                 pm_h = ps_sz + (pe_h - ps_sz) * shape_t
-                pm_r = min(pm_w, pm_h) / 2.0
-                shrinker.coords(p_poly, *_pill_pts(pm_cx, pm_cy, pm_w, pm_h, pm_r))
-
-                if progress < 0.45:
-                    tri_fade = min(1.0, progress / 0.45)
-                    tri_r = max(1.0, (ps_sz * 0.22) * (1.0 - 0.35 * tri_fade))
-                    shrinker.coords(
-                        p_tri,
-                        pm_cx - tri_r * 0.65, pm_cy - tri_r * 0.92,
-                        pm_cx - tri_r * 0.65, pm_cy + tri_r * 0.92,
-                        pm_cx + tri_r * 1.15, pm_cy,
-                    )
-                    shrinker.itemconfigure(p_tri, fill=blend_colour("#000000", ORANGE_ACCENT, tri_fade))
+                pm_min_cy = pm_h / 2.0 + 2.0
+                pm_max_cy = max(pm_min_cy, vis_h - pm_h / 2.0 - 2.0)
+                pm_cy = max(pm_min_cy, min(pm_max_cy, raw_pm_cy))
+                if is_mini and mp >= 0.98 and p_img is not None:
+                    if not p_swapped:
+                        shrinker.itemconfigure(p_poly, state="hidden")
+                        shrinker.itemconfigure(p_tri, state="hidden")
+                        shrinker.itemconfigure(p_img, state="normal")
+                        shrinker.tag_raise(p_lbl, p_img)
+                        play_morph[12] = True
+                    shrinker.coords(p_img, round(pe_cx - vis_x0), round(pe_cy - vis_y0 + pe_ysh))
+                    shrinker.coords(p_lbl, round(pe_cx - vis_x0), round(pe_cy - vis_y0 + pe_ysh))
+                    shrinker.itemconfigure(p_lbl, state="normal", fill=PRIMARY_BTN_FG)
                 else:
-                    shrinker.itemconfigure(p_tri, state="hidden")
-                    lbl_fade = min(1.0, (progress - 0.45) / 0.40)
-                    shrinker.coords(p_lbl, round(pm_cx), round(pm_cy + pe_ysh))
-                    shrinker.itemconfigure(
-                        p_lbl,
-                        state="normal",
-                        fill=blend_colour(ORANGE_ACCENT, PRIMARY_BTN_FG, lbl_fade),
-                    )
+                    # Morph smoothly from the details page's rounded square (rad = 0.24 * sz) back to the mini-bar pill.
+                    start_rad = max(6.0, ps_sz * 0.24)
+                    end_rad = min(pe_w, pe_h) / 2.0
+                    pm_r = start_rad + (end_rad - start_rad) * shape_t
+                    shrinker.coords(p_poly, *_pill_pts(pm_cx, pm_cy, pm_w, pm_h, pm_r))
+
+                    if progress < 0.45:
+                        tri_fade = min(1.0, progress / 0.45)
+                        tri_r = max(1.0, (ps_sz * 0.22) * (1.0 - 0.35 * tri_fade))
+                        shrinker.coords(
+                            p_tri,
+                            pm_cx - tri_r * 0.65, pm_cy - tri_r * 0.92,
+                            pm_cx - tri_r * 0.65, pm_cy + tri_r * 0.92,
+                            pm_cx + tri_r * 1.15, pm_cy,
+                        )
+                        shrinker.itemconfigure(p_tri, fill=blend_colour("#000000", ORANGE_ACCENT, tri_fade))
+                    else:
+                        shrinker.itemconfigure(p_tri, state="hidden")
+                        lbl_fade = min(1.0, (progress - 0.45) / 0.35)
+                        shrinker.coords(p_lbl, round(pm_cx), round(pm_cy + pe_ysh))
+                        shrinker.itemconfigure(
+                            p_lbl,
+                            state="normal",
+                            fill=blend_colour(ORANGE_ACCENT, PRIMARY_BTN_FG, lbl_fade),
+                        )
 
             if is_mini:
                 # Fade out the uppercase category tag early, while sliding & scaling the podcast title
@@ -2735,9 +3351,43 @@ class EffectsMixin:
                 ty = round(t_start_y + (rp_end_y - t_start_y) * box_eased) - vis_y0
                 shrinker.coords(title_item, tx, ty)
                 target_pt = max(13, round(shrink_title_pt + (13 - shrink_title_pt) * box_eased))
-                if target_pt != last_title_pt[0]:
+                if mp >= 0.96 and dest_title_font is not None and last_title_pt[0] != -1:
+                    shrinker.itemconfigure(title_item, font=dest_title_font, width=0)
+                    last_title_pt[0] = -1
+                elif last_title_pt[0] != -1 and target_pt != last_title_pt[0]:
                     shrinker.itemconfigure(title_item, font=(DEFAULT_FONT, target_pt, "bold"))
                     last_title_pt[0] = target_pt
+
+                # Bloom in the mini-bar's subtitle and Dismiss pill elastically just like the details page.
+                if sub_bloom is not None and progress >= 0.46:
+                    s_id, sx_abs, sy_abs = sub_bloom
+                    sp = min(1.0, (progress - 0.46) / 0.42)
+                    shrinker.coords(s_id, sx_abs - vis_x0, sy_abs - vis_y0)
+                    shrinker.itemconfigure(s_id, state="normal", fill=blend_colour(cur_bg, TEXT_GRAY, sp))
+
+                if dismiss_bloom is not None and progress >= 0.44:
+                    d_poly, d_img, d_txt, dcx, dcy, dw_p, dh_p, d_fill, d_fg, dy_sh, swapped = dismiss_bloom
+                    dp = min(1.0, (progress - 0.44) / 0.44)
+                    rcx = dcx - vis_x0
+                    rcy = dcy - vis_y0
+                    if dp >= 0.98 and d_img is not None:
+                        if not swapped:
+                            shrinker.itemconfigure(d_poly, state="hidden")
+                            shrinker.itemconfigure(d_img, state="normal")
+                            shrinker.tag_raise(d_txt, d_img)
+                            dismiss_bloom[10] = True
+                        shrinker.coords(d_img, round(rcx), round(rcy + dy_sh))
+                        shrinker.coords(d_txt, round(rcx), round(rcy + dy_sh))
+                        shrinker.itemconfigure(d_txt, state="normal", fill=d_fg)
+                    else:
+                        pe = max(0.0, ease_out_elastic(dp, damping=5.0, frequency=1.20))
+                        bw_c = max(2.0, dw_p * pe)
+                        bh_c = max(2.0, dh_p * pe)
+                        shrinker.coords(d_poly, *_pill_pts(rcx, rcy, bw_c, bh_c, min(10.0, bw_c / 2.0, bh_c / 2.0)))
+                        shrinker.itemconfigure(d_poly, state="normal")
+                        tf = max(0.0, min(1.0, (dp - 0.25) / 0.55))
+                        shrinker.coords(d_txt, round(rcx), round(rcy + dy_sh))
+                        shrinker.itemconfigure(d_txt, state="normal", fill=blend_colour(d_fill, d_fg, tf))
             elif not preview_hidden[0]:
                 if progress >= 0.35:
                     shrinker.delete(cat_item, title_item)
@@ -2758,8 +3408,8 @@ class EffectsMixin:
                 spent_ms = (monotonic() - frame_start) * 1000.0
                 self.after(self._next_frame_delay(spent_ms, frame_ms), draw_shrink)
             else:
-                # Let the final settled frame paint before swapping cleanly to the live mini-bar.
-                self.after(32 if is_mini else 16, cleanup)
+                # Hold settled on exact final pixels before silently swapping to the live mini-bar.
+                self.after(90 if is_mini else 16, cleanup)
 
         draw_shrink()
 

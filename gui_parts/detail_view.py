@@ -116,7 +116,15 @@ class DetailViewMixin:
                 col_t = max(0.0, min(1.0, eased))
                 colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, col_t)
                 play_canvas.delete("all")
-                play_canvas.create_oval(inset, inset, size - inset, size - inset, fill=colour, outline="")
+                sq_x0, sq_y0 = inset, inset
+                sq_x1, sq_y1 = size - inset, size - inset
+                sq_r = max(6.0, min((sq_x1 - sq_x0) * 0.24, (sq_x1 - sq_x0) / 2.0))
+                sq_pts = (
+                    sq_x0 + sq_r, sq_y0, sq_x1 - sq_r, sq_y0, sq_x1, sq_y0, sq_x1, sq_y0 + sq_r,
+                    sq_x1, sq_y1 - sq_r, sq_x1, sq_y1, sq_x1 - sq_r, sq_y1, sq_x0 + sq_r, sq_y1,
+                    sq_x0, sq_y1, sq_x0, sq_y1 - sq_r, sq_x0, sq_y0 + sq_r, sq_x0, sq_y0,
+                )
+                play_canvas.create_polygon(*sq_pts, smooth=True, fill=colour, outline="")
                 tri_scale = 1.0 + 0.10 * eased
                 cx, cy = size * 0.50, size * 0.50
                 pts = [
