@@ -141,7 +141,7 @@ class WidgetsMixin:
         button._hover_step = 0
         button._hover_target = 0
         self.style_rounded_button(button, face, ORANGE_HL if primary else SECONDARY_HOVER_BG)
-        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 5))
+        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 10))
         button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
         button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
         return button
@@ -157,7 +157,7 @@ class WidgetsMixin:
             button._hover_job = None
 
     def animate_button_hover(self, button, target_step):
-        """Ease a button's hover state smoothly toward target_step (0..5) with shared cached frames."""
+        """Ease a button's hover state smoothly toward target_step (0..6) with elastic pop-up."""
         if not button.winfo_exists():
             return
         if target_step > 0 and (
@@ -188,32 +188,38 @@ class WidgetsMixin:
             button._hover_step = current
             self._apply_button_hover_frame(button, current)
             if current != target:
-                button._hover_job = self.after(self._anim_frame_interval(18), step_frame)
+                button._hover_job = self.after(self._anim_frame_interval(16), step_frame)
 
         step_frame()
 
     def _apply_button_hover_frame(self, button, step):
-        """Render a single quantized hover frame so enter and leave share cached PhotoImages."""
+        """Render a single bouncy elastic pop-up hover frame with overshoot, lift, and soft shadow."""
         face, hover = button._rounded_colours
         width, height = button._hover_size
         base_fg = button._hover_base_fg
-        t = max(0.0, min(1.0, step / 5.0))
-        # Quantize to 5 shared levels (0.0, 0.25, 0.5, 0.75, 1.0) to slash PhotoImage churn on low-end devices.
-        raw_eased = ease_out_elastic(t, damping=5.0, frequency=1.10) if getattr(button, "_hover_target", 0) > 0 else 1.0 - (1.0 - t) ** 2
-        eased = max(0.0, min(1.0, round(raw_eased * 4.0) / 4.0))
-        colour = blend_colour(face, hover, eased)
-        inset = max(1, min(3, round(3.0 - 2.0 * eased)))
+        t = max(0.0, min(1.0, step / 10.0))
+        # Lively damped elastic spring on enter (clear pop-up overshoot + mini-bounce settle); snappy ease-out on leave.
+        if getattr(button, "_hover_target", 0) > 0:
+            raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65)
+        else:
+            raw_eased = 1.0 - (1.0 - t) ** 2.4
+        # Quantize colour blend to 5 shared levels while preserving full elastic overshoot for size & lift.
+        color_t = max(0.0, min(1.0, round(max(0.0, min(1.0, raw_eased)) * 4.0) / 4.0))
+        colour = blend_colour(face, hover, color_t)
+        # Resting inset=5 -> overshoots to 0 at spring peak -> rebounds & settles cleanly at inset=2.
+        inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
+        lift = max(0, min(3, round(2.2 * raw_eased)))
         y_shift = getattr(button, "_hover_y_shift", 0)
-        image = self.rounded_button_image(width, height, colour, inset=inset, y_shift=y_shift)
+        image = self.rounded_button_image(width, height, colour, inset=inset, y_shift=y_shift, lift=lift)
         button._current_image = image
         config = {"image": image}
         target_fg = getattr(button, "_hover_target_fg", TEXT_WHITE)
         if isinstance(base_fg, str) and base_fg.startswith("#") and len(base_fg) == 7:
             # Keep text high-contrast when swapping between white and black foregrounds on hover.
             if base_fg.lower() != target_fg.lower() and target_fg.lower() == "#000000":
-                config["fg"] = target_fg if eased >= 0.45 else base_fg
+                config["fg"] = target_fg if color_t >= 0.45 else base_fg
             else:
-                config["fg"] = blend_colour(base_fg, target_fg, eased)
+                config["fg"] = blend_colour(base_fg, target_fg, color_t)
         button.configure(**config)
 
     def _get_cached_font(self, font_spec):
@@ -242,24 +248,30 @@ class WidgetsMixin:
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
-        # Optical vertical compensation: shift the pill up slightly so text (whose descender space
-        # sits below the baseline) appears dead-center inside the rounded pill.
-        y_shift = max(0, min(3, round(metrics.metrics("descent") * 0.35)))
+        # Optical vertical compensation: labels without descenders (e.g. ALL-CAPS nav buttons like HOME)
+        # sit ~half the font's descent too high under compound="center"; labels with descenders need less.
+        has_descender = any(ch in text for ch in "gjpqy,;")
+        descent = metrics.metrics("descent")
+        y_shift = max(0, min(4, round(descent * (0.25 if has_descender else 0.50))))
         button._hover_size = (width, height)
         button._hover_y_shift = y_shift
-        button._normal_image = self.rounded_button_image(width, height, face, inset=3, y_shift=y_shift)
+        button._normal_image = self.rounded_button_image(width, height, face, inset=5, y_shift=y_shift, lift=0)
         button.configure(image=button._normal_image)
 
-    def rounded_button_image(self, width, height, colour, inset=3, y_shift=0):
-        """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage for a button state."""
-        key = (width, height, colour, inset, y_shift)
+    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0):
+        """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
+        key = (width, height, colour, inset, y_shift, lift)
         if key not in self.button_images:
-            # Reserve 3px transparent margin per side so hover expansion never shifts layout,
+            # Reserve 6px transparent margin per side so elastic hover overshoot & shadow never shift layout,
             # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
-            canvas_w = width + 6
-            canvas_h = height + 6 + y_shift * 2
-            left, top = inset, inset
-            right, bottom = canvas_w - inset, height + 6 - inset
+            margin = 6
+            canvas_w = width + margin * 2
+            canvas_h = height + margin * 2 + y_shift * 2
+            left = inset
+            right = canvas_w - inset
+            # Expand symmetrically around the text (no vertical pill shift) so text stays dead-center on hover.
+            top = inset
+            bottom = height + margin * 2 - inset
             pill_w, pill_h = right - left, bottom - top
             radius = min(10, pill_h // 2, pill_w // 2)
             image = None
@@ -272,6 +284,20 @@ class WidgetsMixin:
                 ss = 3
                 hi = Image.new("RGBA", (canvas_w * ss, canvas_h * ss), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(hi)
+                # Subtle translucent drop shadow underneath the pill when popped out on hover.
+                if lift > 0:
+                    sh_drop = min(3, lift + 1) * ss
+                    sh_alpha = 50 if lift == 1 else (75 if lift == 2 else 95)
+                    draw.rounded_rectangle(
+                        (
+                            left * ss + ss,
+                            top * ss + sh_drop,
+                            right * ss - 1 - ss,
+                            min(canvas_h * ss - 1, bottom * ss - 1 + sh_drop),
+                        ),
+                        radius=radius * ss,
+                        fill=(0, 0, 0, sh_alpha),
+                    )
                 draw.rounded_rectangle(
                     (left * ss, top * ss, right * ss - 1, bottom * ss - 1),
                     radius=radius * ss,
@@ -1101,7 +1127,7 @@ class WidgetsMixin:
             blend_colour(rest_bg, ORANGE_ACCENT, 0.07)
             if is_light else blend_colour(rest_bg, "#ffffff", 0.06)
         )
-        base_inset = 3
+        base_inset = 5
         card_frame.set_inset(base_inset)
         hover_state = {
             "step": 0,
@@ -1151,12 +1177,13 @@ class WidgetsMixin:
             cur += 1 if tgt > cur else -1
             hover_state["step"] = cur
 
-            t = cur / 4.0
-            eased = 1.0 - (1.0 - t) ** 2 if tgt > 0 else t * t * (3.0 - 2.0 * t)
-            inset = max(0, min(base_inset, round(base_inset * (1.0 - eased))))
-            cur_bg = blend_colour(rest_bg, hover_bg, eased)
-            cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, eased)
-            cur_title = blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.55)
+            t = cur / 10.0
+            raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if tgt > 0 else 1.0 - (1.0 - t) ** 2.4
+            color_t = max(0.0, min(1.0, raw_eased))
+            inset = max(0, min(base_inset, round(base_inset - 3.0 * raw_eased)))
+            cur_bg = blend_colour(rest_bg, hover_bg, color_t)
+            cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, color_t)
+            cur_title = blend_colour(TEXT_WHITE, ORANGE_HL, color_t * 0.55)
 
             if inset != hover_state["last_inset"]:
                 card_frame.set_inset(inset)
@@ -1183,7 +1210,7 @@ class WidgetsMixin:
                 hover_state["last_title"] = cur_title
 
             if cur != tgt:
-                hover_state["job"] = self.after(self._anim_frame_interval(18), apply_frame)
+                hover_state["job"] = self.after(self._anim_frame_interval(16), apply_frame)
 
         def set_hover_target(target):
             hover_state["target"] = target
@@ -1195,7 +1222,7 @@ class WidgetsMixin:
                         pass
                     hover_state["job"] = None
                 if hover_state["step"] != target:
-                    hover_state["step"] = max(0, target - 1) if target > hover_state["step"] else min(4, target + 1)
+                    hover_state["step"] = max(0, target - 1) if target > hover_state["step"] else min(10, target + 1)
                     apply_frame()
                 return
             if hover_state["job"] is None and hover_state["step"] != target:
@@ -1211,7 +1238,7 @@ class WidgetsMixin:
                 except tk.TclError:
                     pass
                 hover_state["leave_job"] = None
-            set_hover_target(4)
+            set_hover_target(10)
 
         def on_leave(_event=None):
             if hover_state["leave_job"] is not None:
@@ -1495,7 +1522,7 @@ class WidgetsMixin:
                 y1 = y0 + card_h
 
                 bg_item = grid_canvas.create_polygon(
-                    rounded_pts(x0 + 1, y0 + 1, x1 - 1, y1 - 1, 12),
+                    rounded_pts(x0 + 4, y0 + 4, x1 - 4, y1 - 4, 12),
                     smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
                 )
 
@@ -1583,6 +1610,8 @@ class WidgetsMixin:
                         "base": base_c,
                         "hover": hov_c,
                         "action": action,
+                        "step": 0,
+                        "target": 0,
                     })
 
                 if ratings_mode:
@@ -1627,6 +1656,8 @@ class WidgetsMixin:
                     "bg_item": bg_item,
                     "title_item": title_item,
                     "buttons": buttons,
+                    "step": 0,
+                    "target": 0,
                     "open_action": (
                         lambda tid=pid, t=title, c=category, cp=card_proxy, cvp=cover_proxy, tp=title_proxy:
                         self.open_podcast_detail(tid, t, c, source_card=cp, source_cover=cvp, source_title=tp)
@@ -1642,6 +1673,65 @@ class WidgetsMixin:
                     (ex0 + ex1) / 2.0, ey, text=no_more_txt, fill="#777b83", font=end_font,
                 )
 
+        hover_loop = {"job": None}
+
+        def cancel_hover_loop(_event=None):
+            if hover_loop["job"] is not None:
+                try:
+                    self.after_cancel(hover_loop["job"])
+                except tk.TclError:
+                    pass
+                hover_loop["job"] = None
+
+        grid_canvas.bind("<Destroy>", cancel_hover_loop, add="+")
+
+        def paint_card_hover(c):
+            step = c["step"]
+            t = step / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if c["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            # Symmetrically spring the card border from inset=4 -> 0 overshoot -> settle at 1.5.
+            inset = max(0.0, min(4.0, 4.0 - 2.6 * raw))
+            x0, y0, x1, y1 = c["rect"]
+            grid_canvas.coords(c["bg_item"], *rounded_pts(x0 + inset, y0 + inset, x1 - inset, y1 - inset, 12))
+            grid_canvas.itemconfigure(
+                c["bg_item"],
+                fill=blend_colour(CARD_BG, hover_bg_col, col_t),
+                outline=blend_colour(BORDER_LINE, ORANGE_ACCENT, col_t),
+            )
+            grid_canvas.itemconfigure(c["title_item"], fill=blend_colour(TEXT_WHITE, ORANGE_HL, col_t))
+
+        def paint_btn_hover(b):
+            step = b["step"]
+            t = step / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if b["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            # Symmetrically pop the card button outward around its centered text.
+            grow = max(0.0, min(3.5, 2.2 * raw))
+            bx0, by0, bx1, by1 = b["rect"]
+            grid_canvas.coords(b["poly"], *rounded_pts(bx0 - grow, by0 - grow, bx1 + grow, by1 + grow, 8 + grow * 0.4))
+            grid_canvas.itemconfigure(b["poly"], fill=blend_colour(b["base"], b["hover"], col_t))
+
+        def tick_grid_hover():
+            hover_loop["job"] = None
+            if not grid_canvas.winfo_exists() or getattr(self, "_transition_active", False):
+                return
+            any_active = False
+            for c in state["cards"]:
+                if c["step"] != c["target"]:
+                    c["step"] += 1 if c["target"] > c["step"] else -1
+                    paint_card_hover(c)
+                    if c["step"] != c["target"]:
+                        any_active = True
+                for b in c["buttons"]:
+                    if b["step"] != b["target"]:
+                        b["step"] += 1 if b["target"] > b["step"] else -1
+                        paint_btn_hover(b)
+                        if b["step"] != b["target"]:
+                            any_active = True
+            if any_active:
+                hover_loop["job"] = self.after(self._anim_frame_interval(16), tick_grid_hover)
+
         def set_hover(card_idx, btn_idx):
             prev_c = state["hovered"]
             prev_b = state["hovered_btn"]
@@ -1651,23 +1741,35 @@ class WidgetsMixin:
                 pc, pb = prev_b
                 if pc < len(state["cards"]) and pb < len(state["cards"][pc]["buttons"]):
                     b = state["cards"][pc]["buttons"][pb]
-                    grid_canvas.itemconfigure(b["poly"], fill=b["base"])
+                    b["target"] = 0
+                    if self._is_reduced_motion():
+                        b["step"] = 0
+                        paint_btn_hover(b)
             if prev_c is not None and prev_c != card_idx and prev_c < len(state["cards"]):
                 c = state["cards"][prev_c]
-                grid_canvas.itemconfigure(c["bg_item"], fill=CARD_BG, outline=BORDER_LINE)
-                grid_canvas.itemconfigure(c["title_item"], fill=TEXT_WHITE)
+                c["target"] = 0
+                if self._is_reduced_motion():
+                    c["step"] = 0
+                    paint_card_hover(c)
             if card_idx is not None and card_idx < len(state["cards"]):
                 c = state["cards"][card_idx]
-                grid_canvas.itemconfigure(c["bg_item"], fill=hover_bg_col, outline=ORANGE_ACCENT)
-                grid_canvas.itemconfigure(c["title_item"], fill=ORANGE_HL)
+                c["target"] = 10
+                if self._is_reduced_motion():
+                    c["step"] = 10
+                    paint_card_hover(c)
                 if btn_idx is not None and btn_idx < len(c["buttons"]):
                     b = c["buttons"][btn_idx]
-                    grid_canvas.itemconfigure(b["poly"], fill=b["hover"])
+                    b["target"] = 10
+                    if self._is_reduced_motion():
+                        b["step"] = 10
+                        paint_btn_hover(b)
                 grid_canvas.configure(cursor="hand2")
             else:
                 grid_canvas.configure(cursor="")
             state["hovered"] = card_idx
             state["hovered_btn"] = (card_idx, btn_idx) if (card_idx is not None and btn_idx is not None) else None
+            if not self._is_reduced_motion() and hover_loop["job"] is None:
+                tick_grid_hover()
 
         def hit_test(x, y):
             for ci, c in enumerate(state["cards"]):

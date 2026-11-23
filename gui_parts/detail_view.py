@@ -107,14 +107,15 @@ class DetailViewMixin:
                 if not play_canvas.winfo_exists():
                     return
                 size = play_state["size"]
-                t = play_state["step"] / 6.0
-                # Smooth damped elastic spring stretches the play circle and settles seamlessly.
-                eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 2
-                inset = max(0.5, 5.0 - 3.5 * eased)
-                colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, eased)
+                t = play_state["step"] / 10.0
+                # Lively damped elastic spring stretches the play circle and settles seamlessly.
+                eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+                inset = max(0.5, 6.0 - 4.0 * eased)
+                col_t = max(0.0, min(1.0, eased))
+                colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, col_t)
                 play_canvas.delete("all")
                 play_canvas.create_oval(inset, inset, size - inset, size - inset, fill=colour, outline="")
-                tri_scale = 1.0 + 0.08 * eased
+                tri_scale = 1.0 + 0.10 * eased
                 cx, cy = size * 0.50, size * 0.50
                 pts = [
                     (size * 0.39, size * 0.26),
@@ -126,7 +127,7 @@ class DetailViewMixin:
                     scaled_pts.extend((cx + (px - cx) * tri_scale, cy + (py - cy) * tri_scale))
                 play_canvas.create_polygon(*scaled_pts, fill="#000000", outline="")
                 if listen_label.winfo_exists():
-                    listen_label.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, eased))
+                    listen_label.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, col_t))
 
             def animate_play_hover(target):
                 play_state["target"] = target
@@ -148,7 +149,7 @@ class DetailViewMixin:
                     play_state["step"] += 1 if play_state["target"] > play_state["step"] else -1
                     draw_play_button()
                     if play_state["step"] != play_state["target"]:
-                        play_state["job"] = self.after(self._anim_frame_interval(18), step_play)
+                        play_state["job"] = self.after(self._anim_frame_interval(16), step_play)
 
                 step_play()
 
@@ -161,7 +162,7 @@ class DetailViewMixin:
                     play_state["job"] = None
 
             for play_widget in (play_canvas, listen_label):
-                play_widget.bind("<Enter>", lambda _e: animate_play_hover(6))
+                play_widget.bind("<Enter>", lambda _e: animate_play_hover(10))
                 play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
             play_canvas.bind("<Destroy>", cancel_play_hover)
 

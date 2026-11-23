@@ -454,22 +454,23 @@ class PagesMixin:
                         state["cache"].clear()
 
                     step = state["step"]
-                    t = step / 4.0
-                    raw_eased = ease_out_elastic(t, damping=5.0, frequency=1.10) if state["target"] > 0 else 1.0 - (1.0 - t) ** 2
-                    # Quantize to 4 shared levels so enter/leave reuse cached gradient PhotoImages.
-                    level = max(0, min(3, round(raw_eased * 3.0)))
+                    t = step / 10.0
+                    raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if state["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+                    # Quantize colour blend to 4 shared levels while preserving full elastic pop-out overshoot for inset.
+                    level = max(0, min(3, round(max(0.0, min(1.0, raw_eased)) * 3.0)))
                     eased = level / 3.0
-                    inset = max(1, min(3, round(3.0 - 2.0 * eased)))
+                    inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
                     cur_bot = blend_colour(b_base, b_hi, eased)
                     cur_border = blend_colour(bd_base, acc, eased)
                     cur_ico_bg = blend_colour(ib_base, ib_hi, eased)
                     cur_act_fg = blend_colour("#ffffff", act_hi, eased)
 
-                    photo = state["cache"].get(level)
+                    cache_key = (level, inset)
+                    photo = state["cache"].get(cache_key)
                     if photo is None:
                         photo = make_gradient_card_photo(w, h, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
-                        state["cache"][level] = photo
+                        state["cache"][cache_key] = photo
                     cvs._grad_img = photo
                     cvs.itemconfigure(bi, image=photo)
 
@@ -537,7 +538,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(self._anim_frame_interval(18), step_card)
+                            state["job"] = self.after(self._anim_frame_interval(16), step_card)
 
                     step_card()
 
@@ -553,7 +554,7 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 4.0
+                    t = state["step"] / 10.0
                     start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
@@ -562,7 +563,7 @@ class PagesMixin:
                     )
 
                 card_canvas.bind("<Configure>", schedule_card_paint)
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(4))
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(10))
                 card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
                 card_canvas.bind("<Button-1>", open_genre)
                 card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -1559,6 +1560,7 @@ class PagesMixin:
             check_lbl.pack(fill="x", padx=3, pady=(0, 9))
             for sub_widget in (tile, *tile.winfo_children()):
                 sub_widget.bind("<Button-1>", lambda _e, name_val=g_name: self.toggle_genre_selection(name_val, counter_label))
+            self._attach_genre_tile_hover(tile, g_name, check_lbl, art_cnv)
             self.genre_elements[g_name] = (tile, check_lbl, art_cnv)
             genre_tiles.append(tile)
 
@@ -1603,6 +1605,100 @@ class PagesMixin:
             footer_pane, "Cancel",
             lambda: self.transition_to(self.show_home, "Home"), compact=True,
         ).pack(side="left", padx=9)
+
+    def _attach_genre_tile_hover(self, tile, genre_name, check_lbl, art_cnv):
+        """Attach a bouncy elastic pop-out hover spring to a selectable preference genre tile."""
+        base_inset = 5
+        tile.set_inset(base_inset)
+        hstate = {"step": 0, "target": 0, "job": None, "leave_job": None}
+
+        def cancel_jobs(_event=None):
+            for k in ("job", "leave_job"):
+                jid = hstate[k]
+                if jid is not None:
+                    try:
+                        self.after_cancel(jid)
+                    except tk.TclError:
+                        pass
+                    hstate[k] = None
+
+        def is_inside():
+            if not tile.winfo_exists():
+                return False
+            try:
+                px, py = tile.winfo_pointerxy()
+                w = tile.winfo_containing(px, py)
+            except tk.TclError:
+                return False
+            while w is not None:
+                if w is tile:
+                    return True
+                w = getattr(w, "master", None)
+            return False
+
+        def apply_frame():
+            hstate["job"] = None
+            if not tile.winfo_exists():
+                return
+            cur = hstate["step"]
+            tgt = hstate["target"]
+            if cur == tgt:
+                return
+            cur += 1 if tgt > cur else -1
+            hstate["step"] = cur
+            t = cur / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if tgt > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            inset = max(0, min(base_inset, round(base_inset - 3.0 * raw)))
+            tile.set_inset(inset)
+            is_active = genre_name in self.active_genres
+            rest_bg = SELECTED_BG if is_active else CARD_BG
+            rest_bd = ORANGE_ACCENT if is_active else BORDER_LINE
+            hi_bg = blend_colour(rest_bg, ORANGE_ACCENT if is_active else "#ffffff", 0.08)
+            cur_bg = blend_colour(rest_bg, hi_bg, col_t)
+            cur_bd = blend_colour(rest_bd, ORANGE_HL if is_active else ORANGE_ACCENT, col_t)
+            tile.set_surface(cur_bg, cur_bd)
+            if check_lbl.winfo_exists():
+                check_lbl.configure(bg=cur_bg)
+            if art_cnv.winfo_exists():
+                art_cnv.configure(bg=cur_bg)
+            if cur != tgt:
+                hstate["job"] = self.after(self._anim_frame_interval(16), apply_frame)
+
+        def set_target(tgt):
+            hstate["target"] = tgt
+            if self._is_reduced_motion():
+                cancel_jobs()
+                if hstate["step"] != tgt:
+                    hstate["step"] = max(0, tgt - 1) if tgt > hstate["step"] else min(10, tgt + 1)
+                    apply_frame()
+                return
+            if hstate["job"] is None and hstate["step"] != tgt:
+                apply_frame()
+
+        def on_enter(_e=None):
+            if getattr(self, "_transition_active", False) or self._is_scrolling():
+                return
+            if hstate["leave_job"] is not None:
+                try:
+                    self.after_cancel(hstate["leave_job"])
+                except tk.TclError:
+                    pass
+                hstate["leave_job"] = None
+            set_target(10)
+
+        def on_leave(_e=None):
+            if hstate["leave_job"] is not None:
+                try:
+                    self.after_cancel(hstate["leave_job"])
+                except tk.TclError:
+                    pass
+            hstate["leave_job"] = self.after(18, lambda: (hstate.__setitem__("leave_job", None), None if is_inside() else set_target(0)))
+
+        for w in (tile, tile.backdrop, check_lbl, art_cnv):
+            w.bind("<Enter>", on_enter, add="+")
+            w.bind("<Leave>", on_leave, add="+")
+        tile.bind("<Destroy>", cancel_jobs, add="+")
 
     def toggle_genre_selection(self, genre_name, counter_lbl):
         """Toggle a genre on or off in active_genres, enforcing the 5-genre cap."""

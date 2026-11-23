@@ -511,14 +511,14 @@ class LoginViewMixin:
             self.show_home()
             return
         face, hover = getattr(login_button, "_rounded_colours", (ORANGE_ACCENT, ORANGE_HL))
-        hover_t = getattr(login_button, "_hover_step", 0) / 5.0
+        hover_t = getattr(login_button, "_hover_step", 0) / 10.0
         hover_eased = (
-            ease_out_elastic(hover_t, damping=4.8, frequency=1.15)
+            ease_out_elastic(hover_t, damping=3.0, frequency=1.65)
             if getattr(login_button, "_hover_target", 0) > 0
-            else 1.0 - (1.0 - hover_t) ** 3
+            else 1.0 - (1.0 - hover_t) ** 2.4
         )
-        start_colour = blend_colour(face, hover, hover_eased)
-        start_inset = max(0, min(3, round(3.0 - 2.0 * hover_eased)))
+        start_colour = blend_colour(face, hover, max(0.0, min(1.0, hover_eased)))
+        start_inset = max(0, min(5, round(5.0 - 3.0 * hover_eased)))
         button_bg = login_button.cget("bg")
 
         win_x = self.winfo_rootx()
