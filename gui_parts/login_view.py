@@ -63,6 +63,7 @@ class LoginViewMixin:
 
         main_box = tk.Frame(self, bg=DARK_BG)
         main_box.pack(fill="both", expand=True, padx=58, pady=38)
+        self._login_main_box = main_box
 
         # Header row with the BBC Sounds logo on the left and tagline on the right.
         top_header = tk.Frame(main_box, bg=DARK_BG)
@@ -278,95 +279,157 @@ class LoginViewMixin:
             pass
 
     def _expand_login_in_window(self, start_x, start_y, start_w, start_h, start_colour):
-        """Cross-platform in-window pill expansion for Linux (Wayland/X11), macOS, and low-end devices."""
+        """Expand the Continue button directly over the untouched login UI, then lift the curtain to reveal Home."""
         win_w = max(1, self.winfo_width())
         win_h = max(1, self.winfo_height())
         if win_w <= 1 or win_h <= 1 or self._is_reduced_motion():
             self.show_home()
             return
 
-        overlay = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        # Place the expanding surface ONLY over the Continue button so the login UI stays completely untouched around it.
+        overlay = tk.Frame(self, bg=start_colour, bd=0, highlightthickness=0)
         overlay._preserve_during_shell_build = True
-        overlay.place(x=0, y=0, width=win_w, height=win_h)
+        overlay.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(overlay)
-
-        pill_items = (
-            overlay.create_rectangle(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-            overlay.create_rectangle(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=start_colour, outline="", tags="pill"),
-        )
-
-        def set_pill(x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                overlay.coords(pill_items[0], x0, y0, x1, y1)
-                for extra in pill_items[1:]:
-                    overlay.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                overlay.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
-                overlay.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
-                overlay.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
-                overlay.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
-                overlay.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
-                overlay.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                overlay.itemconfigure("pill", fill=fill_col)
-
-        start_r = min(10, start_h // 2, start_w // 2)
-        set_pill(start_x, start_y, start_x + start_w, start_y + start_h, start_r)
-        # Paint the initial overlay frame immediately so clicking Continue feels instant.
         overlay.update_idletasks()
 
-        # Build Home underneath while covered by the lightweight in-window overlay.
         self._transition_active = True
-        self.show_home()
-        if not self.winfo_exists() or not overlay.winfo_exists():
-            self._transition_active = False
-            if overlay.winfo_exists():
-                overlay.destroy()
-            return
-        tk.Misc.lift(overlay)
+        coil_w = max(24.0, start_w * 0.84)
+        coil_h = max(18.0, start_h * 0.82)
+        coil_x = start_x + (start_w - coil_w) / 2.0
+        coil_y = start_y + (start_h - coil_h) / 2.0
+        charged_col = blend_colour(start_colour, ORANGE_HL, 0.85)
 
-        duration = 0.360
+        total_dur = 0.600  # 0..0.18 coil -> 0.18..0.60 expand -> subtle loading pulse + build Home -> 0.60..1.00 lift curtain.
+        windup_end = 0.18
+        expand_end = 0.60
         anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [start_colour]
+        last_rect = [None]
+        home_built = [False]
+        spinner_state = {"canvas": None, "arc": None, "angle": 0.0, "job": None}
+
+        def stop_spinner():
+            if spinner_state["job"] is not None:
+                try:
+                    self.after_cancel(spinner_state["job"])
+                except tk.TclError:
+                    pass
+                spinner_state["job"] = None
 
         def finish():
+            stop_spinner()
             if overlay.winfo_exists():
                 try:
+                    tk.Misc.lower(overlay)
+                    self.update_idletasks()
                     overlay.destroy()
                 except tk.TclError:
                     pass
             self._finish_transition()
+
+        def spin_loader():
+            spinner_state["job"] = None
+            sc = spinner_state["canvas"]
+            if sc is None or not sc.winfo_exists():
+                return
+            spinner_state["angle"] = (spinner_state["angle"] - 14.0) % 360.0
+            try:
+                sc.itemconfigure(spinner_state["arc"], start=spinner_state["angle"])
+            except tk.TclError:
+                return
+            spinner_state["job"] = self.after(16, spin_loader)
 
         def draw_frame():
             if not overlay.winfo_exists() or not self.winfo_exists():
                 finish()
                 return
             t0 = monotonic()
-            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, t0 - anim_st["last_t"]))
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.036, t0 - anim_st["last_t"]))
             anim_st["last_t"] = t0
-            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / total_dur)
             p = anim_st["progress"]
-            eased = 1.0 - (1.0 - p) ** 3
-            cur_x = round(start_x * (1.0 - eased))
-            cur_y = round(start_y * (1.0 - eased))
-            cur_w = max(1, min(win_w, round(start_w + (win_w - start_w) * eased)))
-            cur_h = max(1, min(win_h, round(start_h + (win_h - start_h) * eased)))
-            cur_r = round(start_r * (1.0 - eased))
-            cur_bg = blend_colour(start_colour, DARK_BG, min(1.0, p / 0.85))
-            fill_upd = cur_bg if cur_bg != last_bg[0] else None
-            set_pill(cur_x, cur_y, cur_x + cur_w, cur_y + cur_h, cur_r, fill_upd)
-            if fill_upd is not None:
-                last_bg[0] = fill_upd
+
+            if p < windup_end:
+                u = p / windup_end
+                e = 1.0 - (1.0 - u) ** 2
+                cx = round(start_x + (coil_x - start_x) * e)
+                cy = round(start_y + (coil_y - start_y) * e)
+                cw = max(1, round(start_w + (coil_w - start_w) * e))
+                ch = max(1, round(start_h + (coil_h - start_h) * e))
+                cur_bg = blend_colour(start_colour, charged_col, e)
+                rect = (cx, cy, cw, ch)
+                if rect != last_rect[0]:
+                    overlay.place(x=cx, y=cy, width=cw, height=ch)
+                    last_rect[0] = rect
+                if cur_bg != last_bg[0]:
+                    overlay.configure(bg=cur_bg)
+                    last_bg[0] = cur_bg
+            elif p < expand_end:
+                u = (p - windup_end) / (expand_end - windup_end)
+                e = 1.0 - (1.0 - u) ** 3
+                cx = round(coil_x * (1.0 - e))
+                cy = round(coil_y * (1.0 - e))
+                cw = max(1, min(win_w, round(coil_w + (win_w - coil_w) * e)))
+                ch = max(1, min(win_h, round(coil_h + (win_h - coil_h) * e)))
+                cur_bg = blend_colour(charged_col, DARK_BG, min(1.0, u / 0.88))
+                rect = (cx, cy, cw, ch)
+                if rect != last_rect[0]:
+                    overlay.place(x=cx, y=cy, width=cw, height=ch)
+                    last_rect[0] = rect
+                if cur_bg != last_bg[0]:
+                    overlay.configure(bg=cur_bg)
+                    last_bg[0] = cur_bg
+            else:
+                if not home_built[0]:
+                    home_built[0] = True
+                    overlay.configure(bg=DARK_BG)
+                    overlay.place(x=0, y=0, width=win_w, height=win_h)
+                    tk.Frame(overlay, bg=ORANGE_ACCENT, height=3).pack(side="bottom", fill="x")
+                    # Subtle centered loading ring + caption shown while Home builds underneath.
+                    loader_box = tk.Frame(overlay, bg=DARK_BG)
+                    loader_box.place(relx=0.5, rely=0.5, anchor="center")
+                    spin_cvs = tk.Canvas(loader_box, width=44, height=44, bg=DARK_BG, bd=0, highlightthickness=0)
+                    spin_cvs.pack()
+                    spin_cvs.create_oval(5, 5, 39, 39, outline=blend_colour(DARK_BG, "#ffffff", 0.14), width=3)
+                    arc_id = spin_cvs.create_arc(
+                        5, 5, 39, 39, start=90, extent=105, style="arc", outline=ORANGE_ACCENT, width=3,
+                    )
+                    tk.Label(
+                        loader_box, text="Loading...", font=(DEFAULT_FONT, 10),
+                        fg=TEXT_GRAY, bg=DARK_BG,
+                    ).pack(pady=(10, 0))
+                    spinner_state["canvas"] = spin_cvs
+                    spinner_state["arc"] = arc_id
+                    overlay.update_idletasks()
+                    spin_loader()
+
+                    def _build_and_reveal():
+                        if not self.winfo_exists() or not overlay.winfo_exists():
+                            finish()
+                            return
+                        self.show_home()
+                        if not self.winfo_exists() or not overlay.winfo_exists():
+                            finish()
+                            return
+                        tk.Misc.lift(overlay)
+                        self.update_idletasks()
+                        tk.Misc.lift(overlay)
+                        anim_st["last_t"] = monotonic()
+                        self.after(16, draw_frame)
+
+                    # Yield briefly so the loading spinner visibly paints before Home builds.
+                    self.after(24, _build_and_reveal)
+                    return
+
+                u = (p - expand_end) / (1.0 - expand_end)
+                e = 1.0 - (1.0 - u) ** 3.2
+                new_y = round(-win_h * e)
+                rect = (0, new_y, win_w, win_h)
+                if rect != last_rect[0]:
+                    overlay.place(x=0, y=new_y, width=win_w, height=win_h)
+                    last_rect[0] = rect
+
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
                 self.after(self._next_frame_delay(spent, 16), draw_frame)
@@ -376,7 +439,7 @@ class LoginViewMixin:
         self.after(1, draw_frame)
 
     def _sign_out_in_window(self):
-        """Cross-platform in-window sign-out transition for Linux (Wayland/X11), macOS, and low-end devices."""
+        """Shrink an overlay directly into the Continue button while revealing the live login UI around it."""
         win_w = max(1, self.winfo_width())
         win_h = max(1, self.winfo_height())
         if win_w <= 1 or win_h <= 1 or self._is_reduced_motion():
@@ -384,10 +447,12 @@ class LoginViewMixin:
             self.show_login()
             return
 
-        overlay = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        start_col = blend_colour(DARK_BG, "#ffffff", 0.06)
+        overlay = tk.Frame(self, bg=start_col, bd=0, highlightthickness=2, highlightbackground=ORANGE_ACCENT)
         overlay._preserve_during_shell_build = True
         overlay.place(x=0, y=0, width=win_w, height=win_h)
         tk.Misc.lift(overlay)
+        overlay.update_idletasks()
 
         self._transition_active = True
         self.show_login()
@@ -398,65 +463,38 @@ class LoginViewMixin:
                 overlay.destroy()
             return
         self.apply_interface_scaling(force=True)
+        tk.Misc.lift(overlay)
         self.update_idletasks()
-        # Paint the login vinyl graphic statically while hidden behind overlay (spin stays paused until finish).
-        disc_canvas = getattr(self, "_login_disc_canvas", None)
-        if disc_canvas is not None and disc_canvas.winfo_exists():
-            class _StaticPaintEvent:
-                widget = disc_canvas
-                width = max(240, disc_canvas.winfo_width())
-                height = max(240, disc_canvas.winfo_height())
-            self.paint_vinyl_record(_StaticPaintEvent())
-            self.update_idletasks()
         tk.Misc.lift(overlay)
 
         target_btn = getattr(self, "_login_button", None)
         if target_btn is not None and target_btn.winfo_exists() and target_btn.winfo_width() > 1:
-            end_x = target_btn.winfo_rootx() - self.winfo_rootx() + 3
-            end_y = target_btn.winfo_rooty() - self.winfo_rooty() + 3
-            end_w = max(1, target_btn.winfo_width() - 6)
-            end_h = max(1, target_btn.winfo_height() - 6)
+            y_sh = getattr(target_btn, "_hover_y_shift", 0)
+            h_sz = getattr(target_btn, "_hover_size", None)
+            end_w = (h_sz[0] + 2) if h_sz else max(12, target_btn.winfo_width() - 10)
+            end_h = (h_sz[1] + 2) if h_sz else max(12, target_btn.winfo_height() - 10 - y_sh * 2)
+            end_x = (target_btn.winfo_rootx() - self.winfo_rootx()) + (target_btn.winfo_width() - end_w) / 2.0
+            end_y = (target_btn.winfo_rooty() - self.winfo_rooty()) + (target_btn.winfo_height() - end_h) / 2.0 - y_sh
         else:
-            end_x, end_y, end_w, end_h = 80, win_h // 2, 160, 44
+            end_x, end_y, end_w, end_h = 80.0, win_h / 2.0, 160.0, 44.0
 
-        pill_items = (
-            overlay.create_rectangle(0, 0, win_w, win_h, fill=DARK_BG, outline="", tags="pill"),
-            overlay.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            overlay.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-        )
+        impact_col = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.75)
+        squash_w = max(24.0, end_w * 0.78)
+        squash_h = max(18.0, end_h * 0.76)
+        squash_x = end_x + (end_w - squash_w) / 2.0
+        squash_y = end_y + (end_h - squash_h) / 2.0
 
-        def set_pill(x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                overlay.coords(pill_items[0], x0, y0, x1, y1)
-                for extra in pill_items[1:]:
-                    overlay.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                overlay.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
-                overlay.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
-                overlay.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
-                overlay.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
-                overlay.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
-                overlay.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                overlay.itemconfigure("pill", fill=fill_col)
-
-        duration = 0.320
+        total_dur = 0.500  # 0..0.64 contract while revealing live login screen -> 0.64..1.00 elastic spring settle.
+        shrink_end = 0.64
         anim_st = {"progress": 0.0, "last_t": None}
-        last_bg = [DARK_BG]
-        end_r = min(10, end_h // 2, end_w // 2)
+        last_bg = [start_col]
+        last_rect = [None]
 
         def finish():
             if overlay.winfo_exists():
                 try:
+                    tk.Misc.lower(overlay)
+                    self.update_idletasks()
                     overlay.destroy()
                 except tk.TclError:
                     pass
@@ -464,37 +502,56 @@ class LoginViewMixin:
             self._finish_transition()
             disc = getattr(self, "_login_disc_canvas", None)
             if disc is not None and disc.winfo_exists():
-                resume = getattr(disc, "_resume_spin", None)
-                if resume is not None:
-                    resume()
-                else:
-                    class _PaintEvt:
-                        widget = disc
-                        width = max(240, disc.winfo_width())
-                        height = max(240, disc.winfo_height())
-                    self.paint_vinyl_record(_PaintEvt())
+                def _start_vinyl():
+                    if not disc.winfo_exists():
+                        return
+                    resume = getattr(disc, "_resume_spin", None)
+                    if resume is not None:
+                        resume()
+                    else:
+                        class _PaintEvt:
+                            widget = disc
+                            width = max(240, disc.winfo_width())
+                            height = max(240, disc.winfo_height())
+                        self.paint_vinyl_record(_PaintEvt())
+                self.after(16, _start_vinyl)
 
         def draw_frame():
             if not overlay.winfo_exists() or not self.winfo_exists():
                 finish()
                 return
             t0 = monotonic()
-            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, t0 - anim_st["last_t"]))
+            dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.036, t0 - anim_st["last_t"]))
             anim_st["last_t"] = t0
-            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / duration)
+            anim_st["progress"] = min(1.0, anim_st["progress"] + dt / total_dur)
             p = anim_st["progress"]
-            eased = p * p * (3.0 - 2.0 * p)
-            cur_x = round(end_x * eased)
-            cur_y = round(end_y * eased)
-            cur_w = max(1, round(win_w + (end_w - win_w) * eased))
-            cur_h = max(1, round(win_h + (end_h - win_h) * eased))
-            cur_r = round(end_r * eased)
-            cur_bg = blend_colour(DARK_BG, ORANGE_ACCENT, min(1.0, p / 0.85))
-            fill_upd = cur_bg if cur_bg != last_bg[0] else None
-            # Keep overlay Canvas fixed-size (zero X11 ConfigureNotify resizes per frame) and animate items inside it.
-            set_pill(cur_x, cur_y, cur_x + cur_w, cur_y + cur_h, cur_r, fill_upd)
-            if fill_upd is not None:
-                last_bg[0] = fill_upd
+
+            if p < shrink_end:
+                u = p / shrink_end
+                e = 4.0 * u ** 3 if u < 0.5 else 1.0 - ((-2.0 * u + 2.0) ** 3) / 2.0
+                cx = round(squash_x * e)
+                cy = round(squash_y * e)
+                cw = max(1, round(win_w + (squash_w - win_w) * e))
+                ch = max(1, round(win_h + (squash_h - win_h) * e))
+                cur_bg = blend_colour(start_col, impact_col, min(1.0, u / 0.88))
+            else:
+                u = (p - shrink_end) / (1.0 - shrink_end)
+                sp = ease_out_elastic(u, damping=3.4, frequency=1.55)
+                cw = max(12, round(squash_w + (end_w - squash_w) * sp))
+                ch = max(12, round(squash_h + (end_h - squash_h) * sp))
+                cx = round(end_x + (end_w - cw) / 2.0)
+                cy = round(end_y + (end_h - ch) / 2.0)
+                cur_bg = blend_colour(impact_col, ORANGE_ACCENT, min(1.0, u / 0.70))
+
+            # Shrink the overlay widget itself so the real login screen is progressively revealed all around it.
+            rect = (cx, cy, cw, ch)
+            if rect != last_rect[0]:
+                overlay.place(x=cx, y=cy, width=cw, height=ch)
+                last_rect[0] = rect
+            if cur_bg != last_bg[0]:
+                overlay.configure(bg=cur_bg, highlightbackground=cur_bg if p >= shrink_end else ORANGE_ACCENT)
+                last_bg[0] = cur_bg
+
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
                 self.after(self._next_frame_delay(spent, 16), draw_frame)
