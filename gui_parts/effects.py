@@ -601,9 +601,24 @@ class EffectsMixin:
             except (tk.TclError, ValueError, TypeError):
                 pass
 
+    def _sync_scrollregion(self):
+        """Ensure the active shell scroll canvas reflects the current page's full height."""
+        canvas_pane = getattr(self, "_shell_canvas", None)
+        page = getattr(self, "current_page", None)
+        if canvas_pane is None or page is None or not canvas_pane.winfo_exists() or not page.winfo_exists():
+            return
+        try:
+            extra_bottom = 96 if getattr(self, "_active_nav_tab", "") != "Programme details" else 0
+            w = max(1, canvas_pane.winfo_width(), page.winfo_reqwidth())
+            h = max(1, page.winfo_height(), page.winfo_reqheight()) + extra_bottom
+            canvas_pane.configure(scrollregion=(0, 0, w, h))
+        except tk.TclError:
+            pass
+
     def _finish_transition(self):
-        """Mark the active transition complete and immediately resume any queued batch rendering."""
+        """Mark the active transition complete, sync scrollregion, and resume any queued batch rendering."""
         self._transition_active = False
+        self._sync_scrollregion()
         if self._render_queue:
             if self._pending_render_id is not None:
                 try:
@@ -856,6 +871,7 @@ class EffectsMixin:
                 canvas_pane.configure(scrollregion=(0, 0, event.width, event.height + extra_bottom))
 
         content_pane.bind("<Configure>", update_scrollregion)
+        canvas_pane.after_idle(self._sync_scrollregion)
         self.current_page = content_pane
         self._page_transition_target = (canvas_pane, canvas_window)
         self._tab_order = [label for label, _ in nav_links]
@@ -2360,11 +2376,18 @@ class EffectsMixin:
 
         def refresh_max_scroll():
             try:
+                page = getattr(self, "current_page", None)
+                extra_bottom = 96 if getattr(self, "_active_nav_tab", "") != "Programme details" else 0
                 region = canvas.cget("scrollregion")
-                if region:
-                    bottom = int(float(region.split()[3]))
-                    cached_max[0] = max(0, bottom - canvas.winfo_height())
-                    return cached_max[0]
+                bottom = int(float(region.split()[3])) if region else 0
+                if page is not None and page.winfo_exists():
+                    needed = max(page.winfo_height(), page.winfo_reqheight()) + extra_bottom
+                    if needed > bottom + 2 or bottom <= 1:
+                        self._sync_scrollregion()
+                        region = canvas.cget("scrollregion")
+                        bottom = int(float(region.split()[3])) if region else needed
+                cached_max[0] = max(0, bottom - canvas.winfo_height())
+                return cached_max[0]
             except (tk.TclError, ValueError, IndexError):
                 pass
             cached_max[0] = 0
