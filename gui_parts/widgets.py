@@ -248,11 +248,13 @@ class WidgetsMixin:
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
-        # Optical vertical compensation: labels without descenders (e.g. ALL-CAPS nav buttons like HOME)
-        # sit ~half the font's descent too high under compound="center"; labels with descenders need less.
-        has_descender = any(ch in text for ch in "gjpqy,;")
-        descent = metrics.metrics("descent")
-        y_shift = max(0, min(4, round(descent * (0.25 if has_descender else 0.50))))
+        # Optical vertical compensation for Linux/macOS FreeType font metrics (Windows GDI already centers vertically).
+        if sys.platform == "win32":
+            y_shift = 0
+        else:
+            has_descender = any(ch in text for ch in "gjpqy,;")
+            descent = metrics.metrics("descent")
+            y_shift = max(0, min(4, round(descent * (0.25 if has_descender else 0.50))))
         button._hover_size = (width, height)
         button._hover_y_shift = y_shift
         button._normal_image = self.rounded_button_image(width, height, face, inset=5, y_shift=y_shift, lift=0)
@@ -338,9 +340,10 @@ class WidgetsMixin:
         sounds_font = (DEFAULT_FONT, -round(tile * 0.86), "bold")
         tile_metrics = self._get_cached_font(tile_font)
         sounds_metrics = self._get_cached_font(sounds_font)
-        # Shift uppercase glyphs down by ~half the font's descent so cap-height sits optically centered.
-        tile_y_nudge = tile_metrics.metrics("descent") * 0.45
-        sounds_y_nudge = sounds_metrics.metrics("descent") * 0.45
+        # On Linux/macOS (FreeType/Xft), shift uppercase glyphs down by ~half the descent so cap-height
+        # sits optically centered; Windows GDI already balances internal leading with descent.
+        tile_y_nudge = 0.0 if sys.platform == "win32" else tile_metrics.metrics("descent") * 0.45
+        sounds_y_nudge = 0.0 if sys.platform == "win32" else sounds_metrics.metrics("descent") * 0.45
 
         tiles_w = tile * 3 + gap * 2
         sounds_w = sounds_metrics.measure("SOUNDS")
@@ -1614,7 +1617,7 @@ class WidgetsMixin:
                         rounded_pts(bx0, by0, bx1, by1, 8),
                         smooth=True, fill=base_c, outline="", tags=body_tags,
                     )
-                    btn_y_nudge = btn_font.metrics("descent") * 0.30
+                    btn_y_nudge = 0.0 if sys.platform == "win32" else btn_font.metrics("descent") * 0.30
                     lbl = grid_canvas.create_text(
                         (bx0 + bx1) / 2.0, (by0 + by1) / 2.0 + btn_y_nudge,
                         text=label_s, fill=fg_c, font=btn_font, tags=body_tags,
