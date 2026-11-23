@@ -2224,10 +2224,21 @@ class WidgetsMixin:
                 self._transition_active = False
                 if not grid_canvas.winfo_exists():
                     return
-                if return_tab == "Programme details" and new_card.get("open_action") is not None:
-                    # Expand directly from the newly inserted card back into the podcast's detail page.
-                    new_card["open_action"]()
-                    return
+                if return_tab == "Programme details":
+                    bar_info = getattr(self, "_bottom_bar_info", None)
+                    if (
+                        bar_info is not None
+                        and bar_info[0].winfo_exists()
+                        and bar_info[1].winfo_exists()
+                        and str(bar_info[2]) == str(new_card.get("pid"))
+                    ):
+                        # Podcast is currently in the bottom mini-bar: expand from the mini-bar into detail.
+                        self.expand_bottom_bar_to_detail(*bar_info)
+                        return
+                    if new_card.get("open_action") is not None:
+                        # Otherwise expand directly from the newly inserted card back into the podcast's detail page.
+                        new_card["open_action"]()
+                        return
                 if return_fn is not None:
                     self.transition_to(return_fn, return_tab, direction=-1)
 
