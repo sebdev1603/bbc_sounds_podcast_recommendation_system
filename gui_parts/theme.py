@@ -1,5 +1,6 @@
 """Shared paths, colour palette, genre metadata, bundled font loader, and base rounded-panel widget."""
 import ctypes
+import ctypes.util
 import math
 from pathlib import Path
 import struct
@@ -90,7 +91,11 @@ def load_bundled_reith_font():
             continue
 
     if not candidates:
-        return "Segoe UI"
+        if sys.platform == "win32":
+            return "Segoe UI"
+        if sys.platform == "darwin":
+            return "Helvetica Neue"
+        return "Noto Sans"
 
     # Sort so BBC Reith Sans Regular weights come first for family-name detection.
     def font_priority(path):
@@ -102,7 +107,7 @@ def load_bundled_reith_font():
 
     candidates.sort(key=font_priority)
 
-    # Register every matching BBC Reith font file privately for this Windows process.
+    # Register every matching BBC Reith font file privately for this process across Windows, Linux, and macOS.
     registered_any = False
     if sys.platform == "win32":
         try:
@@ -115,13 +120,53 @@ def load_bundled_reith_font():
                     registered_any = True
         except Exception:
             pass
+    elif sys.platform.startswith("linux"):
+        try:
+            fc_lib = ctypes.util.find_library("fontconfig") or "libfontconfig.so.1"
+            fc = ctypes.CDLL(fc_lib)
+            fc.FcConfigAppFontAddFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            fc.FcConfigAppFontAddFile.restype = ctypes.c_int
+            for font_file in candidates:
+                if fc.FcConfigAppFontAddFile(None, str(font_file).encode("utf-8")):
+                    registered_any = True
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            ct = ctypes.CDLL("/System/Library/Frameworks/CoreText.framework/CoreText")
+            cf.CFURLCreateFromFileSystemRepresentation.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool,
+            ]
+            cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+            cf.CFRelease.argtypes = [ctypes.c_void_p]
+            ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+            ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+            kCTFontManagerScopeProcess = 1
+            for font_file in candidates:
+                raw_path = str(font_file).encode("utf-8")
+                url = cf.CFURLCreateFromFileSystemRepresentation(None, raw_path, len(raw_path), False)
+                if url:
+                    try:
+                        if ct.CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, None):
+                            registered_any = True
+                    finally:
+                        cf.CFRelease(url)
+        except Exception:
+            pass
 
-    for font_file in candidates:
-        family = _read_font_family_name(font_file)
-        if family:
-            return family
+    if registered_any:
+        for font_file in candidates:
+            family = _read_font_family_name(font_file)
+            if family:
+                return family
+        return "BBC Reith Sans"
 
-    return "BBC Reith Sans" if registered_any else "Segoe UI"
+    if sys.platform == "win32":
+        return "Segoe UI"
+    if sys.platform == "darwin":
+        return "Helvetica Neue"
+    return "Noto Sans"
 
 
 # Theme palettes supporting Dark (default), Light, and High Contrast accessibility modes.
@@ -164,20 +209,20 @@ THEME_PALETTES = {
         "BANNER_BG": "#fff1e6",
         "MINI_BAR_BG": "#ffffff",
         "SELECTED_BG": "#ffe3cf",
-        "INPUT_BG": "#e6e8ec",
-        "BORDER_LINE": "#cfd4dc",
-        "DIVIDER_LINE": "#c5cad3",
+        "INPUT_BG": "#dbe0e8",
+        "BORDER_LINE": "#b4bcc8",
+        "DIVIDER_LINE": "#b9c0cc",
         "ORANGE_ACCENT": "#e85d04",
         "ORANGE_HL": "#c94b00",
         "TEXT_WHITE": "#141518",
-        "TEXT_GRAY": "#525760",
-        "TEXT_LIGHT": "#25282e",
+        "TEXT_GRAY": "#4a505a",
+        "TEXT_LIGHT": "#141518",
         "GOLD_STAR": "#d48806",
         "STAR_EMPTY": "#c4c9d1",
-        "ACTION_BTN_BG": "#e6e8ec",
+        "ACTION_BTN_BG": "#dbe0e8",
         "ACTION_BTN_FG": "#141518",
         "PRIMARY_BTN_FG": "#ffffff",
-        "SECONDARY_HOVER_BG": "#cfd4dc",
+        "SECONDARY_HOVER_BG": "#c5cdd9",
         "SECONDARY_HOVER_FG": "#141518",
         "LOGO_TILE_BG": "#000000",
         "LOGO_TILE_FG": "#ffffff",
@@ -379,7 +424,8 @@ class RoundedPanel(tk.Frame):
         self._last_shape_key = None
         self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), bd=0, highlightthickness=0)
         self.backdrop.place(relwidth=1, relheight=1)
-        self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=surface, outline=border)
+        tk.Misc.lower(self.backdrop)
+        self.shape = self.backdrop.create_polygon(0, 0, 1, 0, 1, 1, 0, 1, smooth=True, fill=surface, outline=border)
         self.backdrop.bind("<Configure>", self.draw_surface)
 
     def cget(self, key):

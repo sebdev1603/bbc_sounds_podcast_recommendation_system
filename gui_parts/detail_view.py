@@ -55,11 +55,13 @@ class DetailViewMixin:
             )
             back_row = tk.Frame(page, bg=DARK_BG)
             back_row.pack(fill="x", pady=(2, 12))
-            self.create_button(
+            back_btn = self.create_button(
                 back_row, f"←  Back to {back_name}",
                 lambda: self.transition_to(back_handler, back_tab, direction=-1), compact=True,
-            ).pack(side="left")
-            self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold").pack(side="right", pady=8)
+            )
+            back_btn.pack(side="left")
+            now_playing_lbl = self.create_label(back_row, "NOW PLAYING", 9, ORANGE_HL, "bold")
+            now_playing_lbl.pack(side="right", pady=8)
 
             # Centered content column framed by top and bottom rules, matching 5.svg.
             detail_column = tk.Frame(page, bg=DARK_BG)
@@ -107,14 +109,23 @@ class DetailViewMixin:
                 if not play_canvas.winfo_exists():
                     return
                 size = play_state["size"]
-                t = play_state["step"] / 12.0
-                # Smooth damped elastic spring stretches the play circle and settles seamlessly.
-                eased = ease_out_elastic(t, damping=4.6, frequency=1.20) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 3
-                inset = max(0.5, 5.0 - 3.5 * eased)
-                colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, eased)
+                t = play_state["step"] / 10.0
+                # Lively damped elastic spring stretches the play circle and settles seamlessly.
+                eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if play_state["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+                inset = max(0.5, 6.0 - 4.0 * eased)
+                col_t = max(0.0, min(1.0, eased))
+                colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, col_t)
                 play_canvas.delete("all")
-                play_canvas.create_oval(inset, inset, size - inset, size - inset, fill=colour, outline="")
-                tri_scale = 1.0 + 0.08 * eased
+                sq_x0, sq_y0 = inset, inset
+                sq_x1, sq_y1 = size - inset, size - inset
+                sq_r = max(6.0, min((sq_x1 - sq_x0) * 0.24, (sq_x1 - sq_x0) / 2.0))
+                sq_pts = (
+                    sq_x0 + sq_r, sq_y0, sq_x1 - sq_r, sq_y0, sq_x1, sq_y0, sq_x1, sq_y0 + sq_r,
+                    sq_x1, sq_y1 - sq_r, sq_x1, sq_y1, sq_x1 - sq_r, sq_y1, sq_x0 + sq_r, sq_y1,
+                    sq_x0, sq_y1, sq_x0, sq_y1 - sq_r, sq_x0, sq_y0 + sq_r, sq_x0, sq_y0,
+                )
+                play_canvas.create_polygon(*sq_pts, smooth=True, fill=colour, outline="")
+                tri_scale = 1.0 + 0.10 * eased
                 cx, cy = size * 0.50, size * 0.50
                 pts = [
                     (size * 0.39, size * 0.26),
@@ -126,10 +137,16 @@ class DetailViewMixin:
                     scaled_pts.extend((cx + (px - cx) * tri_scale, cy + (py - cy) * tri_scale))
                 play_canvas.create_polygon(*scaled_pts, fill="#000000", outline="")
                 if listen_label.winfo_exists():
-                    listen_label.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, eased))
+                    listen_label.configure(fg=blend_colour(TEXT_WHITE, ORANGE_HL, col_t))
 
             def animate_play_hover(target):
                 play_state["target"] = target
+                if self._is_reduced_motion():
+                    cancel_play_hover()
+                    if play_state["step"] != target:
+                        play_state["step"] = target
+                        draw_play_button()
+                    return
                 if play_state["job"] is not None:
                     return
 
@@ -142,7 +159,7 @@ class DetailViewMixin:
                     play_state["step"] += 1 if play_state["target"] > play_state["step"] else -1
                     draw_play_button()
                     if play_state["step"] != play_state["target"]:
-                        play_state["job"] = self.after(16, step_play)
+                        play_state["job"] = self.after(self._anim_frame_interval(16), step_play)
 
                 step_play()
 
@@ -155,7 +172,7 @@ class DetailViewMixin:
                     play_state["job"] = None
 
             for play_widget in (play_canvas, listen_label):
-                play_widget.bind("<Enter>", lambda _e: animate_play_hover(12))
+                play_widget.bind("<Enter>", lambda _e: animate_play_hover(10))
                 play_widget.bind("<Leave>", lambda _e: animate_play_hover(0))
             play_canvas.bind("<Destroy>", cancel_play_hover)
 
@@ -337,6 +354,8 @@ class DetailViewMixin:
                     corner_radius=8, backdrop=DARK_BG,
                 )
                 cover_art.pack()
+                self._detail_cover_art = cover_art
+                self._detail_cover_size = cover_size
 
                 play_state["size"] = play_size
                 play_canvas.configure(width=play_size, height=play_size)
@@ -380,6 +399,29 @@ class DetailViewMixin:
 
             detail_column.bind("<Configure>", schedule_detail_scale)
             apply_detail_scale()
+            self._detail_widgets = {
+                "back_btn": back_btn,
+                "now_playing_lbl": now_playing_lbl,
+                "top_rule": top_rule,
+                "bottom_rule": bottom_rule,
+                "category_label": category_label,
+                "title_label": title_label,
+                "meta_label": meta_label,
+                "avg_label": avg_label,
+                "play_canvas": play_canvas,
+                "listen_label": listen_label,
+                "v_divider": v_divider,
+                "fav_button": fav_button,
+                "fav_primary": is_fav,
+                "rate_button": rate_button,
+                "sub_card": sub_card,
+                "listening_heading": listening_heading,
+                "summary_label": summary_label,
+                "summary_color": summary_color,
+                "rating_caption": rating_caption,
+                "star_canvas": star_canvas,
+                "star_state": star_state,
+            }
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
 
@@ -394,6 +436,7 @@ class DetailViewMixin:
                     "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                is_first_listen = (existing_entry is None) or (not (existing_entry[0] or 0))
                 if existing_entry:
                     # Increment the existing play counter safely even if TimesListened was NULL.
                     conn.execute(
@@ -413,21 +456,32 @@ class DetailViewMixin:
             if open_detail:
                 # Going back after pressing Listen now should shrink the podcast down into the mini-bar.
                 self._detail_hero_origin = None
+                if is_first_listen and not self._is_reduced_motion():
+                    self._pending_card_insert = {
+                        "mode": "history",
+                        "podcast_id": podcast_id,
+                        "target_rating": None,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid, show_simulated_notice=True),
+                    }
+                    self.transition_to(self.show_history, "History")
+                    return "first_time"
                 self.show_detail(podcast_id, show_simulated_notice=True)
-            return True
+            return "first_time" if is_first_listen else True
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
             return False
 
     def save_programme_rating(self, podcast_id, new_score, callback_func=None):
-        """Persist a 1-5 rating for the active listener and refresh the current view."""
+        """Persist a 1-5 rating for the active listener and showcase brand-new ratings in Ratings."""
         try:
             with self.get_db_connection() as conn:
                 # Update the listener's rating in place, or insert a row if one doesn't exist yet.
                 prior_record = conn.execute(
-                    "SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
+                    "SELECT RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                is_new_rating = (prior_record is None) or (prior_record[0] is None)
                 if prior_record:
                     conn.execute(
                         "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
@@ -440,6 +494,18 @@ class DetailViewMixin:
                     )
             # Invalidate the cached community rating averages so the new score is reflected immediately.
             self._podcast_averages = None
+            if is_new_rating and not self._is_reduced_motion():
+                return_tab, default_return_fn = self._get_current_page_return_target()
+                self._detail_hero_origin = None
+                self._pending_card_insert = {
+                    "mode": "ratings",
+                    "podcast_id": podcast_id,
+                    "target_rating": int(new_score),
+                    "return_tab": return_tab,
+                    "return_fn": callback_func if callback_func is not None else default_return_fn,
+                }
+                self.transition_to(self.show_ratings, "Ratings")
+                return
             if callback_func:
                 callback_func()
             else:
@@ -555,8 +621,8 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 
-    def remove_rating(self, podcast_id):
-        """Clear the active listener's rating for a podcast and reload the Ratings page."""
+    def remove_rating(self, podcast_id, evaporate=None):
+        """Clear the active listener's rating for a podcast, evaporating its card before reloading."""
         if not messagebox.askyesno("Remove rating", "Remove your rating for this programme?", parent=self):
             return
         try:
@@ -568,7 +634,10 @@ class DetailViewMixin:
                 )
             # Clear cached average ratings so community scores recalculate on next render.
             self._podcast_averages = None
-            self.show_ratings()
+            if evaporate is not None:
+                evaporate(self.show_ratings)
+            else:
+                self.show_ratings()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't remove your rating", err)
 
@@ -586,20 +655,40 @@ class DetailViewMixin:
                 id_tokens = [item.strip() for item in current_str.split(",") if item.strip()]
                 target_str = str(podcast_id)
                 # Toggle membership: remove if already saved, otherwise append.
-                if target_str in id_tokens:
-                    id_tokens.remove(target_str)
-                else:
+                was_added = target_str not in id_tokens
+                if was_added:
                     id_tokens.append(target_str)
+                else:
+                    id_tokens.remove(target_str)
                 conn.execute(
                     "UPDATE listeners SET FavoritePodcasts = ? WHERE ListenerID = ?",
                     (",".join(id_tokens), self.current_user),
                 )
+            if not self._is_reduced_motion():
+                self._detail_hero_origin = None
+                if was_added:
+                    self._pending_card_insert = {
+                        "mode": "favourites",
+                        "podcast_id": podcast_id,
+                        "target_rating": None,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid),
+                    }
+                else:
+                    self._pending_card_evaporate = {
+                        "mode": "favourites",
+                        "podcast_id": podcast_id,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid),
+                    }
+                self.transition_to(self.show_favourites, "Favourites")
+                return
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
 
-    def remove_from_history(self, podcast_id):
-        """Delete one programme from the listener's listening history."""
+    def remove_from_history(self, podcast_id, evaporate=None):
+        """Delete one programme from the listener's listening history, evaporating its card first."""
         if not messagebox.askyesno("Remove from history", "Remove this programme from your listening history?", parent=self):
             return
         try:
@@ -609,7 +698,10 @@ class DetailViewMixin:
                     "DELETE FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 )
-            self.show_history()
+            if evaporate is not None:
+                evaporate(self.show_history)
+            else:
+                self.show_history()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't remove programme", err)
 

@@ -1,5 +1,6 @@
 """Application pages: Home, Genres/Search, For you, Favourites, History, Ratings, Report, Profile, and Survey."""
 import sqlite3
+import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import messagebox
@@ -419,7 +420,7 @@ class PagesMixin:
 
                 hi_top = blend_colour(top_col, "#ffffff", 0.14 if is_light_mode else 0.16)
                 hi_bot = blend_colour(bot_col, "#ffffff", 0.14 if is_light_mode else 0.16)
-                card_state = {"step": 0, "target": 0, "job": None, "w": 0, "h": 0, "cache": {}}
+                card_state = {"step": 0, "target": 0, "job": None, "cfg_job": None, "w": 0, "h": 0, "cache": {}}
 
                 def paint_gradient_card(
                     cvs=card_canvas,
@@ -453,16 +454,19 @@ class PagesMixin:
                         state["cache"].clear()
 
                     step = state["step"]
-                    t = step / 6.0
-                    eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if state["target"] > 0 else 1.0 - (1.0 - t) ** 3
-                    inset = max(0, min(3, round(3.0 - 2.0 * eased)))
+                    t = step / 10.0
+                    raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if state["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+                    # Quantize colour blend to 4 shared levels while preserving full elastic pop-out overshoot for inset.
+                    level = max(0, min(3, round(max(0.0, min(1.0, raw_eased)) * 3.0)))
+                    eased = level / 3.0
+                    inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
                     cur_top = blend_colour(t_base, t_hi, eased)
                     cur_bot = blend_colour(b_base, b_hi, eased)
                     cur_border = blend_colour(bd_base, acc, eased)
                     cur_ico_bg = blend_colour(ib_base, ib_hi, eased)
                     cur_act_fg = blend_colour("#ffffff", act_hi, eased)
 
-                    cache_key = (step, state["target"] > 0)
+                    cache_key = (level, inset)
                     photo = state["cache"].get(cache_key)
                     if photo is None:
                         photo = make_gradient_card_photo(w, h, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
@@ -482,17 +486,41 @@ class PagesMixin:
                     cvs.itemconfigure(acti, fill=cur_act_fg)
 
                 def cancel_card_hover(state=card_state):
-                    if state["job"] is not None:
+                    for jkey in ("job", "cfg_job"):
+                        if state[jkey] is not None:
+                            try:
+                                self.after_cancel(state[jkey])
+                            except tk.TclError:
+                                pass
+                            state[jkey] = None
+
+                def schedule_card_paint(_event=None, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
+                    # First paint runs immediately; subsequent resizes debounce 45ms to avoid rasterizing on every pixel.
+                    if state["w"] == 0:
+                        paint_fn()
+                        return
+                    if state["cfg_job"] is not None:
                         try:
-                            self.after_cancel(state["job"])
+                            self.after_cancel(state["cfg_job"])
                         except tk.TclError:
                             pass
-                        state["job"] = None
+                    state["cfg_job"] = self.after(45, lambda: (state.__setitem__("cfg_job", None), paint_fn()))
 
                 def animate_card_hover(target, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
                     if not cvs.winfo_exists():
                         return
                     state["target"] = target
+                    if self._is_reduced_motion():
+                        if state["job"] is not None:
+                            try:
+                                self.after_cancel(state["job"])
+                            except tk.TclError:
+                                pass
+                            state["job"] = None
+                        if state["step"] != target:
+                            state["step"] = target
+                            paint_fn()
+                        return
                     if state["job"] is not None:
                         return
 
@@ -510,7 +538,7 @@ class PagesMixin:
                         state["step"] = cur
                         paint_fn()
                         if cur != tgt:
-                            state["job"] = self.after(16, step_card)
+                            state["job"] = self.after(self._anim_frame_interval(16), step_card)
 
                     step_card()
 
@@ -526,16 +554,16 @@ class PagesMixin:
                     cancel_fn=cancel_card_hover,
                 ):
                     cancel_fn()
-                    t = state["step"] / 6.0
-                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 3)
+                    t = state["step"] / 10.0
+                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
                     self.expand_genre_in_tab(
                         card, name, icon, desc, start_col,
                         lambda: (self.search_text.set(name), perform_search_action()),
                         programmes_heading, page,
                     )
 
-                card_canvas.bind("<Configure>", lambda _e, paint_fn=paint_gradient_card: paint_fn())
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(6))
+                card_canvas.bind("<Configure>", schedule_card_paint)
+                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(10))
                 card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
                 card_canvas.bind("<Button-1>", open_genre)
                 card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
@@ -564,10 +592,18 @@ class PagesMixin:
         target_w = max(1, area_frame.winfo_width())
         target_h = max(1, area_frame.winfo_height())
 
-        if target_w <= 1 or target_h <= 1:
+        if target_w <= 1 or target_h <= 1 or self._is_reduced_motion():
             area_frame._expanding_genre = False
             self._finish_transition()
             apply_filter()
+            if canvas_pane.winfo_exists() and heading_widget.winfo_exists() and page.winfo_exists():
+                self.update_idletasks()
+                region = canvas_pane.cget("scrollregion")
+                if region:
+                    total_h = int(float(region.split()[3]))
+                    if total_h > 0:
+                        offset = heading_widget.winfo_rooty() - page.winfo_rooty()
+                        canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             return
 
         is_light_mode = getattr(self, "_theme_name", "dark") == "light"
@@ -600,8 +636,8 @@ class PagesMixin:
         expander.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(expander)
 
-        expand_duration = 0.260
-        expand_started = monotonic()
+        expand_duration = 0.240
+        expand_st = {"progress": 0.0, "last_t": None}
         last_colors = [(start_col, overlay_title_fg, overlay_desc_fg, badge_bg, badge_fg)]
         last_rect = [None]
 
@@ -621,40 +657,46 @@ class PagesMixin:
                         canvas_pane.yview_moveto(max(0.0, min(1.0, (offset - 12) / total_h)))
             tk.Misc.lift(expander)
 
-            reveal_duration = 0.220
-            reveal_started = None
+            reveal_duration = 0.210
+            reveal_st = {"progress": 0.0, "last_t": None}
             last_y = [0]
 
             def draw_reveal():
-                nonlocal reveal_started
                 if not expander.winfo_exists() or not area_frame.winfo_exists():
                     area_frame._expanding_genre = False
                     self._finish_transition()
                     return
-                if reveal_started is None:
-                    reveal_started = monotonic()
-                progress = min(1.0, (monotonic() - reveal_started) / reveal_duration)
-                eased = 1.0 - (1.0 - progress) ** 4
+                t0 = monotonic()
+                dt = 0.016 if reveal_st["last_t"] is None else max(0.004, min(0.042, t0 - reveal_st["last_t"]))
+                reveal_st["last_t"] = t0
+                reveal_st["progress"] = min(1.0, reveal_st["progress"] + dt / reveal_duration)
+                progress = reveal_st["progress"]
+                eased = 1.0 - (1.0 - progress) ** 3
                 cur_y = round(-target_h * eased)
                 if cur_y != last_y[0]:
                     expander.place(x=0, y=cur_y, width=target_w, height=target_h)
                     last_y[0] = cur_y
                 if progress < 1.0:
-                    self.after(16, draw_reveal)
+                    spent = (monotonic() - t0) * 1000.0
+                    self.after(self._next_frame_delay(spent, 16), draw_reveal)
                 else:
                     expander.destroy()
                     area_frame._expanding_genre = False
                     self._finish_transition()
 
-            self.after(16, draw_reveal)
+            self.after(1, draw_reveal)
 
         def draw_expand():
             if not expander.winfo_exists() or not area_frame.winfo_exists():
                 area_frame._expanding_genre = False
                 self._finish_transition()
                 return
-            progress = min(1.0, (monotonic() - expand_started) / expand_duration)
-            eased = ease_out_elastic(progress, damping=5.8, frequency=1.05)
+            t0 = monotonic()
+            dt = 0.016 if expand_st["last_t"] is None else max(0.004, min(0.042, t0 - expand_st["last_t"]))
+            expand_st["last_t"] = t0
+            expand_st["progress"] = min(1.0, expand_st["progress"] + dt / expand_duration)
+            progress = expand_st["progress"]
+            eased = 1.0 - (1.0 - progress) ** 3 if sys.platform != "win32" else ease_out_elastic(progress, damping=5.8, frequency=1.05)
             cur_x = max(0, round(start_x * (1.0 - eased)))
             cur_y = max(0, round(start_y * (1.0 - eased)))
             cur_w = max(1, min(target_w, round(start_w + (target_w - start_w) * eased)))
@@ -689,7 +731,7 @@ class PagesMixin:
                 last_rect[0] = rect
 
             if progress < 1.0:
-                self.after(16, draw_expand)
+                self.after(self._anim_frame_interval(16), draw_expand)
             else:
                 # Brief hold at full expansion before sliding the curtain up to reveal programmes.
                 self.after(80, start_reveal)
@@ -770,7 +812,29 @@ class PagesMixin:
         """Render the Favourites tab listing saved podcasts."""
         page = self.build_shell("Favourites")
         self.render_page_title(page, "Your favourites", "The programmes you have saved for later.")
-        fav_rows = self.fetch_user_favourites()
+        fav_rows = list(self.fetch_user_favourites())
+        pending_ins = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending_ins if (pending_ins and pending_ins.get("mode") == "favourites") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            for idx_f, row_f in enumerate(fav_rows):
+                if str(row_f[0]) == target_pid:
+                    if idx_f != 0:
+                        fav_rows.insert(0, fav_rows.pop(idx_f))
+                    break
+
+        pending_evap = getattr(self, "_pending_card_evaporate", None)
+        evap_spec = pending_evap if (pending_evap and pending_evap.get("mode") == "favourites") else None
+        if evap_spec is not None:
+            self._pending_card_evaporate = None
+            target_pid = evap_spec["podcast_id"]
+            # Temporarily place the just-removed podcast at index 0 so the user sees it evaporate out of Favourites.
+            if not any(str(r[0]) == str(target_pid) for r in fav_rows):
+                rec = self.get_single_podcast(target_pid)
+                if rec:
+                    fav_rows.insert(0, rec)
+
         if not fav_rows:
             self.render_empty_message(page, "No favourites saved yet", "Open any programme and tap the heart to keep it here.")
             self.create_button(
@@ -778,9 +842,12 @@ class PagesMixin:
                 lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
             ).pack(anchor="w", pady=6)
             return
+
         self.render_podcast_grid(
             page, fav_rows, columns_count=6,
             show_play=True, max_count=len(fav_rows),
+            insert_anim=insert_spec,
+            evaporate_anim=evap_spec,
         )
 
     def show_history(self):
@@ -797,11 +864,32 @@ class PagesMixin:
             return
         control_bar = tk.Frame(page, bg=DARK_BG)
         control_bar.pack(fill="x", pady=(0, 7))
-        self.create_label(control_bar, f"{len(history_rows)} programmes", 10, TEXT_GRAY).pack(side="left")
+        hist_count = [len(history_rows)]
+        hist_count_lbl = self.create_label(control_bar, f"{hist_count[0]} programmes", 10, TEXT_GRAY)
+        hist_count_lbl.pack(side="left")
+
+        def update_hist_count(delta):
+            hist_count[0] = max(0, hist_count[0] + delta)
+            if hist_count_lbl.winfo_exists():
+                hist_count_lbl.configure(text=translate(f"{hist_count[0]} programmes"))
+
+        self._active_count_updater = update_hist_count
         self.create_button(control_bar, "Clear history", self.clear_history, compact=True).pack(side="right")
+        pending = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending if (pending and pending.get("mode") == "history") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            history_rows = list(history_rows)
+            for idx_h, row_h in enumerate(history_rows):
+                if str(row_h[0]) == target_pid:
+                    if idx_h != 0:
+                        history_rows.insert(0, history_rows.pop(idx_h))
+                    break
         self.render_podcast_grid(
             page, history_rows, columns_count=6,
             show_play=True, show_remove=True, max_count=len(history_rows),
+            insert_anim=insert_spec,
         )
 
     def show_ratings(self):
@@ -809,6 +897,17 @@ class PagesMixin:
         page = self.build_shell("Ratings")
         self.render_page_title(page, "Podcasts you rated", "Every programme you have scored is collected here.")
         rating_rows = self.fetch_user_ratings()
+        pending = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending if (pending and pending.get("mode") == "ratings") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            rating_rows = list(rating_rows)
+            for idx_r, row_r in enumerate(rating_rows):
+                if str(row_r[0]) == target_pid:
+                    if idx_r != 0:
+                        rating_rows.insert(0, rating_rows.pop(idx_r))
+                    break
         if not rating_rows:
             self.render_empty_message(page, "No ratings yet", "Listen to a programme, then add a rating from its details page.")
             self.create_button(
@@ -819,21 +918,32 @@ class PagesMixin:
 
         summary_bar = self.create_card_frame(page, bg=SUBCARD_BG)
         summary_bar.pack(fill="x", pady=(0, 12))
-        self.create_label(summary_bar, str(len(rating_rows)), 24, ORANGE_ACCENT, "bold").pack(
-            side="left", padx=(18, 8), pady=12
-        )
+        rating_count = [len(rating_rows)]
+        rating_count_lbl = self.create_label(summary_bar, str(rating_count[0]), 24, ORANGE_ACCENT, "bold")
+        rating_count_lbl.pack(side="left", padx=(18, 8), pady=12)
+
+        def update_rating_count(delta):
+            rating_count[0] = max(0, rating_count[0] + delta)
+            if rating_count_lbl.winfo_exists():
+                rating_count_lbl.configure(text=str(rating_count[0]))
+
+        self._active_count_updater = update_rating_count
         self.create_label(summary_bar, "ratings in your library", 10, TEXT_GRAY).pack(side="left", pady=18)
         self.create_label(summary_bar, "Select a programme to update or remove its score.", 10, TEXT_LIGHT).pack(
             side="right", padx=18, pady=18
         )
 
+        self._active_ratings_insert_anim = insert_spec
         self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
 
     def render_ratings_page(self, parent, rating_rows, last_page):
         """Render one page of responsive rated podcast cards on a single Canvas (zero child HWNDs)."""
+        insert_spec = getattr(self, "_active_ratings_insert_anim", None)
+        self._active_ratings_insert_anim = None
         self.render_podcast_grid(
             parent, rating_rows, max_count=len(rating_rows),
             rating_index=3, show_end=last_page, ratings_mode=True,
+            insert_anim=insert_spec,
         )
 
     def show_genres(self):
@@ -1009,7 +1119,7 @@ class PagesMixin:
         name_entry = tk.Entry(
             name_box, textvariable=name_var, font=(DEFAULT_FONT, 10),
             bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE,
-            relief="flat", highlightthickness=0,
+            relief="flat", bd=0, highlightthickness=0,
         )
         name_entry.pack(fill="both", expand=True, padx=10, pady=5)
         name_placeholder = tk.Label(
@@ -1172,6 +1282,32 @@ class PagesMixin:
                 compact=True,
             ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
 
+        # Divider and Motion / Animations selector row (Smooth / Reduced) for low-end devices & comfort.
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        motion_row = tk.Frame(access_card, bg=CARD_BG)
+        motion_row.pack(fill="x", padx=18, pady=16)
+
+        active_reduced = self._is_reduced_motion()
+        motion_info = tk.Frame(motion_row, bg=CARD_BG)
+        motion_info.pack(side="left", fill="x", expand=True)
+        self.create_label(motion_info, "ANIMATIONS", 9, TEXT_GRAY, "bold").pack(anchor="w")
+        self.create_label(
+            motion_info,
+            "Reduced motion  ·  Faster on older devices" if active_reduced else "Smooth  ·  Default",
+            13, TEXT_WHITE, "bold",
+        ).pack(anchor="w", pady=(4, 0))
+
+        motion_controls = tk.Frame(motion_row, bg=CARD_BG)
+        motion_controls.pack(side="right")
+        for is_red, caption in ((False, "Smooth"), (True, "Reduced motion")):
+            self.create_button(
+                motion_controls,
+                caption,
+                lambda flag=is_red: self.set_reduced_motion(flag),
+                primary=(active_reduced == is_red),
+                compact=True,
+            ).pack(side="left", padx=(0 if not is_red else 8, 0))
+
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
             if pct == 100:
@@ -1182,10 +1318,11 @@ class PagesMixin:
             scale_val = getattr(self, "_text_scale", 1.0)
             cur_theme = getattr(self, "_theme_name", "dark")
             cur_lang = getattr(self, "_language", "en")
+            cur_reduced = self._is_reduced_motion()
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en"
+            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en" and not cur_reduced
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
@@ -1428,7 +1565,8 @@ class PagesMixin:
 
             layout_qa()
             if any_active:
-                qa_loop["job"] = self.after(16, tick_qa_animations)
+                spent = (monotonic() - now) * 1000.0
+                qa_loop["job"] = self.after(self._next_frame_delay(spent, 16), tick_qa_animations)
             else:
                 qa_loop["last_t"] = None
 
@@ -1438,7 +1576,10 @@ class PagesMixin:
                     st["open"] = not st["open"]
                     st["target"] = 1.0 if st["open"] else 0.0
                     qa_canvas.itemconfigure(st["arrow_id"], text="▾" if st["open"] else "▸")
-                    if qa_loop["job"] is None:
+                    if self._is_reduced_motion():
+                        st["progress"] = st["target"]
+                        layout_qa()
+                    elif qa_loop["job"] is None:
                         qa_loop["last_t"] = None
                         tick_qa_animations()
                     break
@@ -1487,6 +1628,7 @@ class PagesMixin:
             check_lbl.pack(fill="x", padx=3, pady=(0, 9))
             for sub_widget in (tile, *tile.winfo_children()):
                 sub_widget.bind("<Button-1>", lambda _e, name_val=g_name: self.toggle_genre_selection(name_val, counter_label))
+            self._attach_genre_tile_hover(tile, g_name, check_lbl, art_cnv)
             self.genre_elements[g_name] = (tile, check_lbl, art_cnv)
             genre_tiles.append(tile)
 
@@ -1531,6 +1673,100 @@ class PagesMixin:
             footer_pane, "Cancel",
             lambda: self.transition_to(self.show_home, "Home"), compact=True,
         ).pack(side="left", padx=9)
+
+    def _attach_genre_tile_hover(self, tile, genre_name, check_lbl, art_cnv):
+        """Attach a bouncy elastic pop-out hover spring to a selectable preference genre tile."""
+        base_inset = 5
+        tile.set_inset(base_inset)
+        hstate = {"step": 0, "target": 0, "job": None, "leave_job": None}
+
+        def cancel_jobs(_event=None):
+            for k in ("job", "leave_job"):
+                jid = hstate[k]
+                if jid is not None:
+                    try:
+                        self.after_cancel(jid)
+                    except tk.TclError:
+                        pass
+                    hstate[k] = None
+
+        def is_inside():
+            if not tile.winfo_exists():
+                return False
+            try:
+                px, py = tile.winfo_pointerxy()
+                w = tile.winfo_containing(px, py)
+            except tk.TclError:
+                return False
+            while w is not None:
+                if w is tile:
+                    return True
+                w = getattr(w, "master", None)
+            return False
+
+        def apply_frame():
+            hstate["job"] = None
+            if not tile.winfo_exists():
+                return
+            cur = hstate["step"]
+            tgt = hstate["target"]
+            if cur == tgt:
+                return
+            cur += 1 if tgt > cur else -1
+            hstate["step"] = cur
+            t = cur / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if tgt > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            inset = max(0, min(base_inset, round(base_inset - 3.0 * raw)))
+            tile.set_inset(inset)
+            is_active = genre_name in self.active_genres
+            rest_bg = SELECTED_BG if is_active else CARD_BG
+            rest_bd = ORANGE_ACCENT if is_active else BORDER_LINE
+            hi_bg = blend_colour(rest_bg, ORANGE_ACCENT if is_active else "#ffffff", 0.08)
+            cur_bg = blend_colour(rest_bg, hi_bg, col_t)
+            cur_bd = blend_colour(rest_bd, ORANGE_HL if is_active else ORANGE_ACCENT, col_t)
+            tile.set_surface(cur_bg, cur_bd)
+            if check_lbl.winfo_exists():
+                check_lbl.configure(bg=cur_bg)
+            if art_cnv.winfo_exists():
+                art_cnv.configure(bg=cur_bg)
+            if cur != tgt:
+                hstate["job"] = self.after(self._anim_frame_interval(16), apply_frame)
+
+        def set_target(tgt):
+            hstate["target"] = tgt
+            if self._is_reduced_motion():
+                cancel_jobs()
+                if hstate["step"] != tgt:
+                    hstate["step"] = max(0, tgt - 1) if tgt > hstate["step"] else min(10, tgt + 1)
+                    apply_frame()
+                return
+            if hstate["job"] is None and hstate["step"] != tgt:
+                apply_frame()
+
+        def on_enter(_e=None):
+            if getattr(self, "_transition_active", False) or self._is_scrolling():
+                return
+            if hstate["leave_job"] is not None:
+                try:
+                    self.after_cancel(hstate["leave_job"])
+                except tk.TclError:
+                    pass
+                hstate["leave_job"] = None
+            set_target(10)
+
+        def on_leave(_e=None):
+            if hstate["leave_job"] is not None:
+                try:
+                    self.after_cancel(hstate["leave_job"])
+                except tk.TclError:
+                    pass
+            hstate["leave_job"] = self.after(18, lambda: (hstate.__setitem__("leave_job", None), None if is_inside() else set_target(0)))
+
+        for w in (tile, tile.backdrop, check_lbl, art_cnv):
+            w.bind("<Enter>", on_enter, add="+")
+            w.bind("<Leave>", on_leave, add="+")
+        tile.bind("<Destroy>", cancel_jobs, add="+")
 
     def toggle_genre_selection(self, genre_name, counter_lbl):
         """Toggle a genre on or off in active_genres, enforcing the 5-genre cap."""

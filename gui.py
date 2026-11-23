@@ -35,15 +35,41 @@ class BBCSoundsGUI(
             except Exception:
                 pass
         super().__init__()
-        # Apply the bundled BBC Reith Sans font to Tkinter's built-in named fonts as well.
+        # Verify the active font family exists in Tk (falls back cleanly on Linux/macOS if needed).
+        try:
+            available_fonts = set(tkfont.families(self))
+            if available_fonts and DEFAULT_FONT not in available_fonts:
+                for fallback in (
+                    "BBC Reith Sans", "Adwaita Sans", "Cantarell", "Noto Sans",
+                    "Liberation Sans", "DejaVu Sans", "Segoe UI", "Helvetica Neue", "Helvetica",
+                ):
+                    if fallback in available_fonts:
+                        import gui_parts.theme as _theme_mod
+                        for _m in list(sys.modules.values()):
+                            if _m is not None and getattr(_m, "__name__", "").startswith(("gui", "__main__")):
+                                if "DEFAULT_FONT" in _m.__dict__:
+                                    _m.__dict__["DEFAULT_FONT"] = fallback
+                        _theme_mod.DEFAULT_FONT = fallback
+                        break
+        except tk.TclError:
+            pass
+        # Apply the active font family to Tkinter's built-in named fonts as well.
+        active_font = sys.modules["gui_parts.theme"].DEFAULT_FONT
         for named_font in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
             try:
-                tkfont.nametofont(named_font).configure(family=DEFAULT_FONT)
+                tkfont.nametofont(named_font).configure(family=active_font)
             except tk.TclError:
                 pass
         self.title("BBC Sounds | Discover something new")
-        self.geometry("1320x850")
-        self.minsize(1024, 700)
+        # Clamp initial and minimum window sizes to the current display so Fedora/HiDPI laptops never clip the UI.
+        screen_w = max(800, self.winfo_screenwidth())
+        screen_h = max(600, self.winfo_screenheight())
+        init_w = min(1320, max(900, screen_w - 40))
+        init_h = min(850, max(600, screen_h - 80))
+        min_w = min(940, max(760, screen_w - 40))
+        min_h = min(620, max(520, screen_h - 80))
+        self.geometry(f"{init_w}x{init_h}")
+        self.minsize(min_w, min_h)
         self.configure(bg=DARK_BG)
 
         self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
@@ -51,6 +77,8 @@ class BBCSoundsGUI(
         self._text_scale = 1.0
         self._theme_name = "dark"
         self._language = "en"
+        self._reduced_motion = False
+        self._anim_ema_ms = 6.0
         self._resize_after_id = None
 
         self.current_user = None

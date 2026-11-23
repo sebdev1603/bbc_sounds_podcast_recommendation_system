@@ -3,15 +3,19 @@ import ctypes
 import math
 from pathlib import Path
 import re
+import struct
 import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import font as tkfont
 import unicodedata
 import xml.etree.ElementTree as ET
+import zlib
 
 from gui_parts.i18n import translate
 from gui_parts.theme import (
+    ACTION_BTN_BG,
+    ACTION_BTN_FG,
     BORDER_LINE,
     CANVA_DIR,
     CARD_BG,
@@ -38,6 +42,7 @@ from gui_parts.theme import (
     TEXT_GRAY,
     TEXT_LIGHT,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
     blend_colour,
     ease_out_elastic,
 )
@@ -131,7 +136,7 @@ class WidgetsMixin:
             relief="flat",
             bd=0,
             cursor="hand2",
-            padx=0, pady=0, highlightthickness=1,
+            padx=0, pady=0, highlightthickness=0 if sys.platform != "win32" else 1,
             highlightbackground=background, highlightcolor=ORANGE_HL,
             **kwargs,
         )
@@ -141,7 +146,7 @@ class WidgetsMixin:
         button._hover_step = 0
         button._hover_target = 0
         self.style_rounded_button(button, face, ORANGE_HL if primary else SECONDARY_HOVER_BG)
-        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 12))
+        button.bind("<Enter>", lambda _e, btn=button: self.animate_button_hover(btn, 10))
         button.bind("<Leave>", lambda _e, btn=button: self.animate_button_hover(btn, 0))
         button.bind("<Destroy>", lambda _e, btn=button: self.cancel_button_hover(btn))
         return button
@@ -157,7 +162,7 @@ class WidgetsMixin:
             button._hover_job = None
 
     def animate_button_hover(self, button, target_step):
-        """Ease a button's hover state smoothly toward target_step (0..12) with elastic spring."""
+        """Ease a button's hover state smoothly toward target_step (0..6) with elastic pop-up."""
         if not button.winfo_exists():
             return
         if target_step > 0 and (
@@ -167,6 +172,12 @@ class WidgetsMixin:
         ):
             return
         button._hover_target = target_step
+        if self._is_reduced_motion():
+            self.cancel_button_hover(button)
+            if getattr(button, "_hover_step", 0) != target_step:
+                button._hover_step = target_step
+                self._apply_button_hover_frame(button, target_step)
+            return
         if getattr(button, "_hover_job", None) is not None:
             return
 
@@ -182,30 +193,42 @@ class WidgetsMixin:
             button._hover_step = current
             self._apply_button_hover_frame(button, current)
             if current != target:
-                button._hover_job = self.after(16, step_frame)
+                button._hover_job = self.after(self._anim_frame_interval(16), step_frame)
 
         step_frame()
 
     def _apply_button_hover_frame(self, button, step):
-        """Render a single intermediate frame of a button's elastic hover expansion and tint."""
+        """Render a single bouncy elastic pop-up hover frame with overshoot, lift, and soft shadow."""
         face, hover = button._rounded_colours
         width, height = button._hover_size
         base_fg = button._hover_base_fg
-        t = step / 12.0
-        # Fluid damped elastic spring on enter; smooth cubic ease-out on leave.
-        eased = ease_out_elastic(t, damping=4.8, frequency=1.15) if getattr(button, "_hover_target", 0) > 0 else 1.0 - (1.0 - t) ** 3
-        colour = blend_colour(face, hover, eased)
-        inset = max(0, min(3, round(3.0 - 2.0 * eased)))
-        image = self.rounded_button_image(width, height, colour, inset=inset)
+        t = max(0.0, min(1.0, step / 10.0))
+        # Lively damped elastic spring on enter (clear pop-up overshoot + mini-bounce settle); snappy ease-out on leave.
+        if getattr(button, "_hover_target", 0) > 0:
+            raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65)
+        else:
+            raw_eased = 1.0 - (1.0 - t) ** 2.4
+        # Quantize colour blend to 5 shared levels while preserving full elastic overshoot for size & lift.
+        color_t = max(0.0, min(1.0, round(max(0.0, min(1.0, raw_eased)) * 4.0) / 4.0))
+        colour = blend_colour(face, hover, color_t)
+        # Resting inset=5 -> overshoots to 0 at spring peak -> rebounds & settles cleanly at inset=2.
+        inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
+        lift = max(0, min(3, round(2.2 * raw_eased)))
+        y_shift = getattr(button, "_hover_y_shift", 0)
+        border_colour = getattr(button, "_rounded_border", None)
+        image = self.rounded_button_image(
+            width, height, colour, inset=inset, y_shift=y_shift, lift=lift,
+            border_colour=border_colour,
+        )
         button._current_image = image
         config = {"image": image}
         target_fg = getattr(button, "_hover_target_fg", TEXT_WHITE)
         if isinstance(base_fg, str) and base_fg.startswith("#") and len(base_fg) == 7:
             # Keep text high-contrast when swapping between white and black foregrounds on hover.
             if base_fg.lower() != target_fg.lower() and target_fg.lower() == "#000000":
-                config["fg"] = target_fg if eased >= 0.45 else base_fg
+                config["fg"] = target_fg if color_t >= 0.45 else base_fg
             else:
-                config["fg"] = blend_colour(base_fg, target_fg, eased)
+                config["fg"] = blend_colour(base_fg, target_fg, color_t)
         button.configure(**config)
 
     def _get_cached_font(self, font_spec):
@@ -234,27 +257,189 @@ class WidgetsMixin:
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
+        # Optical vertical compensation for Linux/macOS FreeType font metrics (Windows GDI already centers vertically).
+        if sys.platform == "win32":
+            y_shift = 0
+        else:
+            has_descender = any(ch in text for ch in "gjpqy,;")
+            descent = metrics.metrics("descent")
+            y_shift = max(0, min(4, round(descent * (0.25 if has_descender else 0.50))))
         button._hover_size = (width, height)
-        button._normal_image = self.rounded_button_image(width, height, face, inset=3)
+        button._hover_y_shift = y_shift
+        bg_col = str(button.cget("bg")).lower()
+        face_l = str(face).lower()
+        is_primary = face_l in (ORANGE_ACCENT.lower(), ORANGE_HL.lower())
+        is_flat = face_l == bg_col
+        if not is_primary and not is_flat:
+            border_colour = blend_colour(BORDER_LINE, TEXT_WHITE, 0.14) if TITLEBAR_DARK_MODE == 0 else BORDER_LINE
+        else:
+            border_colour = None
+        button._rounded_border = border_colour
+        button._normal_image = self.rounded_button_image(
+            width, height, face, inset=5, y_shift=y_shift, lift=0, border_colour=border_colour,
+        )
         button.configure(image=button._normal_image)
 
-    def rounded_button_image(self, width, height, colour, inset=3):
-        """Rasterize and cache a rounded-rectangle PhotoImage for a button state."""
-        key = (width, height, colour, inset)
+    @staticmethod
+    def _build_aa_pill_png(w, h, left, top, right, bottom, radius, rgb, lift=0, border_rgb=None):
+        """Pure-Python signed-distance anti-aliased RGBA PNG rounded pill (zero Pillow dependency)."""
+        r, g, b = rgb
+        buf = bytearray(w * h * 4)
+        # Soft translucent drop shadow underneath the pill when popped out on hover.
+        if lift > 0:
+            sh_drop = min(3, lift + 1)
+            sh_a = 50 if lift == 1 else (75 if lift == 2 else 95)
+            sl, sr = left + 1, right - 1
+            st, sb = top + sh_drop, min(h, bottom + sh_drop)
+            srad = float(min(radius, (sr - sl) / 2.0, (sb - st) / 2.0))
+            sh_span = bytes((0, 0, 0, sh_a))
+            s_in_l = int(math.ceil(sl + srad))
+            s_in_r = int(math.floor(sr - srad))
+            for y in range(max(0, st), min(h, sb)):
+                dy = (st + srad - 0.5 - y) if y < st + srad else (y - (sb - srad - 0.5) if y >= sb - srad else 0.0)
+                row_off = y * w * 4
+                if dy <= 0.0:
+                    if sr > sl:
+                        buf[row_off + sl * 4:row_off + sr * 4] = sh_span * (sr - sl)
+                else:
+                    if s_in_r > s_in_l:
+                        buf[row_off + s_in_l * 4:row_off + s_in_r * 4] = sh_span * (s_in_r - s_in_l)
+                    for x in (*range(max(0, sl), min(w, s_in_l)), *range(max(0, s_in_r), min(w, sr))):
+                        dx = (sl + srad - 0.5 - x) if x < sl + srad else (x - (sr - srad - 0.5))
+                        cov = max(0.0, min(1.0, srad + 0.5 - math.hypot(dx, dy)))
+                        if cov > 0.0:
+                            buf[row_off + x * 4 + 3] = int(sh_a * cov)
+
+        # Anti-aliased pill body with exact sub-pixel corner coverage and optional 1px border.
+        rad = float(radius)
+        solid_rgba = bytes((r, g, b, 255))
+        border_rgba = bytes((*border_rgb, 255)) if border_rgb is not None else None
+        inner_l = int(math.ceil(left + rad))
+        inner_r = int(math.floor(right - rad))
+        for y in range(max(0, top), min(h, bottom)):
+            dy = (top + rad - 0.5 - y) if y < top + rad else (y - (bottom - rad - 0.5) if y >= bottom - rad else 0.0)
+            row_off = y * w * 4
+            if dy <= 0.0:
+                if right > left:
+                    if border_rgba is not None and right - left >= 2:
+                        buf[row_off + left * 4:row_off + (left + 1) * 4] = border_rgba
+                        if right - 1 > left + 1:
+                            buf[row_off + (left + 1) * 4:row_off + (right - 1) * 4] = solid_rgba * (right - left - 2)
+                        buf[row_off + (right - 1) * 4:row_off + right * 4] = border_rgba
+                    else:
+                        buf[row_off + left * 4:row_off + right * 4] = solid_rgba * (right - left)
+            else:
+                if inner_r > inner_l:
+                    span_rgba = border_rgba if (border_rgba is not None and (y == top or y == bottom - 1)) else solid_rgba
+                    buf[row_off + inner_l * 4:row_off + inner_r * 4] = span_rgba * (inner_r - inner_l)
+                for x in (*range(max(0, left), min(w, inner_l)), *range(max(0, inner_r), min(w, right))):
+                    dx = (left + rad - 0.5 - x) if x < left + rad else (x - (right - rad - 0.5))
+                    edge_dist = rad + 0.5 - math.hypot(dx, dy)
+                    cov = max(0.0, min(1.0, edge_dist))
+                    if cov > 0.0:
+                        if border_rgb is not None:
+                            in_cov = max(0.0, min(1.0, edge_dist - 1.0))
+                            pr = border_rgb[0] + (r - border_rgb[0]) * in_cov
+                            pg = border_rgb[1] + (g - border_rgb[1]) * in_cov
+                            pb = border_rgb[2] + (b - border_rgb[2]) * in_cov
+                        else:
+                            pr, pg, pb = r, g, b
+                        idx = row_off + x * 4
+                        da = buf[idx + 3] / 255.0
+                        oa = cov + da * (1.0 - cov)
+                        if oa > 0.0:
+                            buf[idx] = round((pr * cov) / oa)
+                            buf[idx + 1] = round((pg * cov) / oa)
+                            buf[idx + 2] = round((pb * cov) / oa)
+                            buf[idx + 3] = round(oa * 255)
+
+        stride = w * 4
+        raw = bytearray((stride + 1) * h)
+        for y in range(h):
+            raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)] = buf[y * stride:(y + 1) * stride]
+
+        def _chunk(tag, data):
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 1)) + _chunk(b"IEND", b"")
+
+    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None):
+        """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
+        key = (width, height, colour, inset, y_shift, lift, border_colour)
         if key not in self.button_images:
-            # Reserve 3px transparent margin per side so elastic hover bounce never shifts layout.
-            canvas_w, canvas_h = width + 6, height + 6
-            image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
-            left, top = inset, inset
-            right, bottom = canvas_w - inset, canvas_h - inset
+            # Reserve 6px transparent margin per side so elastic hover overshoot & shadow never shift layout,
+            # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
+            margin = 6
+            canvas_w = width + margin * 2
+            canvas_h = height + margin * 2 + y_shift * 2
+            left = inset
+            right = canvas_w - inset
+            # Expand symmetrically around the text (no vertical pill shift) so text stays dead-center on hover.
+            top = inset
+            bottom = height + margin * 2 - inset
             pill_w, pill_h = right - left, bottom - top
             radius = min(10, pill_h // 2, pill_w // 2)
-            image.put(colour, to=(left, top + radius, right, bottom - radius))
-            for y in range(radius):
-                dx = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
-                if left + dx < right - dx:
-                    image.put(colour, to=(left + dx, top + y, right - dx, top + y + 1))
-                    image.put(colour, to=(left + dx, bottom - y - 1, right - dx, bottom - y))
+            c = str(colour).lstrip("#")
+            rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+            border_rgb = None
+            if isinstance(border_colour, str) and border_colour.startswith("#") and len(border_colour) == 7:
+                bc = border_colour.lstrip("#")
+                border_rgb = (int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16))
+            image = None
+            try:
+                import io
+                from PIL import Image, ImageDraw
+                resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                rgba = (*rgb, 255)
+                ss = 3
+                hi = Image.new("RGBA", (canvas_w * ss, canvas_h * ss), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(hi)
+                # Subtle translucent drop shadow underneath the pill when popped out on hover.
+                if lift > 0:
+                    sh_drop = min(3, lift + 1) * ss
+                    sh_alpha = 50 if lift == 1 else (75 if lift == 2 else 95)
+                    draw.rounded_rectangle(
+                        (
+                            left * ss + ss,
+                            top * ss + sh_drop,
+                            right * ss - 1 - ss,
+                            min(canvas_h * ss - 1, bottom * ss - 1 + sh_drop),
+                        ),
+                        radius=radius * ss,
+                        fill=(0, 0, 0, sh_alpha),
+                    )
+                draw.rounded_rectangle(
+                    (left * ss, top * ss, right * ss - 1, bottom * ss - 1),
+                    radius=radius * ss,
+                    fill=rgba,
+                    outline=(*border_rgb, 255) if border_rgb is not None else None,
+                    width=ss if border_rgb is not None else 0,
+                )
+                aa = hi.resize((canvas_w, canvas_h), resample)
+                buf = io.BytesIO()
+                aa.save(buf, format="PNG", compress_level=1)
+                image = tk.PhotoImage(master=self, data=buf.getvalue())
+            except Exception:
+                image = None
+            if image is None:
+                # Zero-dependency anti-aliased RGBA PNG fallback so Windows without Pillow matches Linux exactly.
+                try:
+                    png_bytes = self._build_aa_pill_png(
+                        canvas_w, canvas_h, left, top, right, bottom, radius, rgb,
+                        lift=lift, border_rgb=border_rgb,
+                    )
+                    image = tk.PhotoImage(master=self, data=png_bytes)
+                except Exception:
+                    image = None
+            if image is None:
+                image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
+                image.put(colour, to=(left, top + radius, right, bottom - radius))
+                for y in range(radius):
+                    dx = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
+                    if left + dx < right - dx:
+                        image.put(colour, to=(left + dx, top + y, right - dx, top + y + 1))
+                        image.put(colour, to=(left + dx, bottom - y - 1, right - dx, bottom - y))
             self.button_images[key] = image
             if len(self.button_images) > 512:
                 self.button_images.popitem(last=False)
@@ -272,17 +457,22 @@ class WidgetsMixin:
         tile = max(26, round(28 * scaling))
         gap = max(4, round(5 * scaling))
         word_gap = max(9, round(10 * scaling))
-        tile_font = ("Arial", -round(tile * 0.92), "bold")
-        sounds_font = ("Arial", -round(tile * 0.96), "bold")
+        tile_font = (DEFAULT_FONT, -round(tile * 0.78), "bold")
+        sounds_font = (DEFAULT_FONT, -round(tile * 0.86), "bold")
+        tile_metrics = self._get_cached_font(tile_font)
         sounds_metrics = self._get_cached_font(sounds_font)
+        # On Linux/macOS (FreeType/Xft), shift uppercase glyphs down by ~half the descent so cap-height
+        # sits optically centered; Windows GDI already balances internal leading with descent.
+        tile_y_nudge = 0.0 if sys.platform == "win32" else tile_metrics.metrics("descent") * 0.45
+        sounds_y_nudge = 0.0 if sys.platform == "win32" else sounds_metrics.metrics("descent") * 0.45
 
         tiles_w = tile * 3 + gap * 2
         sounds_w = sounds_metrics.measure("SOUNDS")
-        canvas_w = tiles_w + word_gap + sounds_w + 2
+        canvas_w = tiles_w + word_gap + sounds_w + 4
         canvas_h = max(tile, sounds_metrics.metrics("linespace"))
         y0 = round((canvas_h - tile) / 2)
         y1 = y0 + tile
-        center_y = (y0 + y1) / 2
+        center_y = (y0 + y1) / 2.0
 
         logo_canvas = tk.Canvas(
             container,
@@ -299,8 +489,8 @@ class WidgetsMixin:
             tag = f"bbc_tile_{idx}"
             rect_id = logo_canvas.create_rectangle(x0, y0, x1, y1, fill=LOGO_TILE_BG, outline="", tags=tag)
             text_id = logo_canvas.create_text(
-                (x0 + x1) / 2,
-                center_y,
+                (x0 + x1) / 2.0,
+                center_y + tile_y_nudge,
                 text=char,
                 fill=LOGO_TILE_FG,
                 font=tile_font,
@@ -310,7 +500,7 @@ class WidgetsMixin:
             tile_items.append((rect_id, text_id))
         logo_canvas.create_text(
             tiles_w + word_gap,
-            center_y,
+            center_y + sounds_y_nudge,
             text="SOUNDS",
             fill=ORANGE_ACCENT,
             font=sounds_font,
@@ -764,38 +954,57 @@ class WidgetsMixin:
             if src_img.value:
                 dll.GdipDisposeImage(src_img)
 
+    def _get_rounded_mask(self, width_px, height_px, corner_radius):
+        """Return a cached anti-aliased L-mode rounded-rectangle mask for fast cover composition."""
+        cache = getattr(self, "_rounded_mask_cache", None)
+        if cache is None:
+            cache = {}
+            self._rounded_mask_cache = cache
+        key = (width_px, height_px, corner_radius)
+        mask = cache.get(key)
+        if mask is None:
+            from PIL import Image, ImageDraw
+            resample = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+            radius = min(corner_radius, width_px // 2, height_px // 2)
+            # 2x supersampled mask rendered once per (w, h, r) size and reused across all cards.
+            hi = Image.new("L", (width_px * 2, height_px * 2), 0)
+            draw = ImageDraw.Draw(hi)
+            draw.rounded_rectangle(
+                (0, 0, width_px * 2 - 1, height_px * 2 - 1),
+                radius=radius * 2,
+                fill=255,
+            )
+            mask = hi.resize((width_px, height_px), resample)
+            if len(cache) > 64:
+                cache.clear()
+            cache[key] = mask
+        return mask
+
     def _load_podcast_picture_image(self, img_path, width_px, height_px, corner_radius=0, backdrop=None):
         """Load, centre-crop, and optionally round-corner a podcast cover picture."""
-        # Preferred path: Pillow handles JPG/PNG/WEBP with LANCZOS centre-crop and anti-aliased rounded corners.
+        # Preferred path: Pillow handles JPG/PNG/WEBP with exact centre-crop and anti-aliased rounded corners,
+        # outputting PPM directly to tk.PhotoImage so python3-pillow-tk / ImageTk is NOT required on Linux.
         try:
-            from PIL import Image, ImageDraw, ImageOps, ImageTk
+            from PIL import Image, ImageOps
             resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             with Image.open(img_path) as raw_img:
                 fitted = ImageOps.fit(
-                    raw_img.convert("RGBA"),
+                    raw_img.convert("RGB"),
                     (width_px, height_px),
                     method=resample,
                     centering=(0.5, 0.5),
                 )
             if corner_radius > 0:
-                radius = min(corner_radius, width_px // 2, height_px // 2)
-                # Render a 2x supersampled rounded-rectangle mask for smooth anti-aliased corners.
-                mask = Image.new("L", (width_px * 2, height_px * 2), 0)
-                draw = ImageDraw.Draw(mask)
-                draw.rounded_rectangle(
-                    (0, 0, width_px * 2 - 1, height_px * 2 - 1),
-                    radius=radius * 2,
-                    fill=255,
-                )
-                mask = mask.resize((width_px, height_px), resample)
+                mask = self._get_rounded_mask(width_px, height_px, corner_radius)
                 if backdrop and isinstance(backdrop, str) and backdrop.startswith("#") and len(backdrop) == 7:
-                    bg_rgb = tuple(int(backdrop[p:p + 2], 16) for p in (1, 3, 5)) + (255,)
+                    bg_rgb = tuple(int(backdrop[p:p + 2], 16) for p in (1, 3, 5))
                 else:
-                    bg_rgb = (0, 0, 0, 0)
-                canvas_img = Image.new("RGBA", (width_px, height_px), bg_rgb)
+                    bg_rgb = (27, 29, 33)
+                canvas_img = Image.new("RGB", (width_px, height_px), bg_rgb)
                 canvas_img.paste(fitted, (0, 0), mask)
                 fitted = canvas_img
-            return ImageTk.PhotoImage(fitted, master=self)
+            ppm_header = f"P6\n{width_px} {height_px}\n255\n".encode("ascii")
+            return tk.PhotoImage(master=self, data=ppm_header + fitted.tobytes(), format="PPM")
         except Exception:
             pass
 
@@ -1042,7 +1251,7 @@ class WidgetsMixin:
             blend_colour(rest_bg, ORANGE_ACCENT, 0.07)
             if is_light else blend_colour(rest_bg, "#ffffff", 0.06)
         )
-        base_inset = 3
+        base_inset = 5
         card_frame.set_inset(base_inset)
         hover_state = {
             "step": 0,
@@ -1092,12 +1301,13 @@ class WidgetsMixin:
             cur += 1 if tgt > cur else -1
             hover_state["step"] = cur
 
-            t = cur / 6.0
-            eased = 1.0 - (1.0 - t) ** 3 if tgt > 0 else t * t * (3.0 - 2.0 * t)
-            inset = max(0, min(base_inset, round(base_inset * (1.0 - eased))))
-            cur_bg = blend_colour(rest_bg, hover_bg, eased)
-            cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, eased)
-            cur_title = blend_colour(TEXT_WHITE, ORANGE_HL, eased * 0.55)
+            t = cur / 10.0
+            raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if tgt > 0 else 1.0 - (1.0 - t) ** 2.4
+            color_t = max(0.0, min(1.0, raw_eased))
+            inset = max(0, min(base_inset, round(base_inset - 3.0 * raw_eased)))
+            cur_bg = blend_colour(rest_bg, hover_bg, color_t)
+            cur_bd = blend_colour(BORDER_LINE, ORANGE_ACCENT, color_t)
+            cur_title = blend_colour(TEXT_WHITE, ORANGE_HL, color_t * 0.55)
 
             if inset != hover_state["last_inset"]:
                 card_frame.set_inset(inset)
@@ -1124,10 +1334,21 @@ class WidgetsMixin:
                 hover_state["last_title"] = cur_title
 
             if cur != tgt:
-                hover_state["job"] = self.after(16, apply_frame)
+                hover_state["job"] = self.after(self._anim_frame_interval(16), apply_frame)
 
         def set_hover_target(target):
             hover_state["target"] = target
+            if self._is_reduced_motion():
+                if hover_state["job"] is not None:
+                    try:
+                        self.after_cancel(hover_state["job"])
+                    except tk.TclError:
+                        pass
+                    hover_state["job"] = None
+                if hover_state["step"] != target:
+                    hover_state["step"] = max(0, target - 1) if target > hover_state["step"] else min(10, target + 1)
+                    apply_frame()
+                return
             if hover_state["job"] is None and hover_state["step"] != target:
                 apply_frame()
 
@@ -1141,7 +1362,7 @@ class WidgetsMixin:
                 except tk.TclError:
                     pass
                 hover_state["leave_job"] = None
-            set_hover_target(6)
+            set_hover_target(10)
 
         def on_leave(_event=None):
             if hover_state["leave_job"] is not None:
@@ -1283,7 +1504,8 @@ class WidgetsMixin:
     def render_podcast_grid(
         self, parent_widget, items_list, columns_count=6,
         show_play=False, show_remove=False, max_count=8, single_row=False,
-        rating_index=None, show_end=True, ratings_mode=False,
+        rating_index=None, show_end=True, ratings_mode=False, insert_anim=None,
+        evaporate_anim=None,
     ):
         """Render a responsive single-Canvas grid of podcast cards (zero child HWNDs for tear-free scrolling)."""
         if not items_list:
@@ -1291,14 +1513,21 @@ class WidgetsMixin:
             return
         displayed_items = items_list[:max_count]
         if not single_row and not ratings_mode and len(displayed_items) > PODCASTS_PER_PAGE:
-            self.paginate_podcasts(
-                parent_widget, displayed_items,
-                lambda parent, rows, last: self.render_podcast_grid(
+            first_insert = [insert_anim]
+            first_evap = [evaporate_anim]
+            def _render_paginated(parent, rows, last):
+                spec = first_insert[0]
+                first_insert[0] = None
+                espec = first_evap[0]
+                first_evap[0] = None
+                self.render_podcast_grid(
                     parent, rows, columns_count, show_play=show_play,
                     show_remove=show_remove, max_count=len(rows), rating_index=rating_index,
                     show_end=show_end and last and len(displayed_items) == len(items_list),
-                ),
-            )
+                    insert_anim=spec,
+                    evaporate_anim=espec,
+                )
+            self.paginate_podcasts(parent_widget, displayed_items, _render_paginated)
             return
 
         bg_col = parent_widget.cget("bg")
@@ -1359,8 +1588,9 @@ class WidgetsMixin:
         your_rating_txt = translate("Your rating")
         no_more_txt = translate("No more results")
         hover_bg_col = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.55)
-        sec_btn_bg = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.60)
+        sec_btn_bg = ACTION_BTN_BG
         sec_btn_hover = SECONDARY_HOVER_BG
+        sec_btn_outline = blend_colour(BORDER_LINE, TEXT_WHITE, 0.14) if TITLEBAR_DARK_MODE == 0 else BORDER_LINE
 
         # Precompute card metadata once so layout/reflow stays instant.
         card_entries = []
@@ -1423,10 +1653,14 @@ class WidgetsMixin:
                 y0 = row_i * (card_h + gap)
                 x1 = x0 + card_w
                 y1 = y0 + card_h
+                body_tag = f"card_body_{idx}"
+                all_tag = f"card_all_{idx}"
+                body_tags = (body_tag, all_tag)
 
                 bg_item = grid_canvas.create_polygon(
-                    rounded_pts(x0 + 1, y0 + 1, x1 - 1, y1 - 1, 12),
+                    rounded_pts(x0 + 4, y0 + 4, x1 - 4, y1 - 4, 12),
                     smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
+                    tags=all_tag,
                 )
 
                 cov_x = x0 + (card_w - cover_sz) // 2
@@ -1436,12 +1670,13 @@ class WidgetsMixin:
                     corner_radius=8, backdrop=CARD_BG,
                 )
                 grid_canvas._photo_refs.append(photo)
-                grid_canvas.create_image(cov_x, cov_y, image=photo, anchor="nw")
+                grid_canvas.create_image(cov_x, cov_y, image=photo, anchor="nw", tags=body_tags)
                 if icon is not None:
                     grid_canvas.create_text(
                         cov_x + cover_sz // 2, cov_y + cover_sz // 2,
                         text=icon, fill=TEXT_WHITE,
                         font=self._get_cached_font((DEFAULT_FONT, max(12, cover_sz // 6), "bold")),
+                        tags=body_tags,
                     )
 
                 tx = x0 + 12
@@ -1451,24 +1686,26 @@ class WidgetsMixin:
                 disp_title = title if len(title) <= 44 else (title[:42].rstrip() + "…")
                 title_item = grid_canvas.create_text(
                     tx, ty, text=disp_title, fill=TEXT_WHITE, font=title_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 tb = grid_canvas.bbox(title_item)
                 next_y = (tb[3] if tb else ty + 20) + 4
                 grid_canvas.create_text(
                     tx, next_y, text=meta_info, fill=TEXT_GRAY, font=meta_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 next_y += round(17 * max(0.95, f_scale))
                 grid_canvas.create_text(
                     tx, next_y, text=avg_txt, fill=GOLD_STAR, font=meta_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 next_y += round(18 * max(0.95, f_scale))
 
+                star_items = []
                 if r_val is not None:
                     grid_canvas.create_text(
-                        tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font, anchor="nw",
+                        tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font,
+                        anchor="nw", tags=body_tags,
                     )
                     next_y += round(15 * max(0.95, f_scale))
                     try:
@@ -1476,11 +1713,12 @@ class WidgetsMixin:
                     except (TypeError, ValueError):
                         filled = 0
                     for s_i in range(5):
-                        grid_canvas.create_text(
+                        s_id = grid_canvas.create_text(
                             tx + s_i * round(16 * max(0.95, f_scale)), next_y,
                             text="★", fill=GOLD_STAR if s_i < filled else STAR_EMPTY,
-                            font=star_font, anchor="nw",
+                            font=star_font, anchor="nw", tags=body_tags,
                         )
+                        star_items.append(s_id)
 
                 card_proxy = _CanvasRectProxy(grid_canvas, x0, y0, card_w, card_h)
                 cover_proxy = _CanvasRectProxy(grid_canvas, cov_x, cov_y, cover_sz, cover_sz)
@@ -1496,14 +1734,18 @@ class WidgetsMixin:
                 def add_btn(bx0, bx1, label_s, primary, action):
                     base_c = ORANGE_ACCENT if primary else sec_btn_bg
                     hov_c = ORANGE_HL if primary else sec_btn_hover
-                    fg_c = PRIMARY_BTN_FG if primary else TEXT_WHITE
+                    fg_c = PRIMARY_BTN_FG if primary else ACTION_BTN_FG
                     poly = grid_canvas.create_polygon(
                         rounded_pts(bx0, by0, bx1, by1, 8),
-                        smooth=True, fill=base_c, outline="",
+                        smooth=True, fill=base_c,
+                        outline="" if primary else sec_btn_outline,
+                        width=0 if primary else 1,
+                        tags=body_tags,
                     )
+                    btn_y_nudge = 0.0 if sys.platform == "win32" else btn_font.metrics("descent") * 0.30
                     lbl = grid_canvas.create_text(
-                        (bx0 + bx1) / 2.0, (by0 + by1) / 2.0,
-                        text=label_s, fill=fg_c, font=btn_font,
+                        (bx0 + bx1) / 2.0, (by0 + by1) / 2.0 + btn_y_nudge,
+                        text=label_s, fill=fg_c, font=btn_font, tags=body_tags,
                     )
                     buttons.append({
                         "rect": (bx0, by0, bx1, by1),
@@ -1512,6 +1754,8 @@ class WidgetsMixin:
                         "base": base_c,
                         "hover": hov_c,
                         "action": action,
+                        "step": 0,
+                        "target": 0,
                     })
 
                 if ratings_mode:
@@ -1523,7 +1767,9 @@ class WidgetsMixin:
                     )
                     add_btn(
                         x1 - 12 - rm_w, x1 - 12, remove_txt, False,
-                        lambda tid=pid: self.remove_rating(tid),
+                        lambda tid=pid: self.remove_rating(
+                            tid, evaporate=lambda done, t_pid=tid: evaporate_card(t_pid, done),
+                        ),
                     )
                 else:
                     det_w = max(60, btn_font.measure(details_txt) + 20)
@@ -1538,7 +1784,9 @@ class WidgetsMixin:
                         rx0 = tx + det_w + 6
                         add_btn(
                             rx0, rx0 + rm_w, remove_txt, False,
-                            lambda tid=pid: self.remove_from_history(tid),
+                            lambda tid=pid: self.remove_from_history(
+                                tid, evaporate=lambda done, t_pid=tid: evaporate_card(t_pid, done),
+                            ),
                         )
                     if show_play:
                         pw = max(36, round(38 * max(0.95, f_scale)))
@@ -1551,25 +1799,395 @@ class WidgetsMixin:
                             ),
                         )
 
+                genre_info = GENRE_TILE_DETAILS.get(category)
+                accent_col = genre_info[0] if genre_info else ORANGE_ACCENT
                 state["cards"].append({
+                    "pid": pid,
                     "rect": (x0, y0, x1, y1),
+                    "cover_rect": (cov_x, cov_y, cover_sz),
+                    "proxies": (card_proxy, cover_proxy, title_proxy),
+                    "photo": photo,
                     "bg_item": bg_item,
                     "title_item": title_item,
+                    "body_tag": body_tag,
+                    "all_tag": all_tag,
+                    "accent_col": accent_col,
+                    "star_items": star_items,
                     "buttons": buttons,
+                    "step": 0,
+                    "target": 0,
                     "open_action": (
                         lambda tid=pid, t=title, c=category, cp=card_proxy, cvp=cover_proxy, tp=title_proxy:
                         self.open_podcast_detail(tid, t, c, source_card=cp, source_cover=cvp, source_title=tp)
                     ),
                 })
 
+            state["cols"] = cols
+            state["card_h"] = card_h
+            state["gap"] = gap
+            state["end_item"] = None
             final_row, used_cols = divmod(total_items, cols)
             if show_end and total_items == len(items_list) and used_cols and (not single_row or final_row == 0):
                 ex0 = used_cols * (card_w + gap)
                 ex1 = cols * card_w + (cols - 1) * gap
                 ey = final_row * (card_h + gap) + card_h // 2
-                grid_canvas.create_text(
+                state["end_item"] = grid_canvas.create_text(
                     (ex0 + ex1) / 2.0, ey, text=no_more_txt, fill="#777b83", font=end_font,
                 )
+
+        hover_loop = {"job": None, "evap_job": None}
+
+        def cancel_hover_loop(_event=None):
+            for jkey in ("job", "evap_job"):
+                if hover_loop[jkey] is not None:
+                    try:
+                        self.after_cancel(hover_loop[jkey])
+                    except tk.TclError:
+                        pass
+                    hover_loop[jkey] = None
+
+        grid_canvas.bind("<Destroy>", cancel_hover_loop, add="+")
+
+        def evaporate_card(target_pid, on_complete, *, force_callback=False):
+            """Dissolve a removed card into ~110 cover-sampled rising particles (1 batched Tcl eval/frame),
+            slide all following cards smoothly into place, and update in-place with zero page flicker."""
+            card_idx = next(
+                (i for i, item in enumerate(state["cards"]) if str(item.get("pid")) == str(target_pid)),
+                -1,
+            )
+            if (
+                self._is_reduced_motion()
+                or not grid_canvas.winfo_exists()
+                or card_idx < 0
+                or card_idx >= len(state["cards"])
+            ):
+                on_complete()
+                return
+
+            cancel_hover_loop()
+            self._transition_active = True
+            state["hovered"] = None
+            state["hovered_btn"] = None
+            c = state["cards"][card_idx]
+            x0, y0, x1, y1 = c["rect"]
+            cov_x, cov_y, cov_sz = c["cover_rect"]
+            photo_ref = c["photo"]
+            bg_item = c["bg_item"]
+            grid_canvas.delete(c["body_tag"])
+            if state.get("end_item") is not None:
+                try:
+                    grid_canvas.delete(state["end_item"])
+                except tk.TclError:
+                    pass
+                state["end_item"] = None
+
+            import random as _random
+            rng = _random.Random(card_idx * 131 + int(x0 + y0))
+            cw_card = max(20.0, x1 - x0)
+            ch_card = max(20.0, y1 - y0)
+
+            # Sample real RGB pixels from the podcast's actual cover art so particles match the artwork.
+            cover_samples = []
+            try:
+                pw, ph = photo_ref.width(), photo_ref.height()
+                if pw > 8 and ph > 8:
+                    for gy in range(5):
+                        sy = min(ph - 1, max(1, int((gy + 0.5) * ph / 5.0)))
+                        for gx in range(5):
+                            sx = min(pw - 1, max(1, int((gx + 0.5) * pw / 5.0)))
+                            val = photo_ref.get(sx, sy)
+                            if isinstance(val, tuple):
+                                r_c, g_c, b_c = val[:3]
+                            else:
+                                r_c, g_c, b_c = (int(v) for v in str(val).split()[:3])
+                            cover_samples.append(f"#{r_c:02x}{g_c:02x}{b_c:02x}")
+            except Exception:
+                cover_samples = []
+
+            body_palette = (
+                blend_colour(CARD_BG, TEXT_WHITE, 0.28),
+                blend_colour(CARD_BG, TEXT_WHITE, 0.16),
+                TEXT_GRAY,
+                c.get("accent_col", ORANGE_ACCENT),
+                ORANGE_ACCENT,
+                GOLD_STAR,
+            )
+            if not cover_samples:
+                cover_samples = list(body_palette)
+
+            # Precompute a 10-step colour fade ramp per unique hex colour for zero blend math in the frame loop.
+            fade_ramps = {}
+            def get_ramp(hex_c):
+                ramp = fade_ramps.get(hex_c)
+                if ramp is None:
+                    ramp = tuple(blend_colour(hex_c, bg_col, i / 9.0) for i in range(10))
+                    fade_ramps[hex_c] = ramp
+                return ramp
+
+            # Spawn ~110 particles: dense fine dust + soft vapour wisps with a natural top-to-bottom / wind-sweep liftoff.
+            particles = []
+            # 1) ~72 particles sampled across the cover artwork area.
+            for idx_p in range(72):
+                fx = rng.random()
+                fy = rng.random()
+                px = cov_x + 4.0 + fx * max(8.0, cov_sz - 8.0)
+                py = cov_y + 4.0 + fy * max(8.0, cov_sz - 8.0)
+                col = cover_samples[min(len(cover_samples) - 1, int(fy * 5) * 5 + int(fx * 5))] if len(cover_samples) == 25 else rng.choice(cover_samples)
+                # Fine specks + soft larger vapour puffs.
+                rad = rng.uniform(1.6, 3.2) if (idx_p % 3) else rng.uniform(3.4, 6.2)
+                # Natural upward buoyancy + subtle rightward breeze + organic turbulence.
+                vx = rng.uniform(4.0, 38.0) + rng.uniform(-14.0, 14.0)
+                vy = rng.uniform(-125.0, -45.0)
+                phase = rng.uniform(0.0, math.tau)
+                freq = rng.uniform(5.0, 9.5)
+                amp = rng.uniform(3.0, 9.0)
+                # Top-right corners evaporate slightly first, sweeping organically across the card.
+                delay = max(0.0, min(0.32, (fy * 0.16) + ((1.0 - fx) * 0.10) + rng.uniform(0.0, 0.08)))
+                oid = grid_canvas.create_oval(
+                    px - rad, py - rad, px + rad, py + rad,
+                    fill=col, outline="", tags="evap_particle",
+                )
+                particles.append([oid, px, py, rad, get_ramp(col), vx, vy, phase, freq, amp, delay, 0])
+
+            # 2) ~38 particles across the lower text/button body of the card.
+            body_top = cov_y + cov_sz
+            body_h = max(20.0, y1 - body_top - 6.0)
+            for idx_p in range(38):
+                fx = rng.random()
+                fy = rng.random()
+                px = x0 + 8.0 + fx * max(10.0, cw_card - 16.0)
+                py = body_top + fy * body_h
+                col = rng.choice(body_palette)
+                rad = rng.uniform(1.6, 3.0) if (idx_p % 3) else rng.uniform(3.2, 5.6)
+                vx = rng.uniform(4.0, 34.0) + rng.uniform(-12.0, 12.0)
+                vy = rng.uniform(-110.0, -38.0)
+                phase = rng.uniform(0.0, math.tau)
+                freq = rng.uniform(5.0, 9.0)
+                amp = rng.uniform(2.5, 8.0)
+                delay = max(0.0, min(0.36, 0.12 + fy * 0.14 + rng.uniform(0.0, 0.08)))
+                oid = grid_canvas.create_oval(
+                    px - rad, py - rad, px + rad, py + rad,
+                    fill=col, outline="", tags="evap_particle",
+                )
+                particles.append([oid, px, py, rad, get_ramp(col), vx, vy, phase, freq, amp, delay, 0])
+
+            # Prepare seamless reflow targets: every card after card_idx slides into the previous card's slot.
+            reflow_cards = []
+            for k in range(card_idx + 1, len(state["cards"])):
+                src_r = state["cards"][k]["rect"]
+                dst_r = state["cards"][k - 1]["rect"]
+                reflow_cards.append([
+                    state["cards"][k]["all_tag"],
+                    float(dst_r[0] - src_r[0]),
+                    float(dst_r[1] - src_r[1]),
+                    0.0,  # applied dx
+                    0.0,  # applied dy
+                ])
+
+            canvas_path = str(grid_canvas)
+            tk_eval = grid_canvas.tk.eval
+            sin = math.sin
+            evap_dur = 0.780
+            reflow_start = 0.400  # Start sliding the next cards over while the mist gently dissipates.
+            reflow_dur = 0.440
+            total_dur = max(evap_dur, reflow_start + reflow_dur) if reflow_cards else evap_dur
+            evap_st = {"elapsed": 0.0, "last_t": None, "bg_gone": False}
+
+            def finish_evap():
+                hover_loop["evap_job"] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                try:
+                    grid_canvas.delete("evap_particle")
+                    if not evap_st["bg_gone"]:
+                        grid_canvas.delete(bg_item)
+                    # Snap any sub-pixel remainder so every reflowed card lands pixel-exact in its new slot.
+                    for rc in reflow_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = rc
+                        rem_x = tot_dx - cur_dx
+                        rem_y = tot_dy - cur_dy
+                        if abs(rem_x) > 0.01 or abs(rem_y) > 0.01:
+                            grid_canvas.move(tag, rem_x, rem_y)
+                except tk.TclError:
+                    pass
+
+                # Update the grid in-place (zero page rebuild, zero flicker) whenever cards remain on this page.
+                can_update_in_place = (not force_callback) and len(state["cards"]) > 1 and show_end
+                if can_update_in_place:
+                    # Shift geometry metadata of every card after card_idx to its new slot.
+                    for k in range(len(state["cards"]) - 1, card_idx, -1):
+                        cur_c = state["cards"][k]
+                        prev_c = state["cards"][k - 1]
+                        dx = prev_c["rect"][0] - cur_c["rect"][0]
+                        dy = prev_c["rect"][1] - cur_c["rect"][1]
+                        cur_c["rect"] = prev_c["rect"]
+                        cx, cy, csz = cur_c["cover_rect"]
+                        cur_c["cover_rect"] = (cx + dx, cy + dy, csz)
+                        for b in cur_c["buttons"]:
+                            bx0, by0, bx1, by1 = b["rect"]
+                            b["rect"] = (bx0 + dx, by0 + dy, bx1 + dx, by1 + dy)
+                        for proxy in cur_c.get("proxies", ()):
+                            proxy._x += dx
+                            proxy._y += dy
+                    removed = state["cards"].pop(card_idx)
+                    grid_canvas._canvas_card_rects.pop(str(removed.get("pid")), None)
+                    for ei, entry in enumerate(card_entries):
+                        if str(entry[0]) == str(target_pid):
+                            card_entries.pop(ei)
+                            break
+                    cols_n = max(1, state.get("cols", 4))
+                    ch_n = state.get("card_h", 320)
+                    gap_n = state.get("gap", 10)
+                    rem_count = len(state["cards"])
+                    new_rows = max(1, math.ceil(rem_count / cols_n))
+                    grid_canvas.configure(height=new_rows * ch_n + max(0, new_rows - 1) * gap_n + 4)
+                    updater = getattr(self, "_active_count_updater", None)
+                    if updater is not None:
+                        try:
+                            updater(-1)
+                        except tk.TclError:
+                            pass
+                    self._transition_active = False
+                    return
+
+                self._transition_active = False
+                on_complete()
+
+            def step_evap():
+                hover_loop["evap_job"] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                t0 = monotonic()
+                dt = 0.016 if evap_st["last_t"] is None else max(0.004, min(0.042, t0 - evap_st["last_t"]))
+                evap_st["last_t"] = t0
+                evap_st["elapsed"] = min(total_dur, evap_st["elapsed"] + dt)
+                el = evap_st["elapsed"]
+                p = min(1.0, el / evap_dur)
+
+                cmds = []
+                append = cmds.append
+
+                # Dissolve the card silhouette quickly over the first 28% as particles peel off.
+                if not evap_st["bg_gone"]:
+                    if p >= 0.28:
+                        append(f"{canvas_path} delete {bg_item}")
+                        evap_st["bg_gone"] = True
+                    else:
+                        bp = p / 0.28
+                        shrink = 4.0 + 16.0 * bp
+                        lift_y = -14.0 * bp
+                        pts = " ".join(
+                            f"{v:.1f}"
+                            for v in rounded_pts(x0 + shrink, y0 + shrink + lift_y, x1 - shrink, y1 - shrink + lift_y, 12)
+                        )
+                        append(f"{canvas_path} coords {bg_item} {pts}")
+                        append(
+                            f"{canvas_path} itemconfigure {bg_item} "
+                            f"-fill {blend_colour(CARD_BG, bg_col, bp)} "
+                            f"-outline {blend_colour(ORANGE_ACCENT, bg_col, bp)}"
+                        )
+
+                # Update all ~110 particles in one batched Tcl script.
+                for part in particles:
+                    oid, px, py, rad, ramp, vx, vy, phase, freq, amp, delay, last_ci = part
+                    if last_ci == -1:
+                        continue
+                    local_p = (p - delay) / max(0.18, 1.0 - delay)
+                    if local_p <= 0.0:
+                        continue
+                    if local_p >= 1.0:
+                        append(f"{canvas_path} itemconfigure {oid} -state hidden")
+                        part[11] = -1
+                        continue
+                    # Accelerate gently upward like warm vapour while drifting in a soft breeze.
+                    ease_y = local_p ** 1.35
+                    nx = px + vx * (local_p ** 1.15) + sin(phase + local_p * freq) * amp * local_p
+                    ny = py + vy * ease_y
+                    nr = max(0.5, rad * (1.0 - local_p * 0.88))
+                    append(f"{canvas_path} coords {oid} {nx - nr:.1f} {ny - nr:.1f} {nx + nr:.1f} {ny + nr:.1f}")
+                    ci = min(9, int(local_p * 9.5))
+                    if ci != last_ci:
+                        append(f"{canvas_path} itemconfigure {oid} -fill {ramp[ci]}")
+                        part[11] = ci
+
+                # Seamlessly slide all subsequent cards into the vacated positions with a soft elastic settle.
+                if reflow_cards and el >= reflow_start:
+                    rp = min(1.0, (el - reflow_start) / reflow_dur)
+                    reased = ease_out_elastic(rp, damping=5.2, frequency=1.08)
+                    for rc in reflow_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = rc
+                        target_dx = tot_dx * reased
+                        target_dy = tot_dy * reased
+                        step_dx = target_dx - cur_dx
+                        step_dy = target_dy - cur_dy
+                        if abs(step_dx) >= 0.25 or abs(step_dy) >= 0.25:
+                            append(f"{canvas_path} move {tag} {step_dx:.2f} {step_dy:.2f}")
+                            rc[3] = target_dx
+                            rc[4] = target_dy
+
+                if cmds:
+                    try:
+                        tk_eval("\n".join(cmds))
+                    except tk.TclError:
+                        finish_evap()
+                        return
+
+                if el < total_dur:
+                    spent = (monotonic() - t0) * 1000.0
+                    hover_loop["evap_job"] = grid_canvas.after(self._next_frame_delay(spent, 16), step_evap)
+                else:
+                    finish_evap()
+
+            step_evap()
+
+        def paint_card_hover(c):
+            step = c["step"]
+            t = step / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if c["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            # Symmetrically spring the card border from inset=4 -> 0 overshoot -> settle at 1.5.
+            inset = max(0.0, min(4.0, 4.0 - 2.6 * raw))
+            x0, y0, x1, y1 = c["rect"]
+            grid_canvas.coords(c["bg_item"], *rounded_pts(x0 + inset, y0 + inset, x1 - inset, y1 - inset, 12))
+            grid_canvas.itemconfigure(
+                c["bg_item"],
+                fill=blend_colour(CARD_BG, hover_bg_col, col_t),
+                outline=blend_colour(BORDER_LINE, ORANGE_ACCENT, col_t),
+            )
+            grid_canvas.itemconfigure(c["title_item"], fill=blend_colour(TEXT_WHITE, ORANGE_HL, col_t))
+
+        def paint_btn_hover(b):
+            step = b["step"]
+            t = step / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if b["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            # Symmetrically pop the card button outward around its centered text.
+            grow = max(0.0, min(3.5, 2.2 * raw))
+            bx0, by0, bx1, by1 = b["rect"]
+            grid_canvas.coords(b["poly"], *rounded_pts(bx0 - grow, by0 - grow, bx1 + grow, by1 + grow, 8 + grow * 0.4))
+            grid_canvas.itemconfigure(b["poly"], fill=blend_colour(b["base"], b["hover"], col_t))
+
+        def tick_grid_hover():
+            hover_loop["job"] = None
+            if not grid_canvas.winfo_exists() or getattr(self, "_transition_active", False):
+                return
+            any_active = False
+            for c in state["cards"]:
+                if c["step"] != c["target"]:
+                    c["step"] += 1 if c["target"] > c["step"] else -1
+                    paint_card_hover(c)
+                    if c["step"] != c["target"]:
+                        any_active = True
+                for b in c["buttons"]:
+                    if b["step"] != b["target"]:
+                        b["step"] += 1 if b["target"] > b["step"] else -1
+                        paint_btn_hover(b)
+                        if b["step"] != b["target"]:
+                            any_active = True
+            if any_active:
+                hover_loop["job"] = self.after(self._anim_frame_interval(16), tick_grid_hover)
 
         def set_hover(card_idx, btn_idx):
             prev_c = state["hovered"]
@@ -1580,23 +2198,35 @@ class WidgetsMixin:
                 pc, pb = prev_b
                 if pc < len(state["cards"]) and pb < len(state["cards"][pc]["buttons"]):
                     b = state["cards"][pc]["buttons"][pb]
-                    grid_canvas.itemconfigure(b["poly"], fill=b["base"])
+                    b["target"] = 0
+                    if self._is_reduced_motion():
+                        b["step"] = 0
+                        paint_btn_hover(b)
             if prev_c is not None and prev_c != card_idx and prev_c < len(state["cards"]):
                 c = state["cards"][prev_c]
-                grid_canvas.itemconfigure(c["bg_item"], fill=CARD_BG, outline=BORDER_LINE)
-                grid_canvas.itemconfigure(c["title_item"], fill=TEXT_WHITE)
+                c["target"] = 0
+                if self._is_reduced_motion():
+                    c["step"] = 0
+                    paint_card_hover(c)
             if card_idx is not None and card_idx < len(state["cards"]):
                 c = state["cards"][card_idx]
-                grid_canvas.itemconfigure(c["bg_item"], fill=hover_bg_col, outline=ORANGE_ACCENT)
-                grid_canvas.itemconfigure(c["title_item"], fill=ORANGE_HL)
+                c["target"] = 10
+                if self._is_reduced_motion():
+                    c["step"] = 10
+                    paint_card_hover(c)
                 if btn_idx is not None and btn_idx < len(c["buttons"]):
                     b = c["buttons"][btn_idx]
-                    grid_canvas.itemconfigure(b["poly"], fill=b["hover"])
+                    b["target"] = 10
+                    if self._is_reduced_motion():
+                        b["step"] = 10
+                        paint_btn_hover(b)
                 grid_canvas.configure(cursor="hand2")
             else:
                 grid_canvas.configure(cursor="")
             state["hovered"] = card_idx
             state["hovered_btn"] = (card_idx, btn_idx) if (card_idx is not None and btn_idx is not None) else None
+            if not self._is_reduced_motion() and hover_loop["job"] is None:
+                tick_grid_hover()
 
         def hit_test(x, y):
             for ci, c in enumerate(state["cards"]):
@@ -1648,17 +2278,328 @@ class WidgetsMixin:
         grid_canvas.bind("<Configure>", on_configure)
 
         init_w = parent_widget.winfo_width()
-        if init_w <= 1 and parent_widget.master is not None:
-            init_w = parent_widget.master.winfo_width()
-        if init_w <= 1:
+        if init_w > 1 and parent_widget is getattr(self, "current_page", None):
+            # content_pane has padx=46 on both sides; subtract 92px to match grid_canvas's true inner width.
+            init_w = max(320, init_w - 92)
+        elif init_w <= 1:
             shell_cvs = getattr(self, "_shell_canvas", None)
             if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
-                # Subtract content_pane's 46px left + 46px right padding so initial columns fit cleanly.
                 init_w = max(320, shell_cvs.winfo_width() - 92)
             else:
                 init_w = max(320, self.winfo_width() - 120)
         state["last_w"] = init_w
         draw_grid(init_w)
+
+        if insert_anim and state["cards"] and str(state["cards"][0].get("pid")) == str(insert_anim.get("podcast_id")):
+            self._run_grid_insert_animation(grid_canvas, state, insert_anim, star_font, f_scale)
+        elif evaporate_anim and state["cards"]:
+            evap_pid = evaporate_anim.get("podcast_id")
+            evap_return_tab = evaporate_anim.get("return_tab")
+            evap_return_fn = evaporate_anim.get("return_fn")
+            evap_wait_job = [None]
+
+            def cancel_evap_wait(_e=None):
+                if evap_wait_job[0] is not None:
+                    try:
+                        grid_canvas.after_cancel(evap_wait_job[0])
+                    except tk.TclError:
+                        pass
+                    evap_wait_job[0] = None
+
+            grid_canvas.bind("<Destroy>", cancel_evap_wait, add="+")
+
+            def return_after_evap():
+                if not grid_canvas.winfo_exists():
+                    return
+                def go_back():
+                    if not grid_canvas.winfo_exists():
+                        return
+                    if evap_return_tab == "Programme details":
+                        bar_info = getattr(self, "_bottom_bar_info", None)
+                        if (
+                            bar_info is not None
+                            and bar_info[0].winfo_exists()
+                            and bar_info[1].winfo_exists()
+                            and str(bar_info[2]) == str(evap_pid)
+                        ):
+                            self.expand_bottom_bar_to_detail(*bar_info)
+                            return
+                    if evap_return_fn is not None:
+                        self.transition_to(evap_return_fn, evap_return_tab, direction=-1)
+                evap_wait_job[0] = grid_canvas.after(340, go_back)
+
+            def start_pending_evap():
+                evap_wait_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    return
+                if getattr(self, "_transition_active", False):
+                    evap_wait_job[0] = grid_canvas.after(20, start_pending_evap)
+                    return
+                evap_wait_job[0] = grid_canvas.after(
+                    180,
+                    lambda: evaporate_card(evap_pid, return_after_evap, force_callback=True),
+                )
+
+            evap_wait_job[0] = grid_canvas.after(30, start_pending_evap)
+
+    def _run_grid_insert_animation(self, grid_canvas, state, insert_anim, star_font, f_scale):
+        """Slide existing cards over, spring the newly added card into slot 0, optionally fill stars 0..N,
+        and smoothly transition back to the page the user came from."""
+        if not grid_canvas.winfo_exists() or not state["cards"]:
+            return
+        new_card = state["cards"][0]
+        new_tag = new_card["all_tag"]
+        target_rating = insert_anim.get("target_rating")
+        return_tab = insert_anim.get("return_tab")
+        return_fn = insert_anim.get("return_fn")
+        star_items = new_card.get("star_items") or []
+
+        # Prepare the "before" state immediately: existing cards sit 1 slot earlier, new card is hidden above slot 0,
+        # and all 5 stars on a newly rated card start empty (0 stars).
+        shifted_cards = []
+        for k in range(1, len(state["cards"])):
+            dst_r = state["cards"][k]["rect"]
+            src_r = state["cards"][k - 1]["rect"]
+            back_dx = float(src_r[0] - dst_r[0])
+            back_dy = float(src_r[1] - dst_r[1])
+            grid_canvas.move(state["cards"][k]["all_tag"], back_dx, back_dy)
+            # We will animate each shifted card forward by (-back_dx, -back_dy) back into its real slot k.
+            shifted_cards.append([state["cards"][k]["all_tag"], -back_dx, -back_dy, 0.0, 0.0])
+
+        drop_offset = -42.0
+        grid_canvas.move(new_tag, 0, drop_offset)
+        grid_canvas.itemconfigure(new_tag, state="hidden")
+        if target_rating is not None and star_items:
+            for s_id in star_items:
+                grid_canvas.itemconfigure(s_id, fill=STAR_EMPTY)
+
+        anim_job = [None]
+        star_pop_font = self._get_cached_font((DEFAULT_FONT, max(14, round(17 * f_scale)), "bold"))
+
+        def cancel_insert(_event=None):
+            if anim_job[0] is not None:
+                try:
+                    grid_canvas.after_cancel(anim_job[0])
+                except tk.TclError:
+                    pass
+                anim_job[0] = None
+
+        grid_canvas.bind("<Destroy>", cancel_insert, add="+")
+
+        def begin_showcase():
+            anim_job[0] = None
+            if not grid_canvas.winfo_exists():
+                return
+            # Wait for the incoming tab slide animation to finish before popping the new card in.
+            if getattr(self, "_transition_active", False):
+                anim_job[0] = grid_canvas.after(20, begin_showcase)
+                return
+
+            self._transition_active = True
+            canvas_path = str(grid_canvas)
+            tk_eval = grid_canvas.tk.eval
+            slide_dur = 0.520
+            st = {"elapsed": 0.0, "last_t": None, "new_shown": False, "new_dy": 0.0}
+
+            def finish_and_return():
+                anim_job[0] = None
+                self._transition_active = False
+                if not grid_canvas.winfo_exists():
+                    return
+                if return_tab == "Programme details":
+                    bar_info = getattr(self, "_bottom_bar_info", None)
+                    if (
+                        bar_info is not None
+                        and bar_info[0].winfo_exists()
+                        and bar_info[1].winfo_exists()
+                        and str(bar_info[2]) == str(new_card.get("pid"))
+                    ):
+                        # Podcast is currently in the bottom mini-bar: expand from the mini-bar into detail.
+                        self.expand_bottom_bar_to_detail(*bar_info)
+                        return
+                    if new_card.get("open_action") is not None:
+                        # Otherwise expand directly from the newly inserted card back into the podcast's detail page.
+                        new_card["open_action"]()
+                        return
+                if return_fn is not None:
+                    self.transition_to(return_fn, return_tab, direction=-1)
+
+            def animate_stars(_unused=0):
+                """Smooth 60fps overlapped elastic wave lighting up stars 1..target_rating with spring overshoot."""
+                anim_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                star_count = min(len(star_items), int(target_rating or 0))
+                if star_count <= 0:
+                    anim_job[0] = grid_canvas.after(520, finish_and_return)
+                    return
+
+                # Measure each target star's exact center & radius from its Canvas bbox so the vector pop
+                # overlaps the real glyph cleanly.
+                pop_stars = []
+                for idx_s in range(star_count):
+                    sid = star_items[idx_s]
+                    bb = grid_canvas.bbox(sid)
+                    if bb:
+                        cx = (bb[0] + bb[2]) / 2.0
+                        cy = (bb[1] + bb[3]) / 2.0
+                        base_r = max(5.5, min(bb[2] - bb[0], bb[3] - bb[1]) * 0.44)
+                    else:
+                        coords = grid_canvas.coords(sid)
+                        cx = (coords[0] if coords else 0) + 7.0
+                        cy = (coords[1] if len(coords) > 1 else 0) + 8.0
+                        base_r = 6.5
+                    poly_id = grid_canvas.create_polygon(
+                        cx, cy, cx, cy, cx, cy,
+                        fill=GOLD_STAR, outline="", state="hidden", tags="star_pop_poly",
+                    )
+                    pop_stars.append([sid, poly_id, cx, cy, base_r, False, False])
+
+                stagger = 0.115
+                each_dur = 0.360
+                total_dur = (star_count - 1) * stagger + each_dur
+                s_st = {"elapsed": 0.0, "last_t": None}
+                flash_col = blend_colour(GOLD_STAR, "#ffffff", 0.55)
+                cos = math.cos
+                sin = math.sin
+                deg2rad = math.pi / 180.0
+
+                def star_polygon_pts(cx, cy, r_out, rot_deg):
+                    r_in = r_out * 0.42
+                    pts = []
+                    for pt_i in range(10):
+                        ang = (-90.0 + rot_deg + pt_i * 36.0) * deg2rad
+                        rad = r_out if (pt_i % 2 == 0) else r_in
+                        pts.append(cx + rad * cos(ang))
+                        pts.append(cy + rad * sin(ang))
+                    return pts
+
+                def step_stars():
+                    anim_job[0] = None
+                    if not grid_canvas.winfo_exists():
+                        self._transition_active = False
+                        return
+                    t0 = monotonic()
+                    dt = 0.016 if s_st["last_t"] is None else max(0.004, min(0.042, t0 - s_st["last_t"]))
+                    s_st["last_t"] = t0
+                    s_st["elapsed"] = min(total_dur, s_st["elapsed"] + dt)
+                    el = s_st["elapsed"]
+
+                    for idx_s, ps in enumerate(pop_stars):
+                        sid, poly_id, cx, cy, base_r, started_flag, done_flag = ps
+                        if done_flag:
+                            continue
+                        start_t = idx_s * stagger
+                        if el < start_t:
+                            continue
+                        lp = min(1.0, (el - start_t) / each_dur)
+                        if not started_flag:
+                            grid_canvas.itemconfigure(sid, state="hidden")
+                            grid_canvas.itemconfigure(poly_id, state="normal")
+                            ps[5] = True
+                        if lp >= 1.0:
+                            grid_canvas.delete(poly_id)
+                            grid_canvas.itemconfigure(sid, fill=GOLD_STAR, state="normal")
+                            ps[6] = True
+                            continue
+                        # Bouncy elastic spring: shoots smoothly past 1.0 (~1.38x peak), wobbles, and settles to 1.0.
+                        spring = max(0.05, ease_out_elastic(lp, damping=2.8, frequency=1.75))
+                        r_now = base_r * spring
+                        # Subtle damped rotational wobble (-16deg -> +6deg -> 0deg) that sells the spring feel.
+                        rot = -16.0 * (1.0 - lp) * math.exp(-4.0 * lp) * cos(lp * math.pi * 3.0)
+                        # Bright golden glint at the peak of the pop, settling into GOLD_STAR.
+                        glint = max(0.0, 1.0 - abs(lp - 0.25) / 0.35)
+                        col = blend_colour(GOLD_STAR, flash_col, glint * 0.65)
+                        grid_canvas.coords(poly_id, *star_polygon_pts(cx, cy, r_now, rot))
+                        grid_canvas.itemconfigure(poly_id, fill=col)
+
+                    if el < total_dur:
+                        spent = (monotonic() - t0) * 1000.0
+                        anim_job[0] = grid_canvas.after(self._next_frame_delay(spent, 16), step_stars)
+                    else:
+                        try:
+                            grid_canvas.delete("star_pop_poly")
+                        except tk.TclError:
+                            pass
+                        # Hold briefly so the user sees the settled golden stars before transitioning back.
+                        anim_job[0] = grid_canvas.after(480, finish_and_return)
+
+                step_stars()
+
+            def step_insert():
+                anim_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                t0 = monotonic()
+                dt = 0.016 if st["last_t"] is None else max(0.004, min(0.042, t0 - st["last_t"]))
+                st["last_t"] = t0
+                st["elapsed"] = min(slide_dur, st["elapsed"] + dt)
+                p = st["elapsed"] / slide_dur
+
+                cmds = []
+                append = cmds.append
+                # 1. Slide all existing cards smoothly over by 1 slot.
+                if shifted_cards:
+                    seased = ease_out_elastic(min(1.0, p / 0.85), damping=5.2, frequency=1.08)
+                    for sc in shifted_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = sc
+                        tx_d = tot_dx * seased
+                        ty_d = tot_dy * seased
+                        dx = tx_d - cur_dx
+                        dy = ty_d - cur_dy
+                        if abs(dx) >= 0.25 or abs(dy) >= 0.25:
+                            append(f"{canvas_path} move {tag} {dx:.2f} {dy:.2f}")
+                            sc[3] = tx_d
+                            sc[4] = ty_d
+
+                # 2. Spring the new card cleanly into slot 0 with a warm orange highlight border.
+                if p >= 0.18:
+                    if not st["new_shown"]:
+                        append(f"{canvas_path} itemconfigure {new_tag} -state normal")
+                        append(f"{canvas_path} itemconfigure {new_card['bg_item']} -outline {ORANGE_ACCENT}")
+                        st["new_shown"] = True
+                    np = min(1.0, (p - 0.18) / 0.82)
+                    neased = ease_out_elastic(np, damping=4.2, frequency=1.30)
+                    target_dy = -drop_offset * neased
+                    dy_step = target_dy - st["new_dy"]
+                    if abs(dy_step) >= 0.25:
+                        append(f"{canvas_path} move {new_tag} 0 {dy_step:.2f}")
+                        st["new_dy"] = target_dy
+
+                if cmds:
+                    try:
+                        tk_eval("\n".join(cmds))
+                    except tk.TclError:
+                        self._transition_active = False
+                        return
+
+                if p < 1.0:
+                    spent = (monotonic() - t0) * 1000.0
+                    anim_job[0] = grid_canvas.after(self._next_frame_delay(spent, 16), step_insert)
+                else:
+                    # Snap any sub-pixel remainders and restore resting card border.
+                    try:
+                        for sc in shifted_cards:
+                            rem_x = sc[1] - sc[3]
+                            rem_y = sc[2] - sc[4]
+                            if abs(rem_x) > 0.01 or abs(rem_y) > 0.01:
+                                grid_canvas.move(sc[0], rem_x, rem_y)
+                        rem_new_y = (-drop_offset) - st["new_dy"]
+                        if abs(rem_new_y) > 0.01:
+                            grid_canvas.move(new_tag, 0, rem_new_y)
+                        grid_canvas.itemconfigure(new_card["bg_item"], outline=BORDER_LINE)
+                    except tk.TclError:
+                        pass
+                    if target_rating is not None and star_items:
+                        anim_job[0] = grid_canvas.after(140, lambda: animate_stars(0))
+                    else:
+                        anim_job[0] = grid_canvas.after(520, finish_and_return)
+
+            step_insert()
+
+        anim_job[0] = grid_canvas.after(30, begin_showcase)
 
     def paginate_podcasts(self, parent, items, render_page):
         """Wrap a list of programmes with Previous/Next page controls."""
@@ -1732,7 +2673,7 @@ class WidgetsMixin:
                 following.configure(state="disabled" if last else "normal")
             start = page_number * PODCASTS_PER_PAGE
 
-            if not animate or old_canvas is None or not old_canvas.winfo_exists():
+            if not animate or self._is_reduced_motion() or old_canvas is None or not old_canvas.winfo_exists():
                 for child in body.winfo_children():
                     child.destroy()
                 render_page(body, items[start:start + PODCASTS_PER_PAGE], last)
@@ -1764,7 +2705,7 @@ class WidgetsMixin:
                     return
                 cur_offset = [round(direction * in_dist)]
                 new_canvas.move("all", cur_offset[0], 0)
-                in_started = [None]
+                in_st = {"progress": 0.0, "last_t": None}
 
                 def draw_in():
                     anim_state["job"] = None
@@ -1772,10 +2713,11 @@ class WidgetsMixin:
                         finish_slide()
                         return
                     f_t0 = monotonic()
-                    if in_started[0] is None:
-                        in_started[0] = f_t0
-                    p = min(1.0, (f_t0 - in_started[0]) / in_dur)
-                    eased = ease_out_elastic(p, damping=4.8, frequency=1.22)
+                    dt = 0.016 if in_st["last_t"] is None else max(0.004, min(0.042, f_t0 - in_st["last_t"]))
+                    in_st["last_t"] = f_t0
+                    in_st["progress"] = min(1.0, in_st["progress"] + dt / in_dur)
+                    p = in_st["progress"]
+                    eased = 1.0 - (1.0 - p) ** 3 if sys.platform != "win32" else ease_out_elastic(p, damping=4.8, frequency=1.22)
                     desired_x = round(direction * in_dist * (1.0 - eased))
                     dx = desired_x - cur_offset[0]
                     if dx:
@@ -1783,16 +2725,16 @@ class WidgetsMixin:
                         cur_offset[0] = desired_x
                     if p < 1.0:
                         spent = (monotonic() - f_t0) * 1000.0
-                        anim_state["job"] = body.after(max(1, round(16 - spent)), draw_in)
+                        anim_state["job"] = body.after(self._next_frame_delay(spent, 16), draw_in)
                     else:
                         if cur_offset[0] != 0:
                             new_canvas.move("all", -cur_offset[0], 0)
                         finish_slide()
 
-                body.after_idle(draw_in)
+                body.after(1, draw_in)
 
             out_offset = [0]
-            out_started = [None]
+            out_st = {"progress": 0.0, "last_t": None}
 
             def draw_out():
                 anim_state["job"] = None
@@ -1800,9 +2742,10 @@ class WidgetsMixin:
                     start_incoming()
                     return
                 f_t0 = monotonic()
-                if out_started[0] is None:
-                    out_started[0] = f_t0
-                p = min(1.0, (f_t0 - out_started[0]) / out_dur)
+                dt = 0.016 if out_st["last_t"] is None else max(0.004, min(0.042, f_t0 - out_st["last_t"]))
+                out_st["last_t"] = f_t0
+                out_st["progress"] = min(1.0, out_st["progress"] + dt / out_dur)
+                p = out_st["progress"]
                 desired_x = round(-direction * out_dist * (p * p))
                 dx = desired_x - out_offset[0]
                 if dx:
@@ -1810,7 +2753,7 @@ class WidgetsMixin:
                     out_offset[0] = desired_x
                 if p < 1.0:
                     spent = (monotonic() - f_t0) * 1000.0
-                    anim_state["job"] = body.after(max(1, round(16 - spent)), draw_out)
+                    anim_state["job"] = body.after(self._next_frame_delay(spent, 16), draw_out)
                 else:
                     start_incoming()
 

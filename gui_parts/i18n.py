@@ -169,6 +169,11 @@ TRANSLATIONS_CY = {
     "Cymraeg  ·  Welsh": "Cymraeg",
     "A−  Smaller": "A−  Llai",
     "A+  Larger": "A+  Mwy",
+    "ANIMATIONS": "ANIMEIDDIADAU",
+    "Smooth  ·  Default": "Llyfn  ·  Rhagosodedig",
+    "Reduced motion  ·  Faster on older devices": "Llai o symudiad  ·  Cyflymach ar ddyfeisiau hŷn",
+    "Smooth": "Llyfn",
+    "Reduced motion": "Llai o symudiad",
     "Reset accessibility settings": "Ailosod gosodiadau hygyrchedd",
 
     # Q&A section
