@@ -1217,12 +1217,15 @@ class EffectsMixin:
         if podcast_id == self._dismissed_last_listened:
             return
 
+        # Use a flush RoundedPanel (inset=0, no 5px DARK_BG hover halo) so the mini-bar has clean
+        # rounded corners without a thick black box behind it.
         footer = self.create_card_frame(shell, bg=MINI_BAR_BG)
-        # Float the mini-bar over the scrollable page (leaving space for the right scrollbar)
-        # so there is no solid black strip reserved behind or beside it.
+        footer.set_inset(0)
+        footer.set_inset = lambda _inset: None
+        # Float the mini-bar over the scrollable page (leaving space for the right scrollbar).
         footer.place(relx=0.0, rely=1.0, anchor="sw", x=18, y=-10, relwidth=1.0, width=-52)
         tk.Misc.lift(footer)
-        tk.Frame(footer, bg=ORANGE_ACCENT, width=3).pack(side="left", fill="y")
+        tk.Frame(footer, bg=ORANGE_ACCENT, width=3).pack(side="left", fill="y", pady=6)
         row = tk.Frame(footer, bg=footer.cget("bg"))
         row.pack(fill="x", padx=10, pady=7)
 
@@ -1319,6 +1322,12 @@ class EffectsMixin:
             title_label,
             base_bg=bar_bg,
         )
+        footer._show_sim_notice = show_mini_bar_sim_notice
+        footer._dismiss_btn = dismiss_btn
+        footer._play_btn = play_btn
+        footer._cover = cover
+        footer._title_label = title_label
+        footer._subtitle_label = subtitle_label
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
@@ -1403,9 +1412,9 @@ class EffectsMixin:
             target_h = max(1, existing_bar.winfo_height())
         else:
             target_x = 18
-            target_w = max(1, shell_w - 36)
-            target_h = 80
-            target_y = max(0, shell_h - 90)
+            target_w = max(1, shell_w - 52)
+            target_h = 78
+            target_y = max(0, shell_h - 10 - target_h)
 
         # Mini-bar cover slot sits 13px from left edge (3px accent + 10px padx) and vertically centred.
         cov_target_x = target_x + 13
@@ -1443,13 +1452,16 @@ class EffectsMixin:
         tk.Misc.lift(migrator)
         tk.Misc.lift(floating_cover)
 
-        duration = 0.360
+        duration = 0.720
         mig_state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_cov_pos = [None]
         last_bg = [ORANGE_ACCENT]
 
         def finish_migration():
+            if shell.winfo_exists():
+                self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
+                self.update_idletasks()
             for w in (floating_cover, migrator):
                 if w is not None and w.winfo_exists():
                     try:
@@ -1457,7 +1469,6 @@ class EffectsMixin:
                     except tk.TclError:
                         pass
             if shell.winfo_exists():
-                self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
                 bar = getattr(self, "_shell_bottom_bar", None)
                 if bar is not None and bar.winfo_exists() and hasattr(bar, "_show_sim_notice"):
                     bar._show_sim_notice()
@@ -1468,24 +1479,37 @@ class EffectsMixin:
                 finish_migration()
                 return
             frame_t0 = monotonic()
-            dt = 0.016 if mig_state["last_t"] is None else max(0.004, min(0.042, frame_t0 - mig_state["last_t"]))
+            dt = 0.016 if mig_state["last_t"] is None else max(0.004, min(0.032, frame_t0 - mig_state["last_t"]))
             mig_state["last_t"] = frame_t0
             mig_state["progress"] = min(1.0, mig_state["progress"] + dt / duration)
             progress = mig_state["progress"]
-            # Lively damped elastic spring for both the migrating bar and the flying cover art.
-            eased = ease_out_elastic(progress, damping=4.5, frequency=1.30)
-            clamped_color = round(max(0.0, min(1.0, 1.0 - (1.0 - progress) ** 3)) * 6) / 6.0
 
-            cur_x = max(0, round(start_x + (target_x - start_x) * eased))
-            cur_y = max(0, round(start_y + (target_y - start_y) * eased))
-            cur_w = max(1, min(shell_w, round(start_w + (target_w - start_w) * eased)))
-            cur_h = max(1, round(start_h + (target_h - start_h) * eased))
+            # Smooth two-stage motion: unhurried cubic ease-in-out flight (0..0.78) so both the bar
+            # and cover art visibly travel all the way down, followed by a gentle settle (0.78..1.0).
+            if progress < 0.78:
+                u = progress / 0.78
+                eased = 4.0 * u ** 3 if u < 0.5 else 1.0 - ((-2.0 * u + 2.0) ** 3) / 2.0
+                # Slight overshoot right as it lands at u -> 1.0 (peaks at ~1.025).
+                eased = eased * 1.025 if u > 0.75 else eased
+            else:
+                u = (progress - 0.78) / 0.22
+                eased = 1.025 - 0.025 * (1.0 - (1.0 - u) ** 2)
+
+            clamped_color = max(0.0, min(1.0, progress ** 1.2))
+
+            if progress >= 1.0:
+                cur_x, cur_y, cur_w, cur_h = target_x, target_y, target_w, target_h
+            else:
+                cur_x = max(0, round(start_x + (target_x - start_x) * eased))
+                cur_y = max(0, min(shell_h - 10, round(start_y + (target_y - start_y) * eased)))
+                cur_w = max(1, min(shell_w - cur_x, round(start_w + (target_w - start_w) * eased)))
+                cur_h = max(1, round(start_h + (target_h - start_h) * eased))
 
             cur_bg = blend_colour(ORANGE_ACCENT, MINI_BAR_BG, clamped_color)
             if cur_bg != last_bg[0]:
-                migrator.configure(bg=cur_bg, highlightbackground=blend_colour(ORANGE_HL, ORANGE_ACCENT, clamped_color))
+                migrator.configure(bg=cur_bg, highlightbackground=blend_colour(ORANGE_HL, BORDER_LINE, clamped_color))
                 text_box.configure(bg=cur_bg)
-                text_fade = max(0.0, (progress - 0.28) / 0.72)
+                text_fade = max(0.0, (progress - 0.35) / 0.65)
                 title_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_WHITE, text_fade))
                 sub_lbl.configure(bg=cur_bg, fg=blend_colour(cur_bg, TEXT_GRAY, text_fade))
                 last_bg[0] = cur_bg
@@ -1496,10 +1520,14 @@ class EffectsMixin:
                 last_rect[0] = rect
 
             if floating_cover.winfo_exists():
-                # Gentle upward arc + elastic settle right into the mini-bar's 62x62 cover slot.
-                arc_lift = -26.0 * (4.0 * progress * (1.0 - progress))
-                cov_x = round(cov_start_x + (cov_target_x - cov_start_x) * eased)
-                cov_y = round(cov_start_y + (cov_target_y - cov_start_y) * eased + arc_lift)
+                if progress >= 1.0:
+                    cov_x, cov_y = cov_target_x, cov_target_y
+                else:
+                    # Graceful parabolic arc during flight that settles cleanly into the 62x62 cover slot.
+                    arc_p = min(1.0, progress / 0.85)
+                    arc_lift = -42.0 * (4.0 * arc_p * (1.0 - arc_p))
+                    cov_x = round(cov_start_x + (cov_target_x - cov_start_x) * eased)
+                    cov_y = round(cov_start_y + (cov_target_y - cov_start_y) * eased + arc_lift)
                 cov_pos = (cov_x, cov_y)
                 if cov_pos != last_cov_pos[0]:
                     floating_cover.place(x=cov_x, y=cov_y, width=62, height=62)
@@ -1509,7 +1537,8 @@ class EffectsMixin:
                 spent_ms = (monotonic() - frame_t0) * 1000.0
                 self.after(self._next_frame_delay(spent_ms, 16), draw_migration)
             else:
-                finish_migration()
+                # Hold briefly once both bar and cover art have completely settled before swapping to the static mini-bar.
+                self.after(120, finish_migration)
 
         draw_migration()
 
@@ -2292,6 +2321,19 @@ class EffectsMixin:
             rp_start_x = cov_start_x + cov_start_sz + round(38 * detail_scale)
             rp_start_y = cov_start_y + 4
 
+        # Capture the detail page's circular Play button coordinates before rebuilding the destination.
+        dw = getattr(self, "_detail_widgets", {}) or {}
+        play_w = dw.get("play_canvas")
+        play_start = None
+        if play_w is not None and play_w.winfo_exists() and play_w.winfo_width() > 4:
+            pw_w = play_w.winfo_width()
+            pw_h = play_w.winfo_height()
+            play_start = (
+                (play_w.winfo_rootx() - sh_rx) + pw_w / 2.0,
+                (play_w.winfo_rooty() - sh_ry) + pw_h / 2.0,
+                max(24.0, float(min(pw_w, pw_h)) - 12.0),
+            )
+
         podcast_id = origin.get("podcast_id")
         title = str(origin.get("title") or "Programme")
         category = origin.get("category") or ""
@@ -2301,8 +2343,8 @@ class EffectsMixin:
         cov_target = list(origin.get("cov_target_rect", (target_box[0] + 13, target_box[1] + 9, 62)))
         rp_target = list(origin.get("rp_target_pos", (cov_target[0] + cov_target[2] + 11, target_box[1] + 12)))
 
-        # Build one double-buffered tk.Canvas (zero child HWNDs) so the shrinking card, cover art, and title
-        # paint atomically in one BitBlt per frame with zero stutter and lively elastic motion.
+        # Build one double-buffered tk.Canvas (zero child HWNDs) so the shrinking card, cover art,
+        # Play button, and title paint atomically in one BitBlt per frame with lively elastic motion.
         shell._expanding_bar = True
         self._tab_transition_direction = None
         self._transition_active = True
@@ -2310,9 +2352,15 @@ class EffectsMixin:
         is_mini = origin.get("source") == "mini_bar"
 
         shrinker = tk.Canvas(shell, bg=DARK_BG, bd=0, highlightthickness=0)
+        # For mini-bar returns, match the real mini-bar's left vertical 3px orange accent bar (fading
+        # in as the bar settles) instead of sweeping a full-width top orange bar across the screen.
+        left_accent_item = (
+            shrinker.create_rectangle(0, 6, 3, max(12, start_h - 6), fill=DARK_BG, outline="")
+            if is_mini else None
+        )
         accent_item = (
             shrinker.create_rectangle(0, 0, start_w, 3, fill=ORANGE_ACCENT, outline="")
-            if accent_top_bar else None
+            if (accent_top_bar and not is_mini) else None
         )
 
         shrink_cat_pt = max(9, round(10 * min(1.25, font_scale)))
@@ -2329,9 +2377,19 @@ class EffectsMixin:
             anchor="nw", width=min(title_wrap, 360), justify="left",
         )
 
+        def _pill_pts(cx, cy, w, h, rad):
+            rx0, ry0 = cx - w / 2.0, cy - h / 2.0
+            rx1, ry1 = cx + w / 2.0, cy + h / 2.0
+            r = min(rad, w / 2.0, h / 2.0)
+            return (
+                rx0 + r, ry0, rx1 - r, ry0, rx1, ry0, rx1, ry0 + r,
+                rx1, ry1 - r, rx1, ry1, rx1 - r, ry1, rx0 + r, ry1,
+                rx0, ry1, rx0, ry1 - r, rx0, ry0 + r, rx0, ry0,
+            )
+
         photo0, icon0, _bg0 = self._get_cover_photo(
             shrinker, podcast_id, title, category, cov_start_sz, cov_start_sz,
-            corner_radius=8, backdrop=DARK_BG,
+            corner_radius=10 if is_mini else 8, backdrop=DARK_BG,
         )
         shrinker._cur_photo = photo0
         cx0 = cov_start_x + cov_start_sz / 2.0
@@ -2347,6 +2405,44 @@ class EffectsMixin:
             if icon0 is not None else None
         )
 
+        # Draw the detail page's circular Play button on shrinker BEFORE placing it so the Play button
+        # never disappears while the destination page builds underneath.
+        play_items = None
+        if is_mini and play_start is not None:
+            ps_cx, ps_cy, ps_sz = play_start
+            p_poly = shrinker.create_polygon(
+                *_pill_pts(ps_cx - start_x, ps_cy - start_y, ps_sz, ps_sz, ps_sz / 2.0),
+                smooth=True, fill=ORANGE_ACCENT, outline="",
+            )
+            tri_r = ps_sz * 0.22
+            p_tri = shrinker.create_polygon(
+                ps_cx - start_x - tri_r * 0.65, ps_cy - start_y - tri_r * 0.92,
+                ps_cx - start_x - tri_r * 0.65, ps_cy - start_y + tri_r * 0.92,
+                ps_cx - start_x + tri_r * 1.15, ps_cy - start_y,
+                fill="#000000", outline="",
+            )
+            play_items = (p_poly, p_tri, ps_cx, ps_cy, ps_sz)
+
+        # Pre-warm cover sizes BEFORE placing shrinker so the live detail page remains fully visible
+        # during resizing instead of pausing on a blank/static overlay.
+        est_end_sz = cov_target[2]
+        if is_mini:
+            raw_steps = {cov_start_sz, est_end_sz, max(36, round(est_end_sz * 0.92))}
+            for frac in (0.30, 0.62, 0.86):
+                raw_steps.add(max(36, round(cov_start_sz + (est_end_sz - cov_start_sz) * frac)))
+            size_steps = tuple(sorted(raw_steps))
+        else:
+            mid_sz = round((cov_start_sz + est_end_sz) / 2.0)
+            size_steps = tuple(sorted({cov_start_sz, mid_sz, est_end_sz}))
+        cover_cache = {cov_start_sz: (photo0, icon0)}
+        for step_sz in size_steps:
+            if step_sz not in cover_cache:
+                p_img, p_ico, _ = self._get_cover_photo(
+                    shrinker, podcast_id, title, category, step_sz, step_sz,
+                    corner_radius=10 if is_mini else 8, backdrop=target_bg,
+                )
+                cover_cache[step_sz] = (p_img, p_ico)
+
         shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
 
@@ -2358,16 +2454,20 @@ class EffectsMixin:
 
         # Pre-render the visible batch of cards underneath shrinker BEFORE animation starts so grid pages
         # (For you, Favourites, History, Ratings, Search) are already populated rather than blank during shrink.
-        self._prerender_initial_batch(6)
+        self._prerender_initial_batch(4)
         saved_scroll = float(origin.get("scroll_y") or 0.0)
         new_target = getattr(self, "_page_transition_target", None)
         if restore_scroll and saved_scroll > 0.0 and new_target:
-            self._prerender_initial_batch(6)
+            self._prerender_initial_batch(4)
+
+        # Keep shrinker above any newly created footer/page BEFORE the single layout pass so nothing
+        # flashes on top or leaves a blank frame before draw_shrink() starts.
+        tk.Misc.lift(shrinker)
+        shell.update_idletasks()
         if new_target:
             new_canvas, _new_win = new_target
             if new_canvas.winfo_exists():
                 try:
-                    new_canvas.update_idletasks()
                     if self.current_page is not None and self.current_page.winfo_exists():
                         new_canvas.configure(
                             scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
@@ -2377,8 +2477,6 @@ class EffectsMixin:
                 except tk.TclError:
                     pass
 
-        shell.update_idletasks()
-        tk.Misc.lift(shrinker)
         sh_rx, sh_ry = shell.winfo_rootx(), shell.winfo_rooty()
 
         # Visible clip region: card returns stay inside the scroll area (never over the mini-bar);
@@ -2396,6 +2494,7 @@ class EffectsMixin:
             else:
                 clip_bottom = clip_top + max(1, new_area.winfo_height())
 
+        play_end = None
         if is_mini:
             dest_footer = getattr(self, "_shell_bottom_bar", None)
             if dest_footer is not None and dest_footer.winfo_exists() and dest_footer.winfo_width() > 1 and dest_footer.winfo_height() > 1:
@@ -2404,8 +2503,35 @@ class EffectsMixin:
                 fw = dest_footer.winfo_width()
                 fh = dest_footer.winfo_height()
                 target_box[:] = [fx, fy, fw, fh]
-                cov_target[:] = [fx + 13, fy + max(7, (fh - 62) // 2), 62]
-                rp_target[:] = [fx + 13 + 62 + 11, fy + 12]
+                dest_cov = getattr(dest_footer, "_cover", None)
+                if dest_cov is not None and dest_cov.winfo_exists() and dest_cov.winfo_width() > 1:
+                    cov_target[:] = [
+                        dest_cov.winfo_rootx() - sh_rx,
+                        dest_cov.winfo_rooty() - sh_ry,
+                        max(32, dest_cov.winfo_width()),
+                    ]
+                else:
+                    cov_target[:] = [fx + 13, fy + max(7, (fh - 62) // 2), 62]
+                dest_title = getattr(dest_footer, "_title_label", None)
+                if dest_title is not None and dest_title.winfo_exists() and dest_title.winfo_width() > 1:
+                    rp_target[:] = [
+                        dest_title.winfo_rootx() - sh_rx,
+                        dest_title.winfo_rooty() - sh_ry,
+                    ]
+                else:
+                    rp_target[:] = [cov_target[0] + cov_target[2] + 11, fy + 12]
+                dest_play = getattr(dest_footer, "_play_btn", None)
+                if dest_play is not None and dest_play.winfo_exists() and dest_play.winfo_width() > 8:
+                    py_sh = getattr(dest_play, "_hover_y_shift", 0)
+                    ph_sz = getattr(dest_play, "_hover_size", None)
+                    pe_w = float(ph_sz[0] + 2) if ph_sz else max(24.0, dest_play.winfo_width() - 10.0)
+                    pe_h = float(ph_sz[1] + 2) if ph_sz else max(18.0, dest_play.winfo_height() - 10.0 - py_sh * 2)
+                    pe_cx = (dest_play.winfo_rootx() - sh_rx) + dest_play.winfo_width() / 2.0
+                    pe_cy = (dest_play.winfo_rooty() - sh_ry) + dest_play.winfo_height() / 2.0 - py_sh
+                    play_end = (
+                        pe_cx, pe_cy, pe_w, pe_h,
+                        dest_play.cget("text"), dest_play.cget("font"), py_sh,
+                    )
         else:
             live = self._find_live_podcast_card(podcast_id, target_box, sh_rx, sh_ry)
             if live is not None:
@@ -2422,23 +2548,37 @@ class EffectsMixin:
         cx1 = cov_end_x + cov_end_sz / 2.0
         cy1 = cov_end_y + cov_end_sz / 2.0
 
-        # Pre-warm 3 cover sizes (start, mid, end) with constant target_bg backdrop for snappy low-end performance.
-        mid_sz = round((cov_start_sz + cov_end_sz) / 2.0)
-        size_steps = tuple(sorted({cov_start_sz, mid_sz, cov_end_sz}))
-        cover_cache = {cov_start_sz: (photo0, icon0)}
-        for step_sz in size_steps:
-            if step_sz not in cover_cache:
-                p_img, p_ico, _ = self._get_cover_photo(
-                    shrinker, podcast_id, title, category, step_sz, step_sz,
-                    corner_radius=8, backdrop=target_bg,
-                )
-                cover_cache[step_sz] = (p_img, p_ico)
+        # Ensure the measured final cover size is cached if it differed from our pre-warmed estimate.
+        if cov_end_sz not in cover_cache:
+            p_img, p_ico, _ = self._get_cover_photo(
+                shrinker, podcast_id, title, category, cov_end_sz, cov_end_sz,
+                corner_radius=10 if is_mini else 8, backdrop=target_bg,
+            )
+            cover_cache[cov_end_sz] = (p_img, p_ico)
+            size_steps = tuple(sorted(set(size_steps) | {cov_end_sz}))
 
-        duration = 0.290 if sys.platform != "win32" else 0.360
+        # Attach the mini-bar's "▶  Play" text item to the already-drawn morphing Play button.
+        play_morph = None
+        if play_items is not None and play_end is not None:
+            p_poly, p_tri, ps_cx, ps_cy, ps_sz = play_items
+            pe_cx, pe_cy, pe_w, pe_h, pe_txt, pe_font, pe_ysh = play_end
+            p_lbl = shrinker.create_text(
+                ps_cx - start_x, ps_cy - start_y,
+                text=pe_txt, fill=ORANGE_ACCENT, font=pe_font, anchor="center", state="hidden",
+            )
+            play_morph = (p_poly, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh)
+        elif play_items is not None:
+            shrinker.delete(play_items[0], play_items[1])
+
+        if is_mini:
+            duration = 0.500 if sys.platform != "win32" else 0.520
+        else:
+            duration = 0.290 if sys.platform != "win32" else 0.360
         frame_ms = 16
         anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [DARK_BG]
         last_fade_step = [-1]
+        last_title_pt = [shrink_title_pt]
         preview_hidden = [False]
         shrinker_hidden = [False]
         last_rect = [None]
@@ -2449,6 +2589,9 @@ class EffectsMixin:
                 shell._expanding_bar = False
             if shrinker.winfo_exists():
                 try:
+                    # Lower underneath the live destination widget first so the handoff is tear-free.
+                    tk.Misc.lower(shrinker)
+                    self.update_idletasks()
                     shrinker.destroy()
                 except tk.TclError:
                     pass
@@ -2470,10 +2613,19 @@ class EffectsMixin:
             progress = anim_st["progress"]
             # Outer card surface contracts smoothly (no re-covering underlying cards or mini-bar);
             # cover art inside the canvas uses a juicy elastic spring for tactile snap-back.
-            box_eased = 1.0 - (1.0 - progress) ** 3.4
-            hero_eased = ease_out_elastic(progress, damping=4.5, frequency=1.25)
+            box_eased = 1.0 - (1.0 - progress) ** 3.2
+            if is_mini:
+                cov_pos_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=3.2, frequency=1.55)
+                cov_sz_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=2.6, frequency=1.65)
+                play_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=3.6, frequency=1.35)
+                hero_eased = cov_pos_eased
+            else:
+                hero_eased = 1.0 if progress >= 1.0 else ease_out_elastic(progress, damping=4.5, frequency=1.25)
+                cov_pos_eased = hero_eased
+                cov_sz_eased = hero_eased
+                play_eased = box_eased
 
-            bg_step = round(box_eased * 6) / 6.0
+            bg_step = round(box_eased * 8) / 8.0
             cur_bg = blend_colour(DARK_BG, target_bg, bg_step)
 
             cur_x = start_x + (end_x - start_x) * box_eased
@@ -2485,6 +2637,7 @@ class EffectsMixin:
             vis_y0 = max(clip_top, round(cur_y))
             vis_x1 = min(shell_w, round(cur_x + cur_w))
             vis_y1 = min(clip_bottom, round(cur_y + cur_h))
+            vis_h = max(1, vis_y1 - vis_y0)
 
             if vis_x1 - vis_x0 < 1 or vis_y1 - vis_y0 < 1:
                 if not shrinker_hidden[0]:
@@ -2494,18 +2647,24 @@ class EffectsMixin:
                 if shrinker_hidden[0]:
                     shrinker_hidden[0] = False
                     last_rect[0] = None
-                rect = (vis_x0, vis_y0, vis_x1 - vis_x0, vis_y1 - vis_y0)
+                rect = (vis_x0, vis_y0, vis_x1 - vis_x0, vis_h)
                 if rect != last_rect[0]:
                     shrinker.place(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
                     if accent_item is not None:
                         shrinker.coords(accent_item, 0, 0, rect[2], 3)
+                    if left_accent_item is not None:
+                        shrinker.coords(left_accent_item, 0, 6, 3, max(10, rect[3] - 6))
                     last_rect[0] = rect
+
+            if left_accent_item is not None:
+                acc_t = max(0.0, min(1.0, (progress - 0.45) / 0.45))
+                shrinker.itemconfigure(left_accent_item, fill=blend_colour(cur_bg, ORANGE_ACCENT, acc_t))
 
             if cur_bg != last_bg[0]:
                 shrinker.configure(bg=cur_bg)
                 last_bg[0] = cur_bg
 
-            desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.06, hero_eased))
+            desired_sz = cov_start_sz + (cov_end_sz - cov_start_sz) * max(0.0, min(1.12, cov_sz_eased))
             quant_sz = min(size_steps, key=lambda s: abs(s - desired_sz))
             if quant_sz != last_cov_sz[0]:
                 p_img, p_ico = cover_cache[quant_sz]
@@ -2515,13 +2674,68 @@ class EffectsMixin:
                     shrinker.itemconfigure(icon_item, font=(DEFAULT_FONT, max(11, quant_sz // 6), "bold"))
                 last_cov_sz[0] = quant_sz
 
-            rel_cx = round(cx0 + (cx1 - cx0) * hero_eased) - vis_x0
-            rel_cy = round(cy0 + (cy1 - cy0) * hero_eased) - vis_y0
+            rel_cx = round(cx0 + (cx1 - cx0) * cov_pos_eased) - vis_x0
+            raw_rel_cy = round(cy0 + (cy1 - cy0) * cov_pos_eased) - vis_y0
+            # Keep the elastic overshoot cleanly visible inside the shrinking bar.
+            min_cy = quant_sz // 2 - 2
+            max_cy = max(min_cy, vis_h - quant_sz // 2 + 2)
+            rel_cy = max(min_cy, min(max_cy, raw_rel_cy))
             shrinker.coords(cover_item, rel_cx, rel_cy)
             if icon_item is not None:
                 shrinker.coords(icon_item, rel_cx, rel_cy)
 
-            if not preview_hidden[0]:
+            if play_morph is not None:
+                p_poly, p_tri, p_lbl, ps_cx, ps_cy, ps_sz, pe_cx, pe_cy, pe_w, pe_h, pe_ysh = play_morph
+                pm_cx = (ps_cx + (pe_cx - ps_cx) * play_eased) - vis_x0
+                pm_cy = (ps_cy + (pe_cy - ps_cy) * play_eased) - vis_y0
+                shape_t = max(0.0, min(1.0, box_eased))
+                pm_w = ps_sz + (pe_w - ps_sz) * shape_t
+                pm_h = ps_sz + (pe_h - ps_sz) * shape_t
+                pm_r = min(pm_w, pm_h) / 2.0
+                shrinker.coords(p_poly, *_pill_pts(pm_cx, pm_cy, pm_w, pm_h, pm_r))
+
+                if progress < 0.45:
+                    tri_fade = min(1.0, progress / 0.45)
+                    tri_r = max(1.0, (ps_sz * 0.22) * (1.0 - 0.35 * tri_fade))
+                    shrinker.coords(
+                        p_tri,
+                        pm_cx - tri_r * 0.65, pm_cy - tri_r * 0.92,
+                        pm_cx - tri_r * 0.65, pm_cy + tri_r * 0.92,
+                        pm_cx + tri_r * 1.15, pm_cy,
+                    )
+                    shrinker.itemconfigure(p_tri, fill=blend_colour("#000000", ORANGE_ACCENT, tri_fade))
+                else:
+                    shrinker.itemconfigure(p_tri, state="hidden")
+                    lbl_fade = min(1.0, (progress - 0.45) / 0.40)
+                    shrinker.coords(p_lbl, round(pm_cx), round(pm_cy + pe_ysh))
+                    shrinker.itemconfigure(
+                        p_lbl,
+                        state="normal",
+                        fill=blend_colour(ORANGE_ACCENT, PRIMARY_BTN_FG, lbl_fade),
+                    )
+
+            if is_mini:
+                # Fade out the uppercase category tag early, while sliding & scaling the podcast title
+                # seamlessly into the mini-bar's title position.
+                if not preview_hidden[0]:
+                    if progress >= 0.32:
+                        shrinker.delete(cat_item)
+                        preview_hidden[0] = True
+                    else:
+                        cat_fade = progress / 0.32
+                        shrinker.itemconfigure(cat_item, fill=blend_colour(ORANGE_HL, cur_bg, cat_fade))
+                        rx = round(rp_start_x + (rp_end_x - rp_start_x) * box_eased) - vis_x0
+                        ry = round(rp_start_y + (rp_end_y - rp_start_y) * box_eased) - vis_y0
+                        shrinker.coords(cat_item, rx, ry)
+                t_start_y = rp_start_y + cat_line_h
+                tx = round(rp_start_x + (rp_end_x - rp_start_x) * box_eased) - vis_x0
+                ty = round(t_start_y + (rp_end_y - t_start_y) * box_eased) - vis_y0
+                shrinker.coords(title_item, tx, ty)
+                target_pt = max(13, round(shrink_title_pt + (13 - shrink_title_pt) * box_eased))
+                if target_pt != last_title_pt[0]:
+                    shrinker.itemconfigure(title_item, font=(DEFAULT_FONT, target_pt, "bold"))
+                    last_title_pt[0] = target_pt
+            elif not preview_hidden[0]:
                 if progress >= 0.35:
                     shrinker.delete(cat_item, title_item)
                     preview_hidden[0] = True
@@ -2541,9 +2755,9 @@ class EffectsMixin:
                 spent_ms = (monotonic() - frame_start) * 1000.0
                 self.after(self._next_frame_delay(spent_ms, frame_ms), draw_shrink)
             else:
-                cleanup()
+                # Let the final settled frame paint before swapping cleanly to the live mini-bar.
+                self.after(32 if is_mini else 16, cleanup)
 
-        self.update_idletasks()
         draw_shrink()
 
     def _find_live_podcast_card(self, podcast_id, near_rect, sh_rx, sh_ry):
