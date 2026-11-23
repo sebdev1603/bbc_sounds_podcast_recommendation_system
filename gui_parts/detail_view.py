@@ -401,6 +401,7 @@ class DetailViewMixin:
                     "SELECT TimesListened FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                is_first_listen = (existing_entry is None) or (not (existing_entry[0] or 0))
                 if existing_entry:
                     # Increment the existing play counter safely even if TimesListened was NULL.
                     conn.execute(
@@ -420,21 +421,32 @@ class DetailViewMixin:
             if open_detail:
                 # Going back after pressing Listen now should shrink the podcast down into the mini-bar.
                 self._detail_hero_origin = None
+                if is_first_listen and not self._is_reduced_motion():
+                    self._pending_card_insert = {
+                        "mode": "history",
+                        "podcast_id": podcast_id,
+                        "target_rating": None,
+                        "return_tab": "Programme details",
+                        "return_fn": lambda pid=podcast_id: self.show_detail(pid, show_simulated_notice=True),
+                    }
+                    self.transition_to(self.show_history, "History")
+                    return "first_time"
                 self.show_detail(podcast_id, show_simulated_notice=True)
-            return True
+            return "first_time" if is_first_listen else True
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
             return False
 
     def save_programme_rating(self, podcast_id, new_score, callback_func=None):
-        """Persist a 1-5 rating for the active listener and refresh the current view."""
+        """Persist a 1-5 rating for the active listener and showcase brand-new ratings in Ratings."""
         try:
             with self.get_db_connection() as conn:
                 # Update the listener's rating in place, or insert a row if one doesn't exist yet.
                 prior_record = conn.execute(
-                    "SELECT 1 FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
+                    "SELECT RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                is_new_rating = (prior_record is None) or (prior_record[0] is None)
                 if prior_record:
                     conn.execute(
                         "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
@@ -447,6 +459,18 @@ class DetailViewMixin:
                     )
             # Invalidate the cached community rating averages so the new score is reflected immediately.
             self._podcast_averages = None
+            if is_new_rating and not self._is_reduced_motion():
+                return_tab, default_return_fn = self._get_current_page_return_target()
+                self._detail_hero_origin = None
+                self._pending_card_insert = {
+                    "mode": "ratings",
+                    "podcast_id": podcast_id,
+                    "target_rating": int(new_score),
+                    "return_tab": return_tab,
+                    "return_fn": callback_func if callback_func is not None else default_return_fn,
+                }
+                self.transition_to(self.show_ratings, "Ratings")
+                return
             if callback_func:
                 callback_func()
             else:
@@ -562,8 +586,8 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 
-    def remove_rating(self, podcast_id):
-        """Clear the active listener's rating for a podcast and reload the Ratings page."""
+    def remove_rating(self, podcast_id, evaporate=None):
+        """Clear the active listener's rating for a podcast, evaporating its card before reloading."""
         if not messagebox.askyesno("Remove rating", "Remove your rating for this programme?", parent=self):
             return
         try:
@@ -575,7 +599,10 @@ class DetailViewMixin:
                 )
             # Clear cached average ratings so community scores recalculate on next render.
             self._podcast_averages = None
-            self.show_ratings()
+            if evaporate is not None:
+                evaporate(self.show_ratings)
+            else:
+                self.show_ratings()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't remove your rating", err)
 
@@ -605,8 +632,8 @@ class DetailViewMixin:
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
 
-    def remove_from_history(self, podcast_id):
-        """Delete one programme from the listener's listening history."""
+    def remove_from_history(self, podcast_id, evaporate=None):
+        """Delete one programme from the listener's listening history, evaporating its card first."""
         if not messagebox.askyesno("Remove from history", "Remove this programme from your listening history?", parent=self):
             return
         try:
@@ -616,7 +643,10 @@ class DetailViewMixin:
                     "DELETE FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 )
-            self.show_history()
+            if evaporate is not None:
+                evaporate(self.show_history)
+            else:
+                self.show_history()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't remove programme", err)
 

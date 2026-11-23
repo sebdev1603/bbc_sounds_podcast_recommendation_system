@@ -1380,7 +1380,7 @@ class WidgetsMixin:
     def render_podcast_grid(
         self, parent_widget, items_list, columns_count=6,
         show_play=False, show_remove=False, max_count=8, single_row=False,
-        rating_index=None, show_end=True, ratings_mode=False,
+        rating_index=None, show_end=True, ratings_mode=False, insert_anim=None,
     ):
         """Render a responsive single-Canvas grid of podcast cards (zero child HWNDs for tear-free scrolling)."""
         if not items_list:
@@ -1388,14 +1388,17 @@ class WidgetsMixin:
             return
         displayed_items = items_list[:max_count]
         if not single_row and not ratings_mode and len(displayed_items) > PODCASTS_PER_PAGE:
-            self.paginate_podcasts(
-                parent_widget, displayed_items,
-                lambda parent, rows, last: self.render_podcast_grid(
+            first_insert = [insert_anim]
+            def _render_paginated(parent, rows, last):
+                spec = first_insert[0]
+                first_insert[0] = None
+                self.render_podcast_grid(
                     parent, rows, columns_count, show_play=show_play,
                     show_remove=show_remove, max_count=len(rows), rating_index=rating_index,
                     show_end=show_end and last and len(displayed_items) == len(items_list),
-                ),
-            )
+                    insert_anim=spec,
+                )
+            self.paginate_podcasts(parent_widget, displayed_items, _render_paginated)
             return
 
         bg_col = parent_widget.cget("bg")
@@ -1520,10 +1523,14 @@ class WidgetsMixin:
                 y0 = row_i * (card_h + gap)
                 x1 = x0 + card_w
                 y1 = y0 + card_h
+                body_tag = f"card_body_{idx}"
+                all_tag = f"card_all_{idx}"
+                body_tags = (body_tag, all_tag)
 
                 bg_item = grid_canvas.create_polygon(
                     rounded_pts(x0 + 4, y0 + 4, x1 - 4, y1 - 4, 12),
                     smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
+                    tags=all_tag,
                 )
 
                 cov_x = x0 + (card_w - cover_sz) // 2
@@ -1533,12 +1540,13 @@ class WidgetsMixin:
                     corner_radius=8, backdrop=CARD_BG,
                 )
                 grid_canvas._photo_refs.append(photo)
-                grid_canvas.create_image(cov_x, cov_y, image=photo, anchor="nw")
+                grid_canvas.create_image(cov_x, cov_y, image=photo, anchor="nw", tags=body_tags)
                 if icon is not None:
                     grid_canvas.create_text(
                         cov_x + cover_sz // 2, cov_y + cover_sz // 2,
                         text=icon, fill=TEXT_WHITE,
                         font=self._get_cached_font((DEFAULT_FONT, max(12, cover_sz // 6), "bold")),
+                        tags=body_tags,
                     )
 
                 tx = x0 + 12
@@ -1548,24 +1556,26 @@ class WidgetsMixin:
                 disp_title = title if len(title) <= 44 else (title[:42].rstrip() + "…")
                 title_item = grid_canvas.create_text(
                     tx, ty, text=disp_title, fill=TEXT_WHITE, font=title_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 tb = grid_canvas.bbox(title_item)
                 next_y = (tb[3] if tb else ty + 20) + 4
                 grid_canvas.create_text(
                     tx, next_y, text=meta_info, fill=TEXT_GRAY, font=meta_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 next_y += round(17 * max(0.95, f_scale))
                 grid_canvas.create_text(
                     tx, next_y, text=avg_txt, fill=GOLD_STAR, font=meta_font,
-                    anchor="nw", width=max_tw,
+                    anchor="nw", width=max_tw, tags=body_tags,
                 )
                 next_y += round(18 * max(0.95, f_scale))
 
+                star_items = []
                 if r_val is not None:
                     grid_canvas.create_text(
-                        tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font, anchor="nw",
+                        tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font,
+                        anchor="nw", tags=body_tags,
                     )
                     next_y += round(15 * max(0.95, f_scale))
                     try:
@@ -1573,11 +1583,12 @@ class WidgetsMixin:
                     except (TypeError, ValueError):
                         filled = 0
                     for s_i in range(5):
-                        grid_canvas.create_text(
+                        s_id = grid_canvas.create_text(
                             tx + s_i * round(16 * max(0.95, f_scale)), next_y,
                             text="★", fill=GOLD_STAR if s_i < filled else STAR_EMPTY,
-                            font=star_font, anchor="nw",
+                            font=star_font, anchor="nw", tags=body_tags,
                         )
+                        star_items.append(s_id)
 
                 card_proxy = _CanvasRectProxy(grid_canvas, x0, y0, card_w, card_h)
                 cover_proxy = _CanvasRectProxy(grid_canvas, cov_x, cov_y, cover_sz, cover_sz)
@@ -1596,12 +1607,12 @@ class WidgetsMixin:
                     fg_c = PRIMARY_BTN_FG if primary else TEXT_WHITE
                     poly = grid_canvas.create_polygon(
                         rounded_pts(bx0, by0, bx1, by1, 8),
-                        smooth=True, fill=base_c, outline="",
+                        smooth=True, fill=base_c, outline="", tags=body_tags,
                     )
                     btn_y_nudge = btn_font.metrics("descent") * 0.30
                     lbl = grid_canvas.create_text(
                         (bx0 + bx1) / 2.0, (by0 + by1) / 2.0 + btn_y_nudge,
-                        text=label_s, fill=fg_c, font=btn_font,
+                        text=label_s, fill=fg_c, font=btn_font, tags=body_tags,
                     )
                     buttons.append({
                         "rect": (bx0, by0, bx1, by1),
@@ -1623,7 +1634,9 @@ class WidgetsMixin:
                     )
                     add_btn(
                         x1 - 12 - rm_w, x1 - 12, remove_txt, False,
-                        lambda tid=pid: self.remove_rating(tid),
+                        lambda tid=pid: self.remove_rating(
+                            tid, evaporate=lambda done, t_pid=tid: evaporate_card(t_pid, done),
+                        ),
                     )
                 else:
                     det_w = max(60, btn_font.measure(details_txt) + 20)
@@ -1638,7 +1651,9 @@ class WidgetsMixin:
                         rx0 = tx + det_w + 6
                         add_btn(
                             rx0, rx0 + rm_w, remove_txt, False,
-                            lambda tid=pid: self.remove_from_history(tid),
+                            lambda tid=pid: self.remove_from_history(
+                                tid, evaporate=lambda done, t_pid=tid: evaporate_card(t_pid, done),
+                            ),
                         )
                     if show_play:
                         pw = max(36, round(38 * max(0.95, f_scale)))
@@ -1651,10 +1666,20 @@ class WidgetsMixin:
                             ),
                         )
 
+                genre_info = GENRE_TILE_DETAILS.get(category)
+                accent_col = genre_info[0] if genre_info else ORANGE_ACCENT
                 state["cards"].append({
+                    "pid": pid,
                     "rect": (x0, y0, x1, y1),
+                    "cover_rect": (cov_x, cov_y, cover_sz),
+                    "proxies": (card_proxy, cover_proxy, title_proxy),
+                    "photo": photo,
                     "bg_item": bg_item,
                     "title_item": title_item,
+                    "body_tag": body_tag,
+                    "all_tag": all_tag,
+                    "accent_col": accent_col,
+                    "star_items": star_items,
                     "buttons": buttons,
                     "step": 0,
                     "target": 0,
@@ -1664,26 +1689,325 @@ class WidgetsMixin:
                     ),
                 })
 
+            state["cols"] = cols
+            state["card_h"] = card_h
+            state["gap"] = gap
+            state["end_item"] = None
             final_row, used_cols = divmod(total_items, cols)
             if show_end and total_items == len(items_list) and used_cols and (not single_row or final_row == 0):
                 ex0 = used_cols * (card_w + gap)
                 ex1 = cols * card_w + (cols - 1) * gap
                 ey = final_row * (card_h + gap) + card_h // 2
-                grid_canvas.create_text(
+                state["end_item"] = grid_canvas.create_text(
                     (ex0 + ex1) / 2.0, ey, text=no_more_txt, fill="#777b83", font=end_font,
                 )
 
-        hover_loop = {"job": None}
+        hover_loop = {"job": None, "evap_job": None}
 
         def cancel_hover_loop(_event=None):
-            if hover_loop["job"] is not None:
-                try:
-                    self.after_cancel(hover_loop["job"])
-                except tk.TclError:
-                    pass
-                hover_loop["job"] = None
+            for jkey in ("job", "evap_job"):
+                if hover_loop[jkey] is not None:
+                    try:
+                        self.after_cancel(hover_loop[jkey])
+                    except tk.TclError:
+                        pass
+                    hover_loop[jkey] = None
 
         grid_canvas.bind("<Destroy>", cancel_hover_loop, add="+")
+
+        def evaporate_card(target_pid, on_complete):
+            """Dissolve a removed card into ~110 cover-sampled rising particles (1 batched Tcl eval/frame),
+            slide all following cards smoothly into place, and update in-place with zero page flicker."""
+            card_idx = next(
+                (i for i, item in enumerate(state["cards"]) if str(item.get("pid")) == str(target_pid)),
+                -1,
+            )
+            if (
+                self._is_reduced_motion()
+                or not grid_canvas.winfo_exists()
+                or card_idx < 0
+                or card_idx >= len(state["cards"])
+            ):
+                on_complete()
+                return
+
+            cancel_hover_loop()
+            self._transition_active = True
+            state["hovered"] = None
+            state["hovered_btn"] = None
+            c = state["cards"][card_idx]
+            x0, y0, x1, y1 = c["rect"]
+            cov_x, cov_y, cov_sz = c["cover_rect"]
+            photo_ref = c["photo"]
+            bg_item = c["bg_item"]
+            grid_canvas.delete(c["body_tag"])
+            if state.get("end_item") is not None:
+                try:
+                    grid_canvas.delete(state["end_item"])
+                except tk.TclError:
+                    pass
+                state["end_item"] = None
+
+            import random as _random
+            rng = _random.Random(card_idx * 131 + int(x0 + y0))
+            cw_card = max(20.0, x1 - x0)
+            ch_card = max(20.0, y1 - y0)
+
+            # Sample real RGB pixels from the podcast's actual cover art so particles match the artwork.
+            cover_samples = []
+            try:
+                pw, ph = photo_ref.width(), photo_ref.height()
+                if pw > 8 and ph > 8:
+                    for gy in range(5):
+                        sy = min(ph - 1, max(1, int((gy + 0.5) * ph / 5.0)))
+                        for gx in range(5):
+                            sx = min(pw - 1, max(1, int((gx + 0.5) * pw / 5.0)))
+                            val = photo_ref.get(sx, sy)
+                            if isinstance(val, tuple):
+                                r_c, g_c, b_c = val[:3]
+                            else:
+                                r_c, g_c, b_c = (int(v) for v in str(val).split()[:3])
+                            cover_samples.append(f"#{r_c:02x}{g_c:02x}{b_c:02x}")
+            except Exception:
+                cover_samples = []
+
+            body_palette = (
+                blend_colour(CARD_BG, TEXT_WHITE, 0.28),
+                blend_colour(CARD_BG, TEXT_WHITE, 0.16),
+                TEXT_GRAY,
+                c.get("accent_col", ORANGE_ACCENT),
+                ORANGE_ACCENT,
+                GOLD_STAR,
+            )
+            if not cover_samples:
+                cover_samples = list(body_palette)
+
+            # Precompute a 10-step colour fade ramp per unique hex colour for zero blend math in the frame loop.
+            fade_ramps = {}
+            def get_ramp(hex_c):
+                ramp = fade_ramps.get(hex_c)
+                if ramp is None:
+                    ramp = tuple(blend_colour(hex_c, bg_col, i / 9.0) for i in range(10))
+                    fade_ramps[hex_c] = ramp
+                return ramp
+
+            # Spawn ~110 particles: dense fine dust + soft vapour wisps with a natural top-to-bottom / wind-sweep liftoff.
+            particles = []
+            # 1) ~72 particles sampled across the cover artwork area.
+            for idx_p in range(72):
+                fx = rng.random()
+                fy = rng.random()
+                px = cov_x + 4.0 + fx * max(8.0, cov_sz - 8.0)
+                py = cov_y + 4.0 + fy * max(8.0, cov_sz - 8.0)
+                col = cover_samples[min(len(cover_samples) - 1, int(fy * 5) * 5 + int(fx * 5))] if len(cover_samples) == 25 else rng.choice(cover_samples)
+                # Fine specks + soft larger vapour puffs.
+                rad = rng.uniform(1.6, 3.2) if (idx_p % 3) else rng.uniform(3.4, 6.2)
+                # Natural upward buoyancy + subtle rightward breeze + organic turbulence.
+                vx = rng.uniform(4.0, 38.0) + rng.uniform(-14.0, 14.0)
+                vy = rng.uniform(-125.0, -45.0)
+                phase = rng.uniform(0.0, math.tau)
+                freq = rng.uniform(5.0, 9.5)
+                amp = rng.uniform(3.0, 9.0)
+                # Top-right corners evaporate slightly first, sweeping organically across the card.
+                delay = max(0.0, min(0.32, (fy * 0.16) + ((1.0 - fx) * 0.10) + rng.uniform(0.0, 0.08)))
+                oid = grid_canvas.create_oval(
+                    px - rad, py - rad, px + rad, py + rad,
+                    fill=col, outline="", tags="evap_particle",
+                )
+                particles.append([oid, px, py, rad, get_ramp(col), vx, vy, phase, freq, amp, delay, 0])
+
+            # 2) ~38 particles across the lower text/button body of the card.
+            body_top = cov_y + cov_sz
+            body_h = max(20.0, y1 - body_top - 6.0)
+            for idx_p in range(38):
+                fx = rng.random()
+                fy = rng.random()
+                px = x0 + 8.0 + fx * max(10.0, cw_card - 16.0)
+                py = body_top + fy * body_h
+                col = rng.choice(body_palette)
+                rad = rng.uniform(1.6, 3.0) if (idx_p % 3) else rng.uniform(3.2, 5.6)
+                vx = rng.uniform(4.0, 34.0) + rng.uniform(-12.0, 12.0)
+                vy = rng.uniform(-110.0, -38.0)
+                phase = rng.uniform(0.0, math.tau)
+                freq = rng.uniform(5.0, 9.0)
+                amp = rng.uniform(2.5, 8.0)
+                delay = max(0.0, min(0.36, 0.12 + fy * 0.14 + rng.uniform(0.0, 0.08)))
+                oid = grid_canvas.create_oval(
+                    px - rad, py - rad, px + rad, py + rad,
+                    fill=col, outline="", tags="evap_particle",
+                )
+                particles.append([oid, px, py, rad, get_ramp(col), vx, vy, phase, freq, amp, delay, 0])
+
+            # Prepare seamless reflow targets: every card after card_idx slides into the previous card's slot.
+            reflow_cards = []
+            for k in range(card_idx + 1, len(state["cards"])):
+                src_r = state["cards"][k]["rect"]
+                dst_r = state["cards"][k - 1]["rect"]
+                reflow_cards.append([
+                    state["cards"][k]["all_tag"],
+                    float(dst_r[0] - src_r[0]),
+                    float(dst_r[1] - src_r[1]),
+                    0.0,  # applied dx
+                    0.0,  # applied dy
+                ])
+
+            canvas_path = str(grid_canvas)
+            tk_eval = grid_canvas.tk.eval
+            sin = math.sin
+            evap_dur = 0.780
+            reflow_start = 0.400  # Start sliding the next cards over while the mist gently dissipates.
+            reflow_dur = 0.440
+            total_dur = max(evap_dur, reflow_start + reflow_dur) if reflow_cards else evap_dur
+            evap_st = {"elapsed": 0.0, "last_t": None, "bg_gone": False}
+
+            def finish_evap():
+                hover_loop["evap_job"] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                try:
+                    grid_canvas.delete("evap_particle")
+                    if not evap_st["bg_gone"]:
+                        grid_canvas.delete(bg_item)
+                    # Snap any sub-pixel remainder so every reflowed card lands pixel-exact in its new slot.
+                    for rc in reflow_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = rc
+                        rem_x = tot_dx - cur_dx
+                        rem_y = tot_dy - cur_dy
+                        if abs(rem_x) > 0.01 or abs(rem_y) > 0.01:
+                            grid_canvas.move(tag, rem_x, rem_y)
+                except tk.TclError:
+                    pass
+
+                # Update the grid in-place (zero page rebuild, zero flicker) whenever cards remain on this page.
+                can_update_in_place = len(state["cards"]) > 1 and show_end
+                if can_update_in_place:
+                    # Shift geometry metadata of every card after card_idx to its new slot.
+                    for k in range(len(state["cards"]) - 1, card_idx, -1):
+                        cur_c = state["cards"][k]
+                        prev_c = state["cards"][k - 1]
+                        dx = prev_c["rect"][0] - cur_c["rect"][0]
+                        dy = prev_c["rect"][1] - cur_c["rect"][1]
+                        cur_c["rect"] = prev_c["rect"]
+                        cx, cy, csz = cur_c["cover_rect"]
+                        cur_c["cover_rect"] = (cx + dx, cy + dy, csz)
+                        for b in cur_c["buttons"]:
+                            bx0, by0, bx1, by1 = b["rect"]
+                            b["rect"] = (bx0 + dx, by0 + dy, bx1 + dx, by1 + dy)
+                        for proxy in cur_c.get("proxies", ()):
+                            proxy._x += dx
+                            proxy._y += dy
+                    removed = state["cards"].pop(card_idx)
+                    grid_canvas._canvas_card_rects.pop(str(removed.get("pid")), None)
+                    for ei, entry in enumerate(card_entries):
+                        if str(entry[0]) == str(target_pid):
+                            card_entries.pop(ei)
+                            break
+                    cols_n = max(1, state.get("cols", 4))
+                    ch_n = state.get("card_h", 320)
+                    gap_n = state.get("gap", 10)
+                    rem_count = len(state["cards"])
+                    new_rows = max(1, math.ceil(rem_count / cols_n))
+                    grid_canvas.configure(height=new_rows * ch_n + max(0, new_rows - 1) * gap_n + 4)
+                    updater = getattr(self, "_active_count_updater", None)
+                    if updater is not None:
+                        try:
+                            updater(-1)
+                        except tk.TclError:
+                            pass
+                    self._transition_active = False
+                    return
+
+                self._transition_active = False
+                on_complete()
+
+            def step_evap():
+                hover_loop["evap_job"] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                t0 = monotonic()
+                dt = 0.016 if evap_st["last_t"] is None else max(0.004, min(0.042, t0 - evap_st["last_t"]))
+                evap_st["last_t"] = t0
+                evap_st["elapsed"] = min(total_dur, evap_st["elapsed"] + dt)
+                el = evap_st["elapsed"]
+                p = min(1.0, el / evap_dur)
+
+                cmds = []
+                append = cmds.append
+
+                # Dissolve the card silhouette quickly over the first 28% as particles peel off.
+                if not evap_st["bg_gone"]:
+                    if p >= 0.28:
+                        append(f"{canvas_path} delete {bg_item}")
+                        evap_st["bg_gone"] = True
+                    else:
+                        bp = p / 0.28
+                        shrink = 4.0 + 16.0 * bp
+                        lift_y = -14.0 * bp
+                        pts = " ".join(
+                            f"{v:.1f}"
+                            for v in rounded_pts(x0 + shrink, y0 + shrink + lift_y, x1 - shrink, y1 - shrink + lift_y, 12)
+                        )
+                        append(f"{canvas_path} coords {bg_item} {pts}")
+                        append(
+                            f"{canvas_path} itemconfigure {bg_item} "
+                            f"-fill {blend_colour(CARD_BG, bg_col, bp)} "
+                            f"-outline {blend_colour(ORANGE_ACCENT, bg_col, bp)}"
+                        )
+
+                # Update all ~110 particles in one batched Tcl script.
+                for part in particles:
+                    oid, px, py, rad, ramp, vx, vy, phase, freq, amp, delay, last_ci = part
+                    if last_ci == -1:
+                        continue
+                    local_p = (p - delay) / max(0.18, 1.0 - delay)
+                    if local_p <= 0.0:
+                        continue
+                    if local_p >= 1.0:
+                        append(f"{canvas_path} itemconfigure {oid} -state hidden")
+                        part[11] = -1
+                        continue
+                    # Accelerate gently upward like warm vapour while drifting in a soft breeze.
+                    ease_y = local_p ** 1.35
+                    nx = px + vx * (local_p ** 1.15) + sin(phase + local_p * freq) * amp * local_p
+                    ny = py + vy * ease_y
+                    nr = max(0.5, rad * (1.0 - local_p * 0.88))
+                    append(f"{canvas_path} coords {oid} {nx - nr:.1f} {ny - nr:.1f} {nx + nr:.1f} {ny + nr:.1f}")
+                    ci = min(9, int(local_p * 9.5))
+                    if ci != last_ci:
+                        append(f"{canvas_path} itemconfigure {oid} -fill {ramp[ci]}")
+                        part[11] = ci
+
+                # Seamlessly slide all subsequent cards into the vacated positions with a soft elastic settle.
+                if reflow_cards and el >= reflow_start:
+                    rp = min(1.0, (el - reflow_start) / reflow_dur)
+                    reased = ease_out_elastic(rp, damping=5.2, frequency=1.08)
+                    for rc in reflow_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = rc
+                        target_dx = tot_dx * reased
+                        target_dy = tot_dy * reased
+                        step_dx = target_dx - cur_dx
+                        step_dy = target_dy - cur_dy
+                        if abs(step_dx) >= 0.25 or abs(step_dy) >= 0.25:
+                            append(f"{canvas_path} move {tag} {step_dx:.2f} {step_dy:.2f}")
+                            rc[3] = target_dx
+                            rc[4] = target_dy
+
+                if cmds:
+                    try:
+                        tk_eval("\n".join(cmds))
+                    except tk.TclError:
+                        finish_evap()
+                        return
+
+                if el < total_dur:
+                    spent = (monotonic() - t0) * 1000.0
+                    hover_loop["evap_job"] = grid_canvas.after(self._next_frame_delay(spent, 16), step_evap)
+                else:
+                    finish_evap()
+
+            step_evap()
 
         def paint_card_hover(c):
             step = c["step"]
@@ -1832,6 +2156,183 @@ class WidgetsMixin:
                 init_w = max(320, self.winfo_width() - 120)
         state["last_w"] = init_w
         draw_grid(init_w)
+
+        if insert_anim and state["cards"] and str(state["cards"][0].get("pid")) == str(insert_anim.get("podcast_id")):
+            self._run_grid_insert_animation(grid_canvas, state, insert_anim, star_font, f_scale)
+
+    def _run_grid_insert_animation(self, grid_canvas, state, insert_anim, star_font, f_scale):
+        """Slide existing cards over, spring the newly added card into slot 0, optionally fill stars 0..N,
+        and smoothly transition back to the page the user came from."""
+        if not grid_canvas.winfo_exists() or not state["cards"]:
+            return
+        new_card = state["cards"][0]
+        new_tag = new_card["all_tag"]
+        target_rating = insert_anim.get("target_rating")
+        return_tab = insert_anim.get("return_tab")
+        return_fn = insert_anim.get("return_fn")
+        star_items = new_card.get("star_items") or []
+
+        # Prepare the "before" state immediately: existing cards sit 1 slot earlier, new card is hidden above slot 0,
+        # and all 5 stars on a newly rated card start empty (0 stars).
+        shifted_cards = []
+        for k in range(1, len(state["cards"])):
+            dst_r = state["cards"][k]["rect"]
+            src_r = state["cards"][k - 1]["rect"]
+            back_dx = float(src_r[0] - dst_r[0])
+            back_dy = float(src_r[1] - dst_r[1])
+            grid_canvas.move(state["cards"][k]["all_tag"], back_dx, back_dy)
+            # We will animate each shifted card forward by (-back_dx, -back_dy) back into its real slot k.
+            shifted_cards.append([state["cards"][k]["all_tag"], -back_dx, -back_dy, 0.0, 0.0])
+
+        drop_offset = -42.0
+        grid_canvas.move(new_tag, 0, drop_offset)
+        grid_canvas.itemconfigure(new_tag, state="hidden")
+        if target_rating is not None and star_items:
+            for s_id in star_items:
+                grid_canvas.itemconfigure(s_id, fill=STAR_EMPTY)
+
+        anim_job = [None]
+        star_pop_font = self._get_cached_font((DEFAULT_FONT, max(14, round(17 * f_scale)), "bold"))
+
+        def cancel_insert(_event=None):
+            if anim_job[0] is not None:
+                try:
+                    grid_canvas.after_cancel(anim_job[0])
+                except tk.TclError:
+                    pass
+                anim_job[0] = None
+
+        grid_canvas.bind("<Destroy>", cancel_insert, add="+")
+
+        def begin_showcase():
+            anim_job[0] = None
+            if not grid_canvas.winfo_exists():
+                return
+            # Wait for the incoming tab slide animation to finish before popping the new card in.
+            if getattr(self, "_transition_active", False):
+                anim_job[0] = grid_canvas.after(20, begin_showcase)
+                return
+
+            self._transition_active = True
+            canvas_path = str(grid_canvas)
+            tk_eval = grid_canvas.tk.eval
+            slide_dur = 0.520
+            st = {"elapsed": 0.0, "last_t": None, "new_shown": False, "new_dy": 0.0}
+
+            def finish_and_return():
+                anim_job[0] = None
+                self._transition_active = False
+                if not grid_canvas.winfo_exists():
+                    return
+                if return_tab == "Programme details" and new_card.get("open_action") is not None:
+                    # Expand directly from the newly inserted card back into the podcast's detail page.
+                    new_card["open_action"]()
+                    return
+                if return_fn is not None:
+                    self.transition_to(return_fn, return_tab, direction=-1)
+
+            def animate_stars(star_idx):
+                anim_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                if target_rating is None or star_idx >= min(len(star_items), int(target_rating)):
+                    # Hold briefly so the user sees the final card & rating before transitioning back.
+                    anim_job[0] = grid_canvas.after(550, finish_and_return)
+                    return
+                s_id = star_items[star_idx]
+                try:
+                    grid_canvas.itemconfigure(s_id, fill=GOLD_STAR, font=star_pop_font)
+                except tk.TclError:
+                    self._transition_active = False
+                    return
+
+                def settle_star(sid=s_id, next_i=star_idx + 1):
+                    anim_job[0] = None
+                    if not grid_canvas.winfo_exists():
+                        self._transition_active = False
+                        return
+                    try:
+                        grid_canvas.itemconfigure(sid, font=star_font)
+                    except tk.TclError:
+                        pass
+                    anim_job[0] = grid_canvas.after(95, lambda: animate_stars(next_i))
+
+                anim_job[0] = grid_canvas.after(85, settle_star)
+
+            def step_insert():
+                anim_job[0] = None
+                if not grid_canvas.winfo_exists():
+                    self._transition_active = False
+                    return
+                t0 = monotonic()
+                dt = 0.016 if st["last_t"] is None else max(0.004, min(0.042, t0 - st["last_t"]))
+                st["last_t"] = t0
+                st["elapsed"] = min(slide_dur, st["elapsed"] + dt)
+                p = st["elapsed"] / slide_dur
+
+                cmds = []
+                append = cmds.append
+                # 1. Slide all existing cards smoothly over by 1 slot.
+                if shifted_cards:
+                    seased = ease_out_elastic(min(1.0, p / 0.85), damping=5.2, frequency=1.08)
+                    for sc in shifted_cards:
+                        tag, tot_dx, tot_dy, cur_dx, cur_dy = sc
+                        tx_d = tot_dx * seased
+                        ty_d = tot_dy * seased
+                        dx = tx_d - cur_dx
+                        dy = ty_d - cur_dy
+                        if abs(dx) >= 0.25 or abs(dy) >= 0.25:
+                            append(f"{canvas_path} move {tag} {dx:.2f} {dy:.2f}")
+                            sc[3] = tx_d
+                            sc[4] = ty_d
+
+                # 2. Spring the new card cleanly into slot 0 with a warm orange highlight border.
+                if p >= 0.18:
+                    if not st["new_shown"]:
+                        append(f"{canvas_path} itemconfigure {new_tag} -state normal")
+                        append(f"{canvas_path} itemconfigure {new_card['bg_item']} -outline {ORANGE_ACCENT}")
+                        st["new_shown"] = True
+                    np = min(1.0, (p - 0.18) / 0.82)
+                    neased = ease_out_elastic(np, damping=4.2, frequency=1.30)
+                    target_dy = -drop_offset * neased
+                    dy_step = target_dy - st["new_dy"]
+                    if abs(dy_step) >= 0.25:
+                        append(f"{canvas_path} move {new_tag} 0 {dy_step:.2f}")
+                        st["new_dy"] = target_dy
+
+                if cmds:
+                    try:
+                        tk_eval("\n".join(cmds))
+                    except tk.TclError:
+                        self._transition_active = False
+                        return
+
+                if p < 1.0:
+                    spent = (monotonic() - t0) * 1000.0
+                    anim_job[0] = grid_canvas.after(self._next_frame_delay(spent, 16), step_insert)
+                else:
+                    # Snap any sub-pixel remainders and restore resting card border.
+                    try:
+                        for sc in shifted_cards:
+                            rem_x = sc[1] - sc[3]
+                            rem_y = sc[2] - sc[4]
+                            if abs(rem_x) > 0.01 or abs(rem_y) > 0.01:
+                                grid_canvas.move(sc[0], rem_x, rem_y)
+                        rem_new_y = (-drop_offset) - st["new_dy"]
+                        if abs(rem_new_y) > 0.01:
+                            grid_canvas.move(new_tag, 0, rem_new_y)
+                        grid_canvas.itemconfigure(new_card["bg_item"], outline=BORDER_LINE)
+                    except tk.TclError:
+                        pass
+                    if target_rating is not None and star_items:
+                        anim_job[0] = grid_canvas.after(140, lambda: animate_stars(0))
+                    else:
+                        anim_job[0] = grid_canvas.after(520, finish_and_return)
+
+            step_insert()
+
+        anim_job[0] = grid_canvas.after(30, begin_showcase)
 
     def paginate_podcasts(self, parent, items, render_page):
         """Wrap a list of programmes with Previous/Next page controls."""

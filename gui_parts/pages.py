@@ -839,11 +839,32 @@ class PagesMixin:
             return
         control_bar = tk.Frame(page, bg=DARK_BG)
         control_bar.pack(fill="x", pady=(0, 7))
-        self.create_label(control_bar, f"{len(history_rows)} programmes", 10, TEXT_GRAY).pack(side="left")
+        hist_count = [len(history_rows)]
+        hist_count_lbl = self.create_label(control_bar, f"{hist_count[0]} programmes", 10, TEXT_GRAY)
+        hist_count_lbl.pack(side="left")
+
+        def update_hist_count(delta):
+            hist_count[0] = max(0, hist_count[0] + delta)
+            if hist_count_lbl.winfo_exists():
+                hist_count_lbl.configure(text=translate(f"{hist_count[0]} programmes"))
+
+        self._active_count_updater = update_hist_count
         self.create_button(control_bar, "Clear history", self.clear_history, compact=True).pack(side="right")
+        pending = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending if (pending and pending.get("mode") == "history") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            history_rows = list(history_rows)
+            for idx_h, row_h in enumerate(history_rows):
+                if str(row_h[0]) == target_pid:
+                    if idx_h != 0:
+                        history_rows.insert(0, history_rows.pop(idx_h))
+                    break
         self.render_podcast_grid(
             page, history_rows, columns_count=6,
             show_play=True, show_remove=True, max_count=len(history_rows),
+            insert_anim=insert_spec,
         )
 
     def show_ratings(self):
@@ -851,6 +872,17 @@ class PagesMixin:
         page = self.build_shell("Ratings")
         self.render_page_title(page, "Podcasts you rated", "Every programme you have scored is collected here.")
         rating_rows = self.fetch_user_ratings()
+        pending = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending if (pending and pending.get("mode") == "ratings") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            rating_rows = list(rating_rows)
+            for idx_r, row_r in enumerate(rating_rows):
+                if str(row_r[0]) == target_pid:
+                    if idx_r != 0:
+                        rating_rows.insert(0, rating_rows.pop(idx_r))
+                    break
         if not rating_rows:
             self.render_empty_message(page, "No ratings yet", "Listen to a programme, then add a rating from its details page.")
             self.create_button(
@@ -861,21 +893,32 @@ class PagesMixin:
 
         summary_bar = self.create_card_frame(page, bg=SUBCARD_BG)
         summary_bar.pack(fill="x", pady=(0, 12))
-        self.create_label(summary_bar, str(len(rating_rows)), 24, ORANGE_ACCENT, "bold").pack(
-            side="left", padx=(18, 8), pady=12
-        )
+        rating_count = [len(rating_rows)]
+        rating_count_lbl = self.create_label(summary_bar, str(rating_count[0]), 24, ORANGE_ACCENT, "bold")
+        rating_count_lbl.pack(side="left", padx=(18, 8), pady=12)
+
+        def update_rating_count(delta):
+            rating_count[0] = max(0, rating_count[0] + delta)
+            if rating_count_lbl.winfo_exists():
+                rating_count_lbl.configure(text=str(rating_count[0]))
+
+        self._active_count_updater = update_rating_count
         self.create_label(summary_bar, "ratings in your library", 10, TEXT_GRAY).pack(side="left", pady=18)
         self.create_label(summary_bar, "Select a programme to update or remove its score.", 10, TEXT_LIGHT).pack(
             side="right", padx=18, pady=18
         )
 
+        self._active_ratings_insert_anim = insert_spec
         self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
 
     def render_ratings_page(self, parent, rating_rows, last_page):
         """Render one page of responsive rated podcast cards on a single Canvas (zero child HWNDs)."""
+        insert_spec = getattr(self, "_active_ratings_insert_anim", None)
+        self._active_ratings_insert_anim = None
         self.render_podcast_grid(
             parent, rating_rows, max_count=len(rating_rows),
             rating_index=3, show_end=last_page, ratings_mode=True,
+            insert_anim=insert_spec,
         )
 
     def show_genres(self):

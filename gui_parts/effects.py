@@ -1322,6 +1322,24 @@ class EffectsMixin:
         self._shell_bottom_bar = footer
         self._bottom_bar_info = (shell, footer, podcast_id, title, category)
 
+    def _get_current_page_return_target(self):
+        """Return (tab_name, handler_fn) to smoothly navigate back to the currently open page."""
+        tab = getattr(self, "_active_nav_tab", "Home") or "Home"
+        if tab == "Programme details" and getattr(self, "_active_detail_podcast", None):
+            pid = self._active_detail_podcast[0]
+            return ("Programme details", lambda target_id=pid: self.show_detail(target_id))
+        nav_map = {
+            "Home": self.show_home,
+            "Genres": self.show_search,
+            "For you": self.show_recommendations,
+            "Favourites": self.show_favourites,
+            "History": self.show_history,
+            "Ratings": self.show_ratings,
+            "Report": self.show_report,
+            "Settings": self.show_profile,
+        }
+        return (tab, nav_map.get(tab, self.show_home))
+
     def play_podcast_to_mini_bar(self, source_widget, podcast_id, title="", category="", cover_widget=None):
         """Elastically migrate a podcast's Play button and cover art into the bottom mini-bar."""
         if self._is_busy_transitioning():
@@ -1334,7 +1352,9 @@ class EffectsMixin:
             and bar_info is not None
             and str(bar_info[2]) == str(podcast_id)
         )
-        if not self.listen(podcast_id, open_detail=False):
+        return_tab, return_fn = self._get_current_page_return_target()
+        listen_res = self.listen(podcast_id, open_detail=False)
+        if not listen_res:
             return
 
         shell = getattr(self, "_shell_box", None)
@@ -1342,6 +1362,20 @@ class EffectsMixin:
             return
 
         show_avg = getattr(self, "_active_nav_tab", "") != "Settings"
+        # First time listening to this podcast: showcase it popping into the top of History, then return here.
+        if listen_res == "first_time" and not self._is_reduced_motion() and return_tab != "History":
+            self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
+            self._detail_hero_origin = None
+            self._pending_card_insert = {
+                "mode": "history",
+                "podcast_id": podcast_id,
+                "target_rating": None,
+                "return_tab": return_tab,
+                "return_fn": return_fn,
+            }
+            self.transition_to(self.show_history, "History")
+            return
+
         if self._is_reduced_motion() or already_in_mini_bar or source_widget is None or not source_widget.winfo_exists():
             self._sync_bottom_bar(shell, show_bar=True, show_average=show_avg)
             bar = getattr(self, "_shell_bottom_bar", None)
