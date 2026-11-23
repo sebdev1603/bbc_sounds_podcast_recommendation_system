@@ -14,6 +14,8 @@ import zlib
 
 from gui_parts.i18n import translate
 from gui_parts.theme import (
+    ACTION_BTN_BG,
+    ACTION_BTN_FG,
     BORDER_LINE,
     CANVA_DIR,
     CARD_BG,
@@ -40,6 +42,7 @@ from gui_parts.theme import (
     TEXT_GRAY,
     TEXT_LIGHT,
     TEXT_WHITE,
+    TITLEBAR_DARK_MODE,
     blend_colour,
     ease_out_elastic,
 )
@@ -212,7 +215,11 @@ class WidgetsMixin:
         inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
         lift = max(0, min(3, round(2.2 * raw_eased)))
         y_shift = getattr(button, "_hover_y_shift", 0)
-        image = self.rounded_button_image(width, height, colour, inset=inset, y_shift=y_shift, lift=lift)
+        border_colour = getattr(button, "_rounded_border", None)
+        image = self.rounded_button_image(
+            width, height, colour, inset=inset, y_shift=y_shift, lift=lift,
+            border_colour=border_colour,
+        )
         button._current_image = image
         config = {"image": image}
         target_fg = getattr(button, "_hover_target_fg", TEXT_WHITE)
@@ -259,11 +266,22 @@ class WidgetsMixin:
             y_shift = max(0, min(4, round(descent * (0.25 if has_descender else 0.50))))
         button._hover_size = (width, height)
         button._hover_y_shift = y_shift
-        button._normal_image = self.rounded_button_image(width, height, face, inset=5, y_shift=y_shift, lift=0)
+        bg_col = str(button.cget("bg")).lower()
+        face_l = str(face).lower()
+        is_primary = face_l in (ORANGE_ACCENT.lower(), ORANGE_HL.lower())
+        is_flat = face_l == bg_col
+        if not is_primary and not is_flat:
+            border_colour = blend_colour(BORDER_LINE, TEXT_WHITE, 0.14) if TITLEBAR_DARK_MODE == 0 else BORDER_LINE
+        else:
+            border_colour = None
+        button._rounded_border = border_colour
+        button._normal_image = self.rounded_button_image(
+            width, height, face, inset=5, y_shift=y_shift, lift=0, border_colour=border_colour,
+        )
         button.configure(image=button._normal_image)
 
     @staticmethod
-    def _build_aa_pill_png(w, h, left, top, right, bottom, radius, rgb, lift=0):
+    def _build_aa_pill_png(w, h, left, top, right, bottom, radius, rgb, lift=0, border_rgb=None):
         """Pure-Python signed-distance anti-aliased RGBA PNG rounded pill (zero Pillow dependency)."""
         r, g, b = rgb
         buf = bytearray(w * h * 4)
@@ -292,9 +310,10 @@ class WidgetsMixin:
                         if cov > 0.0:
                             buf[row_off + x * 4 + 3] = int(sh_a * cov)
 
-        # Anti-aliased pill body with exact sub-pixel corner coverage.
+        # Anti-aliased pill body with exact sub-pixel corner coverage and optional 1px border.
         rad = float(radius)
         solid_rgba = bytes((r, g, b, 255))
+        border_rgba = bytes((*border_rgb, 255)) if border_rgb is not None else None
         inner_l = int(math.ceil(left + rad))
         inner_r = int(math.floor(right - rad))
         for y in range(max(0, top), min(h, bottom)):
@@ -302,21 +321,36 @@ class WidgetsMixin:
             row_off = y * w * 4
             if dy <= 0.0:
                 if right > left:
-                    buf[row_off + left * 4:row_off + right * 4] = solid_rgba * (right - left)
+                    if border_rgba is not None and right - left >= 2:
+                        buf[row_off + left * 4:row_off + (left + 1) * 4] = border_rgba
+                        if right - 1 > left + 1:
+                            buf[row_off + (left + 1) * 4:row_off + (right - 1) * 4] = solid_rgba * (right - left - 2)
+                        buf[row_off + (right - 1) * 4:row_off + right * 4] = border_rgba
+                    else:
+                        buf[row_off + left * 4:row_off + right * 4] = solid_rgba * (right - left)
             else:
                 if inner_r > inner_l:
-                    buf[row_off + inner_l * 4:row_off + inner_r * 4] = solid_rgba * (inner_r - inner_l)
+                    span_rgba = border_rgba if (border_rgba is not None and (y == top or y == bottom - 1)) else solid_rgba
+                    buf[row_off + inner_l * 4:row_off + inner_r * 4] = span_rgba * (inner_r - inner_l)
                 for x in (*range(max(0, left), min(w, inner_l)), *range(max(0, inner_r), min(w, right))):
                     dx = (left + rad - 0.5 - x) if x < left + rad else (x - (right - rad - 0.5))
-                    cov = max(0.0, min(1.0, rad + 0.5 - math.hypot(dx, dy)))
+                    edge_dist = rad + 0.5 - math.hypot(dx, dy)
+                    cov = max(0.0, min(1.0, edge_dist))
                     if cov > 0.0:
+                        if border_rgb is not None:
+                            in_cov = max(0.0, min(1.0, edge_dist - 1.0))
+                            pr = border_rgb[0] + (r - border_rgb[0]) * in_cov
+                            pg = border_rgb[1] + (g - border_rgb[1]) * in_cov
+                            pb = border_rgb[2] + (b - border_rgb[2]) * in_cov
+                        else:
+                            pr, pg, pb = r, g, b
                         idx = row_off + x * 4
                         da = buf[idx + 3] / 255.0
                         oa = cov + da * (1.0 - cov)
                         if oa > 0.0:
-                            buf[idx] = round((r * cov) / oa)
-                            buf[idx + 1] = round((g * cov) / oa)
-                            buf[idx + 2] = round((b * cov) / oa)
+                            buf[idx] = round((pr * cov) / oa)
+                            buf[idx + 1] = round((pg * cov) / oa)
+                            buf[idx + 2] = round((pb * cov) / oa)
                             buf[idx + 3] = round(oa * 255)
 
         stride = w * 4
@@ -330,9 +364,9 @@ class WidgetsMixin:
         ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
         return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 1)) + _chunk(b"IEND", b"")
 
-    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0):
+    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None):
         """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
-        key = (width, height, colour, inset, y_shift, lift)
+        key = (width, height, colour, inset, y_shift, lift, border_colour)
         if key not in self.button_images:
             # Reserve 6px transparent margin per side so elastic hover overshoot & shadow never shift layout,
             # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
@@ -348,6 +382,10 @@ class WidgetsMixin:
             radius = min(10, pill_h // 2, pill_w // 2)
             c = str(colour).lstrip("#")
             rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+            border_rgb = None
+            if isinstance(border_colour, str) and border_colour.startswith("#") and len(border_colour) == 7:
+                bc = border_colour.lstrip("#")
+                border_rgb = (int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16))
             image = None
             try:
                 import io
@@ -375,6 +413,8 @@ class WidgetsMixin:
                     (left * ss, top * ss, right * ss - 1, bottom * ss - 1),
                     radius=radius * ss,
                     fill=rgba,
+                    outline=(*border_rgb, 255) if border_rgb is not None else None,
+                    width=ss if border_rgb is not None else 0,
                 )
                 aa = hi.resize((canvas_w, canvas_h), resample)
                 buf = io.BytesIO()
@@ -386,7 +426,8 @@ class WidgetsMixin:
                 # Zero-dependency anti-aliased RGBA PNG fallback so Windows without Pillow matches Linux exactly.
                 try:
                     png_bytes = self._build_aa_pill_png(
-                        canvas_w, canvas_h, left, top, right, bottom, radius, rgb, lift=lift,
+                        canvas_w, canvas_h, left, top, right, bottom, radius, rgb,
+                        lift=lift, border_rgb=border_rgb,
                     )
                     image = tk.PhotoImage(master=self, data=png_bytes)
                 except Exception:
@@ -1547,8 +1588,9 @@ class WidgetsMixin:
         your_rating_txt = translate("Your rating")
         no_more_txt = translate("No more results")
         hover_bg_col = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.55)
-        sec_btn_bg = blend_colour(CARD_BG, SECONDARY_HOVER_BG, 0.60)
+        sec_btn_bg = ACTION_BTN_BG
         sec_btn_hover = SECONDARY_HOVER_BG
+        sec_btn_outline = blend_colour(BORDER_LINE, TEXT_WHITE, 0.14) if TITLEBAR_DARK_MODE == 0 else BORDER_LINE
 
         # Precompute card metadata once so layout/reflow stays instant.
         card_entries = []
@@ -1692,10 +1734,13 @@ class WidgetsMixin:
                 def add_btn(bx0, bx1, label_s, primary, action):
                     base_c = ORANGE_ACCENT if primary else sec_btn_bg
                     hov_c = ORANGE_HL if primary else sec_btn_hover
-                    fg_c = PRIMARY_BTN_FG if primary else TEXT_WHITE
+                    fg_c = PRIMARY_BTN_FG if primary else ACTION_BTN_FG
                     poly = grid_canvas.create_polygon(
                         rounded_pts(bx0, by0, bx1, by1, 8),
-                        smooth=True, fill=base_c, outline="", tags=body_tags,
+                        smooth=True, fill=base_c,
+                        outline="" if primary else sec_btn_outline,
+                        width=0 if primary else 1,
+                        tags=body_tags,
                     )
                     btn_y_nudge = 0.0 if sys.platform == "win32" else btn_font.metrics("descent") * 0.30
                     lbl = grid_canvas.create_text(
