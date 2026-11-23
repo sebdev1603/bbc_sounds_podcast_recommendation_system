@@ -1685,12 +1685,12 @@ class WidgetsMixin:
         grid_canvas.bind("<Configure>", on_configure)
 
         init_w = parent_widget.winfo_width()
-        if init_w <= 1 and parent_widget.master is not None:
-            init_w = parent_widget.master.winfo_width()
-        if init_w <= 1:
+        if init_w > 1 and parent_widget is getattr(self, "current_page", None):
+            # content_pane has padx=46 on both sides; subtract 92px to match grid_canvas's true inner width.
+            init_w = max(320, init_w - 92)
+        elif init_w <= 1:
             shell_cvs = getattr(self, "_shell_canvas", None)
             if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
-                # Subtract content_pane's 46px left + 46px right padding so initial columns fit cleanly.
                 init_w = max(320, shell_cvs.winfo_width() - 92)
             else:
                 init_w = max(320, self.winfo_width() - 120)
