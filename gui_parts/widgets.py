@@ -203,7 +203,8 @@ class WidgetsMixin:
         eased = max(0.0, min(1.0, round(raw_eased * 4.0) / 4.0))
         colour = blend_colour(face, hover, eased)
         inset = max(1, min(3, round(3.0 - 2.0 * eased)))
-        image = self.rounded_button_image(width, height, colour, inset=inset)
+        y_shift = getattr(button, "_hover_y_shift", 0)
+        image = self.rounded_button_image(width, height, colour, inset=inset, y_shift=y_shift)
         button._current_image = image
         config = {"image": image}
         target_fg = getattr(button, "_hover_target_fg", TEXT_WHITE)
@@ -241,27 +242,55 @@ class WidgetsMixin:
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
         width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
+        # Optical vertical compensation: shift the pill up slightly so text (whose descender space
+        # sits below the baseline) appears dead-center inside the rounded pill.
+        y_shift = max(0, min(3, round(metrics.metrics("descent") * 0.35)))
         button._hover_size = (width, height)
-        button._normal_image = self.rounded_button_image(width, height, face, inset=3)
+        button._hover_y_shift = y_shift
+        button._normal_image = self.rounded_button_image(width, height, face, inset=3, y_shift=y_shift)
         button.configure(image=button._normal_image)
 
-    def rounded_button_image(self, width, height, colour, inset=3):
-        """Rasterize and cache a rounded-rectangle PhotoImage for a button state."""
-        key = (width, height, colour, inset)
+    def rounded_button_image(self, width, height, colour, inset=3, y_shift=0):
+        """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage for a button state."""
+        key = (width, height, colour, inset, y_shift)
         if key not in self.button_images:
-            # Reserve 3px transparent margin per side so elastic hover bounce never shifts layout.
-            canvas_w, canvas_h = width + 6, height + 6
-            image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
+            # Reserve 3px transparent margin per side so hover expansion never shifts layout,
+            # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
+            canvas_w = width + 6
+            canvas_h = height + 6 + y_shift * 2
             left, top = inset, inset
-            right, bottom = canvas_w - inset, canvas_h - inset
+            right, bottom = canvas_w - inset, height + 6 - inset
             pill_w, pill_h = right - left, bottom - top
             radius = min(10, pill_h // 2, pill_w // 2)
-            image.put(colour, to=(left, top + radius, right, bottom - radius))
-            for y in range(radius):
-                dx = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
-                if left + dx < right - dx:
-                    image.put(colour, to=(left + dx, top + y, right - dx, top + y + 1))
-                    image.put(colour, to=(left + dx, bottom - y - 1, right - dx, bottom - y))
+            image = None
+            try:
+                import io
+                from PIL import Image, ImageDraw
+                resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                c = str(colour).lstrip("#")
+                rgba = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), 255)
+                ss = 3
+                hi = Image.new("RGBA", (canvas_w * ss, canvas_h * ss), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(hi)
+                draw.rounded_rectangle(
+                    (left * ss, top * ss, right * ss - 1, bottom * ss - 1),
+                    radius=radius * ss,
+                    fill=rgba,
+                )
+                aa = hi.resize((canvas_w, canvas_h), resample)
+                buf = io.BytesIO()
+                aa.save(buf, format="PNG", compress_level=1)
+                image = tk.PhotoImage(master=self, data=buf.getvalue())
+            except Exception:
+                image = None
+            if image is None:
+                image = tk.PhotoImage(master=self, width=canvas_w, height=canvas_h)
+                image.put(colour, to=(left, top + radius, right, bottom - radius))
+                for y in range(radius):
+                    dx = radius - math.isqrt(radius ** 2 - (radius - y) ** 2)
+                    if left + dx < right - dx:
+                        image.put(colour, to=(left + dx, top + y, right - dx, top + y + 1))
+                        image.put(colour, to=(left + dx, bottom - y - 1, right - dx, bottom - y))
             self.button_images[key] = image
             if len(self.button_images) > 512:
                 self.button_images.popitem(last=False)
@@ -1542,8 +1571,9 @@ class WidgetsMixin:
                         rounded_pts(bx0, by0, bx1, by1, 8),
                         smooth=True, fill=base_c, outline="",
                     )
+                    btn_y_nudge = btn_font.metrics("descent") * 0.30
                     lbl = grid_canvas.create_text(
-                        (bx0 + bx1) / 2.0, (by0 + by1) / 2.0,
+                        (bx0 + bx1) / 2.0, (by0 + by1) / 2.0 + btn_y_nudge,
                         text=label_s, fill=fg_c, font=btn_font,
                     )
                     buttons.append({
