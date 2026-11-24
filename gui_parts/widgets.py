@@ -2455,28 +2455,37 @@ class WidgetsMixin:
         and smoothly transition back to the page the user came from."""
         if not grid_canvas.winfo_exists() or not state["cards"]:
             return
+        stars_only = bool(insert_anim.get("stars_only"))
+        target_pid = str(insert_anim.get("podcast_id") or "")
         new_card = state["cards"][0]
+        if stars_only and target_pid:
+            for card_entry in state["cards"]:
+                if str(card_entry.get("pid")) == target_pid:
+                    new_card = card_entry
+                    break
         new_tag = new_card["all_tag"]
         target_rating = insert_anim.get("target_rating")
         return_tab = insert_anim.get("return_tab")
         return_fn = insert_anim.get("return_fn")
         star_items = new_card.get("star_items") or []
 
-        # Prepare the "before" state immediately: existing cards sit 1 slot earlier, new card is hidden above slot 0,
-        # and all 5 stars on a newly rated card start empty (0 stars).
+        # Prepare the "before" state immediately: for new cards, existing cards sit 1 slot earlier and
+        # the new card is hidden above slot 0; for stars-only rating updates, keep all cards in place
+        # and only reset the target card's 5 stars to empty before playing the golden wave.
         shifted_cards = []
-        for k in range(1, len(state["cards"])):
-            dst_r = state["cards"][k]["rect"]
-            src_r = state["cards"][k - 1]["rect"]
-            back_dx = float(src_r[0] - dst_r[0])
-            back_dy = float(src_r[1] - dst_r[1])
-            grid_canvas.move(state["cards"][k]["all_tag"], back_dx, back_dy)
-            # We will animate each shifted card forward by (-back_dx, -back_dy) back into its real slot k.
-            shifted_cards.append([state["cards"][k]["all_tag"], -back_dx, -back_dy, 0.0, 0.0])
-
         drop_offset = -42.0
-        grid_canvas.move(new_tag, 0, drop_offset)
-        grid_canvas.itemconfigure(new_tag, state="hidden")
+        if not stars_only:
+            for k in range(1, len(state["cards"])):
+                dst_r = state["cards"][k]["rect"]
+                src_r = state["cards"][k - 1]["rect"]
+                back_dx = float(src_r[0] - dst_r[0])
+                back_dy = float(src_r[1] - dst_r[1])
+                grid_canvas.move(state["cards"][k]["all_tag"], back_dx, back_dy)
+                # We will animate each shifted card forward by (-back_dx, -back_dy) back into its real slot k.
+                shifted_cards.append([state["cards"][k]["all_tag"], -back_dx, -back_dy, 0.0, 0.0])
+
+            grid_canvas.move(new_tag, 0, drop_offset)
+            grid_canvas.itemconfigure(new_tag, state="hidden")
         if target_rating is not None and star_items:
             for s_id in star_items:
                 grid_canvas.itemconfigure(s_id, fill=STAR_EMPTY)
@@ -2705,7 +2714,13 @@ class WidgetsMixin:
                     else:
                         anim_job[0] = grid_canvas.after(520, finish_and_return)
 
-            step_insert()
+            if stars_only:
+                if target_rating is not None and star_items:
+                    anim_job[0] = grid_canvas.after(90, lambda: animate_stars(0))
+                else:
+                    finish_and_return()
+            else:
+                step_insert()
 
         anim_job[0] = grid_canvas.after(30, begin_showcase)
 

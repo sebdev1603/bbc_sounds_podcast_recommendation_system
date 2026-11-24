@@ -216,7 +216,7 @@ class DetailViewMixin:
     def _preload_detail_backend(self, done_flag):
         """Warm up Matplotlib in a background thread so slow first-loads never freeze the skeleton timer."""
         try:
-            import matplotlib.backends.backend_tkagg  # noqa: F401
+            import matplotlib.backends.backend_agg  # noqa: F401
             import matplotlib.figure  # noqa: F401
         except Exception:
             pass
@@ -225,7 +225,7 @@ class DetailViewMixin:
 
     def show_detail_with_skeleton(self, podcast_id):
         """Load the details page; show subtle wireframe outlines only if loading exceeds 0.75s (glare after 1s)."""
-        if "matplotlib.backends.backend_tkagg" in sys.modules:
+        if "matplotlib.backends.backend_agg" in sys.modules:
             self.show_detail(podcast_id)
             return
 
@@ -258,7 +258,7 @@ class DetailViewMixin:
 
         self.after(10, poll_ready)
 
-    def show_detail(self, podcast_id, *, show_simulated_notice=False, show_download_notice=False):
+    def show_detail(self, podcast_id, *, show_simulated_notice=False, show_download_notice=False, animate_rating=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
@@ -539,43 +539,128 @@ class DetailViewMixin:
             )
             rating_caption.pack(side="left", padx=(0, 10))
 
-            star_state = {"size": 22, "gap": 4, "score": given_rating}
+            star_state = {
+                "size": 22, "gap": 4, "score": given_rating,
+                "animating": bool(animate_rating and given_rating > 0 and not self._is_reduced_motion()),
+                "anim_job": None,
+            }
+            star_pad = max(6, round(star_state["size"] * 0.28))
             star_canvas = tk.Canvas(
                 rating_row,
-                width=5 * star_state["size"] + 4 * star_state["gap"],
-                height=star_state["size"],
+                width=5 * star_state["size"] + 4 * star_state["gap"] + star_pad * 2,
+                height=star_state["size"] + star_pad * 2,
                 bg=SUBCARD_BG,
                 bd=0,
                 highlightthickness=0,
             )
             star_canvas.pack(side="left", pady=(1, 0))
 
-            def draw_inline_stars():
+            def _star_pts(cx, cy, r_out, rot_deg=0.0):
+                r_in = r_out * 0.43
+                pts = []
+                for pt_i in range(10):
+                    ang = math.radians(-90.0 + rot_deg + pt_i * 36.0)
+                    rad = r_out if pt_i % 2 == 0 else r_in
+                    pts.extend((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+                return pts
+
+            def cancel_star_anim(_event=None):
+                if star_state["anim_job"] is not None:
+                    try:
+                        self.after_cancel(star_state["anim_job"])
+                    except tk.TclError:
+                        pass
+                    star_state["anim_job"] = None
+                star_state["animating"] = False
+
+            star_canvas.bind("<Destroy>", cancel_star_anim, add="+")
+
+            def draw_inline_stars(force_empty=False):
                 if not star_canvas.winfo_exists():
                     return
-                active = star_state["score"]
+                active = 0 if (force_empty or star_state["animating"]) else star_state["score"]
                 size = star_state["size"]
                 gap = star_state["gap"]
-                total_w = 5 * size + 4 * gap
-                star_canvas.configure(width=total_w, height=size)
+                pad = max(6, round(size * 0.28))
+                total_w = 5 * size + 4 * gap + pad * 2
+                total_h = size + pad * 2
+                star_canvas.configure(width=total_w, height=total_h)
                 star_canvas.delete("all")
                 r_out = size * 0.46
-                r_in = size * 0.20
-                cy = size / 2
+                cy = total_h / 2.0
+                ids = []
                 for star_idx in range(1, 6):
-                    cx = (star_idx - 1) * (size + gap) + size / 2
-                    pts = []
-                    for pt_i in range(10):
-                        ang = math.radians(-90 + pt_i * 36)
-                        rad = r_out if pt_i % 2 == 0 else r_in
-                        pts.extend((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
-                    star_canvas.create_polygon(
-                        pts,
+                    cx = pad + (star_idx - 1) * (size + gap) + size / 2.0
+                    pid_star = star_canvas.create_polygon(
+                        _star_pts(cx, cy, r_out),
                         fill=GOLD_STAR if star_idx <= active else STAR_EMPTY,
                         outline="",
                     )
+                    ids.append((pid_star, cx, cy, r_out))
+                star_state["items"] = ids
+
+            def animate_detail_stars():
+                star_state["anim_job"] = None
+                if not star_canvas.winfo_exists():
+                    return
+                target_n = min(5, max(0, int(star_state["score"] or 0)))
+                if target_n <= 0:
+                    star_state["animating"] = False
+                    draw_inline_stars()
+                    return
+                draw_inline_stars(force_empty=True)
+                items = star_state.get("items") or []
+                if len(items) < target_n:
+                    star_state["animating"] = False
+                    draw_inline_stars()
+                    return
+
+                stagger = 0.105
+                each_dur = 0.360
+                total_dur = (target_n - 1) * stagger + each_dur
+                flash_col = blend_colour(GOLD_STAR, "#ffffff", 0.55)
+                anim_st = {"elapsed": 0.0, "last_t": None}
+
+                def step_detail_stars():
+                    star_state["anim_job"] = None
+                    if not star_canvas.winfo_exists():
+                        return
+                    t0 = time.monotonic()
+                    dt = 0.016 if anim_st["last_t"] is None else max(0.004, min(0.042, t0 - anim_st["last_t"]))
+                    anim_st["last_t"] = t0
+                    anim_st["elapsed"] = min(total_dur, anim_st["elapsed"] + dt)
+                    el = anim_st["elapsed"]
+
+                    for idx_s in range(target_n):
+                        start_t = idx_s * stagger
+                        if el < start_t:
+                            continue
+                        lp = min(1.0, (el - start_t) / each_dur)
+                        pid_star, cx, cy, base_r = items[idx_s]
+                        if lp >= 1.0:
+                            star_canvas.coords(pid_star, *_star_pts(cx, cy, base_r, 0.0))
+                            star_canvas.itemconfigure(pid_star, fill=GOLD_STAR)
+                            continue
+                        spring = max(0.08, ease_out_elastic(lp, damping=2.8, frequency=1.75))
+                        r_now = base_r * spring
+                        rot = -16.0 * (1.0 - lp) * math.exp(-4.0 * lp) * math.cos(lp * math.pi * 3.0)
+                        glint = max(0.0, 1.0 - abs(lp - 0.25) / 0.35)
+                        col = blend_colour(GOLD_STAR, flash_col, glint * 0.65)
+                        star_canvas.coords(pid_star, *_star_pts(cx, cy, r_now, rot))
+                        star_canvas.itemconfigure(pid_star, fill=col)
+
+                    if el < total_dur:
+                        spent = (time.monotonic() - t0) * 1000.0
+                        star_state["anim_job"] = self.after(self._next_frame_delay(spent, 16), step_detail_stars)
+                    else:
+                        star_state["animating"] = False
+                        draw_inline_stars()
+
+                step_detail_stars()
 
             draw_inline_stars()
+            if star_state["animating"]:
+                star_state["anim_job"] = self.after(60, animate_detail_stars)
 
             # Compact community rating breakdown card placed beside Your Listening.
             ratings_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
@@ -760,9 +845,10 @@ class DetailViewMixin:
             self.show_db_error("Couldn't load programme", err)
 
     def _render_ratings_bar_chart(self, parent_card, rating_counts):
-        """Render a compact themed horizontal Matplotlib bar chart of 5-to-1 star listener rating counts."""
+        """Render a responsive themed horizontal Matplotlib bar chart of 5-to-1 star listener rating counts."""
         try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            import io
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
             from matplotlib.figure import Figure
         except Exception:
             self.create_label(
@@ -774,43 +860,98 @@ class DetailViewMixin:
         labels = [f"{s} ★" for s in stars]
         counts = [rating_counts.get(s, 0) for s in stars]
         max_count = max(counts) if counts else 0
-
-        fig = Figure(figsize=(4.0, 1.18), dpi=90, facecolor=SUBCARD_BG)
-        ax = fig.add_subplot(111)
-        ax.set_facecolor(SUBCARD_BG)
-
-        # Subtle background tracks + foreground orange bars showing counts per star level.
+        max_digits = max(1, len(str(max_count)))
         track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
-        x_cap = max(1.0, max_count * 1.18)
-        ax.barh(labels, [x_cap * 0.90] * 5, height=0.52, color=track_col, edgecolor="none", zorder=1)
-        bars = ax.barh(labels, counts, height=0.52, color=ORANGE_ACCENT, edgecolor="none", zorder=2)
 
-        ax.invert_yaxis()
-        ax.set_xlim(0, x_cap)
-        ax.set_xticks([])
-        ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=8.5)
-        for tick_lbl in ax.get_yticklabels():
-            tick_lbl.set_fontweight("bold")
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        chart_widget = tk.Label(parent_card, bg=SUBCARD_BG, bd=0, highlightthickness=0, anchor="center")
+        chart_widget.pack(fill="x", padx=14, pady=(2, 12))
 
-        for bar, cnt in zip(bars, counts):
-            y_mid = bar.get_y() + bar.get_height() / 2.0
-            ax.text(
-                x_cap * 0.93, y_mid, str(cnt),
-                va="center", ha="left",
-                color=TEXT_WHITE if cnt > 0 else TEXT_GRAY,
-                fontsize=8.5, fontweight="bold" if cnt > 0 else "normal",
-            )
+        render_state = {"width": 0, "job": None}
 
-        fig.subplots_adjust(left=0.14, right=0.88, top=0.95, bottom=0.05)
+        def render_for_width(avail_w):
+            render_state["job"] = None
+            if not chart_widget.winfo_exists() or not parent_card.winfo_exists():
+                return
+            w_px = max(210, min(680, int(avail_w)))
+            if abs(w_px - render_state["width"]) < 6:
+                return
+            render_state["width"] = w_px
+            h_px = max(94, min(116, round(w_px * 0.26)))
+            dpi = 96
 
-        chart_canvas = FigureCanvasTkAgg(fig, master=parent_card)
-        chart_canvas.draw()
-        chart_widget = chart_canvas.get_tk_widget()
-        chart_widget.configure(bg=SUBCARD_BG, highlightthickness=0, bd=0)
-        chart_widget.pack(fill="x", padx=10, pady=(0, 10))
-        chart_widget.bind("<Destroy>", lambda _e, f=fig: f.clear())
+            fig = Figure(figsize=(w_px / dpi, h_px / dpi), dpi=dpi, facecolor=SUBCARD_BG)
+            ax = fig.add_subplot(111)
+            ax.set_facecolor(SUBCARD_BG)
+
+            # Keep fixed pixel margins for the "5 ★" labels on the left and count numbers on the right
+            # so bars stretch cleanly across the full card width at any window size.
+            left_frac = max(0.08, min(0.19, 36.0 / w_px))
+            right_px = 20.0 + max_digits * 8.0
+            right_frac = max(0.82, min(0.95, 1.0 - right_px / w_px))
+
+            x_cap = max(1.0, float(max_count))
+            ax.barh(labels, [x_cap] * 5, height=0.50, color=track_col, edgecolor="none", zorder=1)
+            bars = ax.barh(labels, counts, height=0.50, color=ORANGE_ACCENT, edgecolor="none", zorder=2)
+
+            ax.invert_yaxis()
+            ax.set_xlim(0, x_cap)
+            ax.set_ylim(4.65, -0.65)
+            ax.set_xticks([])
+            ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=8.5)
+            for tick_lbl in ax.get_yticklabels():
+                tick_lbl.set_fontweight("bold")
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+            for bar, cnt in zip(bars, counts):
+                y_mid = bar.get_y() + bar.get_height() / 2.0
+                ax.annotate(
+                    str(cnt),
+                    xy=(x_cap, y_mid),
+                    xytext=(6, 0),
+                    textcoords="offset points",
+                    va="center", ha="left",
+                    color=TEXT_WHITE if cnt > 0 else TEXT_GRAY,
+                    fontsize=8.5, fontweight="bold" if cnt > 0 else "normal",
+                    annotation_clip=False,
+                )
+
+            fig.subplots_adjust(left=left_frac, right=right_frac, top=0.96, bottom=0.04)
+
+            buf = io.BytesIO()
+            FigureCanvasAgg(fig).print_png(buf)
+            fig.clear()
+            photo = tk.PhotoImage(master=self, data=buf.getvalue(), format="png")
+            chart_widget._chart_photo = photo
+            chart_widget.configure(image=photo)
+
+        def on_card_resize(event):
+            if not chart_widget.winfo_exists():
+                return
+            avail_w = event.width - 28
+            if avail_w < 160 or abs(avail_w - render_state["width"]) < 6:
+                return
+            if render_state["job"] is not None:
+                try:
+                    self.after_cancel(render_state["job"])
+                except tk.TclError:
+                    pass
+            render_state["job"] = self.after(55, lambda w=avail_w: render_for_width(w))
+
+        def cancel_chart_job(_event=None):
+            if render_state["job"] is not None:
+                try:
+                    self.after_cancel(render_state["job"])
+                except tk.TclError:
+                    pass
+                render_state["job"] = None
+
+        parent_card.bind("<Configure>", on_card_resize, add="+")
+        chart_widget.bind("<Destroy>", cancel_chart_job, add="+")
+
+        # Initial render using the estimated half-column width so the chart is immediately well-proportioned.
+        est_w = max(240, round((max(900, self.winfo_width()) - 280) / 2.0) - 28)
+        render_for_width(est_w)
         return chart_widget
 
     def listen(self, podcast_id, *, open_detail=True):
@@ -861,7 +1002,7 @@ class DetailViewMixin:
             return False
 
     def save_programme_rating(self, podcast_id, new_score, callback_func=None):
-        """Persist a 1-5 rating for the active listener and showcase brand-new ratings in Ratings."""
+        """Persist a 1-5 rating for the active listener and animate the stars on the details page."""
         try:
             with self.get_db_connection() as conn:
                 # Update the listener's rating in place, or insert a row if one doesn't exist yet.
@@ -869,7 +1010,6 @@ class DetailViewMixin:
                     "SELECT RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
-                is_new_rating = (prior_record is None) or (prior_record[0] is None)
                 if prior_record:
                     conn.execute(
                         "UPDATE listening_history SET RatingGiven = ? WHERE ListenerID = ? AND PodcastID = ?",
@@ -882,22 +1022,10 @@ class DetailViewMixin:
                     )
             # Invalidate the cached community rating averages so the new score is reflected immediately.
             self._podcast_averages = None
-            if is_new_rating and not self._is_reduced_motion():
-                return_tab, default_return_fn = self._get_current_page_return_target()
-                self._detail_hero_origin = None
-                self._pending_card_insert = {
-                    "mode": "ratings",
-                    "podcast_id": podcast_id,
-                    "target_rating": int(new_score),
-                    "return_tab": return_tab,
-                    "return_fn": callback_func if callback_func is not None else default_return_fn,
-                }
-                self.transition_to(self.show_ratings, "Ratings")
-                return
             if callback_func:
                 callback_func()
             else:
-                self.show_detail(podcast_id)
+                self.show_detail(podcast_id, animate_rating=not self._is_reduced_motion())
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 

@@ -2692,7 +2692,7 @@ class EffectsMixin:
                     # Only show the subtle wireframe outlines if loading takes > 0.75s (glare sweep after 1.0s).
                     load_t0 = monotonic()
                     done_flag = [False]
-                    if "matplotlib.backends.backend_tkagg" in sys.modules:
+                    if "matplotlib.backends.backend_agg" in sys.modules:
                         done_flag[0] = True
                     else:
                         import threading as _th

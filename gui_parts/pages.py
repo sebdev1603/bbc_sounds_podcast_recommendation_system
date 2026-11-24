@@ -21,6 +21,7 @@ from gui_parts.theme import (
     ORANGE_ACCENT,
     ORANGE_HL,
     PALETTE_SWATCHES,
+    PODCASTS_PER_PAGE,
     PRIMARY_BTN_FG,
     SECONDARY_HOVER_BG,
     SECONDARY_HOVER_FG,
@@ -939,17 +940,6 @@ class PagesMixin:
         page = self.build_shell("Ratings")
         self.render_page_title(page, "Podcasts you rated", "Every programme you have scored is collected here.")
         rating_rows = self.fetch_user_ratings()
-        pending = getattr(self, "_pending_card_insert", None)
-        insert_spec = pending if (pending and pending.get("mode") == "ratings") else None
-        if insert_spec is not None:
-            self._pending_card_insert = None
-            target_pid = str(insert_spec["podcast_id"])
-            rating_rows = list(rating_rows)
-            for idx_r, row_r in enumerate(rating_rows):
-                if str(row_r[0]) == target_pid:
-                    if idx_r != 0:
-                        rating_rows.insert(0, rating_rows.pop(idx_r))
-                    break
         if not rating_rows:
             self.render_empty_message(page, "No ratings yet", "Listen to a programme, then add a rating from its details page.")
             self.create_button(
@@ -975,17 +965,13 @@ class PagesMixin:
             side="right", padx=18, pady=18
         )
 
-        self._active_ratings_insert_anim = insert_spec
         self.paginate_podcasts(page, rating_rows, self.render_ratings_page)
 
     def render_ratings_page(self, parent, rating_rows, last_page):
         """Render one page of responsive rated podcast cards on a single Canvas (zero child HWNDs)."""
-        insert_spec = getattr(self, "_active_ratings_insert_anim", None)
-        self._active_ratings_insert_anim = None
         self.render_podcast_grid(
             parent, rating_rows, max_count=len(rating_rows),
             rating_index=3, show_end=last_page, ratings_mode=True,
-            insert_anim=insert_spec,
         )
 
     def show_genres(self):
