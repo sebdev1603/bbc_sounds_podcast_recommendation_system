@@ -1,8 +1,6 @@
 """Podcast detail view, playback simulation, star-picker rating dialog, and library actions."""
-import ctypes
 import math
 import sqlite3
-import sys
 import tkinter as tk
 from tkinter import messagebox
 
@@ -24,9 +22,9 @@ from gui_parts.theme import (
     SUBCARD_BG,
     TEXT_GRAY,
     TEXT_WHITE,
-    TITLEBAR_DARK_MODE,
-    TITLEBAR_TEXT,
+    apply_windows_titlebar_theme,
     blend_colour,
+    center_toplevel,
     ease_out_elastic,
 )
 
@@ -610,39 +608,8 @@ class DetailViewMixin:
             self.create_button(btn_row, "Save rating", confirm_rating, primary=True, compact=True).pack(side="left", padx=(0, 8))
             self.create_button(btn_row, "Cancel", close_dialog, compact=True).pack(side="left")
 
-            dialog.update_idletasks()
-
-            # Style the popup dialog's Windows titlebar to match the active theme before showing.
-            if sys.platform == "win32":
-                try:
-                    dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
-
-                    def _to_colorref(hex_col):
-                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
-
-                    for attr, value in (
-                        (20, int(TITLEBAR_DARK_MODE)),
-                        (19, int(TITLEBAR_DARK_MODE)),
-                        (35, _to_colorref(DARK_BG)),
-                        (36, _to_colorref(TITLEBAR_TEXT)),
-                        (34, _to_colorref(DARK_BG)),
-                    ):
-                        val = ctypes.c_int(value)
-                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                        )
-                except Exception:
-                    pass
-
-            dw = max(260, dialog.winfo_reqwidth())
-            dh = max(180, dialog.winfo_reqheight())
-            screen_w = max(dw, self.winfo_screenwidth())
-            screen_h = max(dh, self.winfo_screenheight())
-            px = self.winfo_rootx() + (self.winfo_width() - dw) // 2
-            py = self.winfo_rooty() + (self.winfo_height() - dh) // 2
-            px = max(0, min(px, screen_w - dw))
-            py = max(0, min(py, screen_h - dh))
-            dialog.geometry(f"{dw}x{dh}+{px}+{py}")
+            apply_windows_titlebar_theme(dialog)
+            center_toplevel(dialog, self, min_w=260, min_h=180, set_size=True)
             dialog.bind("<Return>", lambda _e: confirm_rating())
             dialog.bind("<Escape>", close_dialog)
 

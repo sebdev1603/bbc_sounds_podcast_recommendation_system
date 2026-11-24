@@ -260,6 +260,61 @@ class LoginViewMixin:
             return None
 
     @staticmethod
+    def _make_rounded_shapes(canvas, fill_col, tag):
+        """Create 2 rectangles + 4 corner ovals forming a crisp pixel-aligned rounded pill."""
+        return (
+            canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            *(canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag) for _ in range(4)),
+        )
+
+    @staticmethod
+    def _set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
+        """Update the 6-primitive rounded pill geometry and optional fill colour."""
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        r = max(0, min(radius, w // 2, h // 2))
+        if r <= 1:
+            canvas.coords(items[0], x0, y0, x1, y1)
+            for extra in items[1:]:
+                canvas.coords(extra, 0, 0, 0, 0)
+        else:
+            d = r * 2
+            ox1, oy1 = max(x0, x1 - 1), max(y0, y1 - 1)
+            canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
+            canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
+            canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
+            canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
+            canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
+            canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
+        if fill_col is not None:
+            canvas.itemconfigure(tag, fill=fill_col)
+
+    def _create_overlay_pair(self, win_x, win_y, win_w, win_h, key_colour, pill_alpha):
+        """Create two withdrawn borderless chroma-key Toplevels aligned over the main window."""
+        wins = []
+        try:
+            for bg_col, alpha in ((DARK_BG, None), (key_colour, pill_alpha)):
+                top = tk.Toplevel(self)
+                top.withdraw()
+                top._preserve_during_shell_build = True
+                top.overrideredirect(True)
+                top.configure(bg=bg_col)
+                top.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+                top.attributes("-transparentcolor", key_colour)
+                if alpha is not None:
+                    top.attributes("-alpha", alpha)
+                top.transient(self)
+                wins.append(top)
+            return wins[0], wins[1]
+        except tk.TclError:
+            for w in wins:
+                try:
+                    w.destroy()
+                except tk.TclError:
+                    pass
+            return None, None
+
+    @staticmethod
     def _strip_dwm_border(top_win):
         """Disable Windows 11 DWM non-client border, shadow, and corner rounding on an overlay Toplevel."""
         if sys.platform != "win32":
@@ -609,71 +664,13 @@ class LoginViewMixin:
         # Use a dark unique chroma key (#010203) instead of bright magenta so any 1px edge never looks bright/white.
         key_colour = "#010203"
 
-        # Two fixed-size full-window Toplevels kept withdrawn until fully painted so Windows
-        # never flashes a default white/grey window frame before the dark canvas appears.
-        backdrop_win = None
-        pill_win = None
-        try:
-            backdrop_win = tk.Toplevel(self)
-            backdrop_win.withdraw()
-            backdrop_win._preserve_during_shell_build = True
-            backdrop_win.overrideredirect(True)
-            backdrop_win.configure(bg=DARK_BG)
-            backdrop_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            backdrop_win.attributes("-transparentcolor", key_colour)
-            backdrop_win.transient(self)
-
-            pill_win = tk.Toplevel(self)
-            pill_win.withdraw()
-            pill_win._preserve_during_shell_build = True
-            pill_win.overrideredirect(True)
-            pill_win.configure(bg=key_colour)
-            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            pill_win.attributes("-transparentcolor", key_colour)
-            pill_win.attributes("-alpha", 1.0)
-            pill_win.transient(self)
-        except tk.TclError:
-            for w in (pill_win, backdrop_win):
-                if w is not None:
-                    try:
-                        w.destroy()
-                    except tk.TclError:
-                        pass
+        backdrop_win, pill_win = self._create_overlay_pair(win_x, win_y, win_w, win_h, key_colour, 1.0)
+        if backdrop_win is None:
             self.show_home()
             return
 
-        def make_rounded_shapes(canvas, fill_col, tag):
-            return (
-                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-            )
-
-        def set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                canvas.coords(items[0], x0, y0, x1, y1)
-                for extra in items[1:]:
-                    canvas.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                # Keep corner ovals strictly inside [x0, x1-1] x [y0, y1-1] so Tk's inclusive oval
-                # bounds align pixel-for-pixel with the rectangles and leave zero 1px seams.
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
-                canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
-                canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
-                canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
-                canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
-                canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                canvas.itemconfigure(tag, fill=fill_col)
+        make_rounded_shapes = self._make_rounded_shapes
+        set_rounded_shapes = self._set_rounded_shapes
 
         backdrop_canvas = tk.Canvas(backdrop_win, bg=DARK_BG, bd=0, highlightthickness=0)
         backdrop_canvas.pack(fill="both", expand=True)
@@ -855,37 +852,8 @@ class LoginViewMixin:
         page_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
         key_colour = "#010203"
 
-        # Two fixed-size full-window Toplevels kept withdrawn until painted (zero white flash):
-        # 1) page_win shows the captured page clipped inside a shrinking rounded rectangle.
-        # 2) pill_win draws the matching rounded pill fading in toward ORANGE_ACCENT as it lands.
-        page_win = None
-        pill_win = None
-        try:
-            page_win = tk.Toplevel(self)
-            page_win.withdraw()
-            page_win._preserve_during_shell_build = True
-            page_win.overrideredirect(True)
-            page_win.configure(bg=DARK_BG)
-            page_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            page_win.attributes("-transparentcolor", key_colour)
-            page_win.transient(self)
-
-            pill_win = tk.Toplevel(self)
-            pill_win.withdraw()
-            pill_win._preserve_during_shell_build = True
-            pill_win.overrideredirect(True)
-            pill_win.configure(bg=key_colour)
-            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            pill_win.attributes("-transparentcolor", key_colour)
-            pill_win.attributes("-alpha", 0.0)
-            pill_win.transient(self)
-        except tk.TclError:
-            for w in (pill_win, page_win):
-                if w is not None:
-                    try:
-                        w.destroy()
-                    except tk.TclError:
-                        pass
+        page_win, pill_win = self._create_overlay_pair(win_x, win_y, win_w, win_h, key_colour, 0.0)
+        if page_win is None:
             self._signing_out = False
             self.show_login()
             return
@@ -950,35 +918,10 @@ class LoginViewMixin:
 
         pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
         pill_canvas.pack(fill="both", expand=True)
-        pill_items = (
-            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-        )
+        pill_items = self._make_rounded_shapes(pill_canvas, DARK_BG, "pill")
 
         def set_pill_shapes(x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                pill_canvas.coords(pill_items[0], x0, y0, x1, y1)
-                for extra in pill_items[1:]:
-                    pill_canvas.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                pill_canvas.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
-                pill_canvas.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
-                pill_canvas.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
-                pill_canvas.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
-                pill_canvas.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
-                pill_canvas.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                pill_canvas.itemconfigure("pill", fill=fill_col)
+            self._set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, radius, fill_col)
 
         # Reveal the full-window page snapshot BEFORE switching to the login screen underneath.
         page_win.update_idletasks()

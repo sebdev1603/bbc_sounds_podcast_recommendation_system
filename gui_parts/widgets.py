@@ -45,6 +45,7 @@ from gui_parts.theme import (
     TITLEBAR_DARK_MODE,
     blend_colour,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
@@ -1565,13 +1566,7 @@ class WidgetsMixin:
             def winfo_height(self):
                 return self._h
 
-        def rounded_pts(x0, y0, x1, y1, r):
-            r = max(2, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
-            return (
-                x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
-                x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
-                x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
-            )
+        rounded_pts = rounded_rect_points
 
         scale = getattr(self, "_ui_scale_factor", 1.0)
         text_scale = getattr(self, "_text_scale", 1.0)

@@ -31,8 +31,11 @@ from gui_parts.theme import (
     TITLEBAR_TEXT,
     TOPBAR_BG,
     apply_theme_palette,
+    apply_windows_titlebar_theme,
     blend_colour,
     ease_out_elastic,
+    pill_points,
+    rounded_rect_points,
 )
 
 # Embedded 64x64, 32x32, and 16x16 BBC Sounds logo PNGs (base64, area-averaged from
@@ -339,44 +342,15 @@ class EffectsMixin:
         """Apply Windows DWM light/dark mode and custom caption/text/border colours to the titlebar."""
         if sys.platform != "win32":
             return
-        if bg_hex is None:
-            bg_hex = DARK_BG
-        if text_hex is None:
-            text_hex = TITLEBAR_TEXT
-        dark_mode_flag = int(TITLEBAR_DARK_MODE)
-        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex, dark_mode_flag):
+        bg_hex = DARK_BG if bg_hex is None else bg_hex
+        text_hex = TITLEBAR_TEXT if text_hex is None else text_hex
+        key = (bg_hex, text_hex, int(TITLEBAR_DARK_MODE))
+        if getattr(self, "_titlebar_colour", None) == key:
             return
-        try:
-            hwnd = getattr(self, "_win_hwnd", None)
-            if not hwnd:
-                self.update_idletasks()
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
-                self._win_hwnd = hwnd
-            dwmapi = ctypes.windll.dwmapi
-
-            def to_colorref(hex_colour):
-                r = int(hex_colour[1:3], 16)
-                g = int(hex_colour[3:5], 16)
-                b = int(hex_colour[5:7], 16)
-                return r | (g << 8) | (b << 16)
-
-            for attr, value in (
-                (20, dark_mode_flag),
-                (19, dark_mode_flag),
-                (35, to_colorref(bg_hex)),
-                (36, to_colorref(text_hex)),
-                (34, to_colorref(bg_hex)),
-            ):
-                val = ctypes.c_int(value)
-                dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd),
-                    ctypes.c_int(attr),
-                    ctypes.byref(val),
-                    ctypes.sizeof(val),
-                )
-            self._titlebar_colour = (bg_hex, text_hex, dark_mode_flag)
-        except Exception:
-            pass
+        self._win_hwnd = apply_windows_titlebar_theme(
+            self, bg_hex, text_hex, TITLEBAR_DARK_MODE, hwnd=getattr(self, "_win_hwnd", None),
+        )
+        self._titlebar_colour = key
 
     def schedule_interface_scaling(self, event):
         """Track window drags to pause heavy animations and debounce resize-only scaling."""
@@ -1500,14 +1474,7 @@ class EffectsMixin:
             title_end = (cov_end_x + cov_end_sz + 11, end_y + 12, str(title or "Programme"), (DEFAULT_FONT, 13, "bold"))
             sub_end = play_end = dismiss_end = None
 
-        def _mig_pill_pts(cx, cy, w, h, rad):
-            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
-            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
-            return (
-                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-            )
+        _mig_pill_pts = pill_points
 
         migrator = tk.Canvas(shell, bg=CARD_BG, bd=0, highlightthickness=0)
         left_accent_item = migrator.create_rectangle(0, 6, 3, max(10, start_h - 6), fill=CARD_BG, outline="")
@@ -2053,14 +2020,7 @@ class EffectsMixin:
             approx_title_x = approx_cat_x
             approx_title_y = approx_cat_y + cat_line_h
 
-        def _exp_pill_pts(cx, cy, w, h, rad):
-            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
-            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
-            return (
-                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-            )
+        _exp_pill_pts = pill_points
 
         # When opening from the mini-bar, split its subtitle ("Last played · Genre · ★ reviews") into
         # separate live items at their exact pixel offsets so the genre name and reviews glide directly
@@ -2472,13 +2432,7 @@ class EffectsMixin:
 
                     # Collect exact coordinates of the detail controls so they expand elastically from nowhere
                     # instead of popping in abruptly when expander is dropped.
-                    def _rounded_pts(rx0, ry0, rx1, ry1, rad):
-                        rad = max(1.0, min(rad, (rx1 - rx0) / 2.0, (ry1 - ry0) / 2.0))
-                        return (
-                            rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                            rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                            rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-                        )
+                    _rounded_pts = rounded_rect_points
 
                     if mini_prefix_item is not None:
                         expander.delete(mini_prefix_item[0])
@@ -2917,15 +2871,7 @@ class EffectsMixin:
             anchor="nw", width=min(title_wrap, 360), justify="left",
         )
 
-        def _pill_pts(cx, cy, w, h, rad):
-            rx0, ry0 = cx - w / 2.0, cy - h / 2.0
-            rx1, ry1 = cx + w / 2.0, cy + h / 2.0
-            r = min(rad, w / 2.0, h / 2.0)
-            return (
-                rx0 + r, ry0, rx1 - r, ry0, rx1, ry0, rx1, ry0 + r,
-                rx1, ry1 - r, rx1, ry1, rx1 - r, ry1, rx0 + r, ry1,
-                rx0, ry1, rx0, ry1 - r, rx0, ry0 + r, rx0, ry0,
-            )
+        _pill_pts = pill_points
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             shrinker, podcast_id, title, category, cov_start_sz, cov_start_sz,

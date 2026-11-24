@@ -263,123 +263,80 @@ class DatabaseMixin:
             "ReducedMotion INTEGER NOT NULL DEFAULT 0)"
         )
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(user_accessibility)").fetchall()}
-        if "language" not in cols:
-            conn.execute("ALTER TABLE user_accessibility ADD COLUMN Language TEXT NOT NULL DEFAULT 'en'")
-        if "reducedmotion" not in cols:
-            conn.execute("ALTER TABLE user_accessibility ADD COLUMN ReducedMotion INTEGER NOT NULL DEFAULT 0")
+        for col, ddl in (
+            ("language", "Language TEXT NOT NULL DEFAULT 'en'"),
+            ("reducedmotion", "ReducedMotion INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE user_accessibility ADD COLUMN {ddl}")
 
-    def load_user_reduced_motion(self, listener_id):
-        """Load the listener's saved reduced-motion preference (bool), defaulting to False."""
+    def _query_accessibility_row(self, listener_id, columns):
         if listener_id is None:
-            return False
+            return None
         try:
             with self.get_db_connection() as conn:
                 self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT ReducedMotion FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
+                return conn.execute(
+                    f"SELECT {columns} FROM user_accessibility WHERE ListenerID = ?", (listener_id,),
                 ).fetchone()
-            return bool(row and row[0])
         except sqlite3.Error:
-            return False
+            return None
 
-    def save_user_reduced_motion(self, listener_id, reduced_motion):
-        """Persist a listener's reduced-motion preference in database.db."""
+    def _upsert_accessibility(self, listener_id, err_title, **updates):
         if listener_id is None:
             return
-        flag = 1 if reduced_motion else 0
+        values = {
+            "TextScale": getattr(self, "_text_scale", 1.0),
+            "Theme": getattr(self, "_theme_name", "dark"),
+            "Language": getattr(self, "_language", "en"),
+            "ReducedMotion": 1 if getattr(self, "_reduced_motion", False) else 0,
+            **updates,
+        }
+        set_clause = ", ".join(f"{col} = excluded.{col}" for col in updates)
         try:
             with self.get_db_connection() as conn:
                 self._ensure_accessibility_table(conn)
                 conn.execute(
                     "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion) "
-                    "VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET ReducedMotion = excluded.ReducedMotion",
-                    (
-                        listener_id,
-                        getattr(self, "_text_scale", 1.0),
-                        getattr(self, "_theme_name", "dark"),
-                        getattr(self, "_language", "en"),
-                        flag,
-                    ),
+                    f"VALUES (?, ?, ?, ?, ?) ON CONFLICT(ListenerID) DO UPDATE SET {set_clause}",
+                    (listener_id, values["TextScale"], values["Theme"], values["Language"], values["ReducedMotion"]),
                 )
         except sqlite3.Error as err:
-            self.show_db_error("Couldn't save motion setting", err)
+            self.show_db_error(err_title, err)
+
+    def load_user_reduced_motion(self, listener_id):
+        """Load the listener's saved reduced-motion preference (bool), defaulting to False."""
+        row = self._query_accessibility_row(listener_id, "ReducedMotion")
+        return bool(row and row[0])
+
+    def save_user_reduced_motion(self, listener_id, reduced_motion):
+        """Persist a listener's reduced-motion preference in database.db."""
+        self._upsert_accessibility(listener_id, "Couldn't save motion setting", ReducedMotion=1 if reduced_motion else 0)
 
     def load_user_language(self, listener_id):
         """Load the listener's saved UI language ('en' or 'cy'), defaulting to 'en'."""
-        if listener_id is None:
-            return "en"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT Language FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
-                ).fetchone()
-            if not row or not row[0]:
-                return "en"
-            lang = str(row[0]).strip().lower()
-            return "cy" if lang == "cy" else "en"
-        except sqlite3.Error:
-            return "en"
+        row = self._query_accessibility_row(listener_id, "Language")
+        return "cy" if row and row[0] and str(row[0]).strip().lower() == "cy" else "en"
 
     def save_user_language(self, listener_id, lang_code):
         """Persist a listener's UI language ('en' or 'cy') in database.db."""
-        if listener_id is None:
-            return
         lang = "cy" if str(lang_code or "").strip().lower() == "cy" else "en"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language) "
-                    "VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET Language = excluded.Language",
-                    (listener_id, getattr(self, "_text_scale", 1.0), getattr(self, "_theme_name", "dark"), lang),
-                )
-        except sqlite3.Error as err:
-            self.show_db_error("Couldn't save language setting", err)
+        self._upsert_accessibility(listener_id, "Couldn't save language setting", Language=lang)
 
     def load_user_accessibility(self, listener_id):
         """Load (text_scale, theme_name) for a listener from SQLite, defaulting to (1.0, 'dark')."""
-        if listener_id is None:
+        row = self._query_accessibility_row(listener_id, "TextScale, Theme")
+        if not row:
             return 1.0, "dark"
         try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT TextScale, Theme FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
-                ).fetchone()
-            if not row:
-                return 1.0, "dark"
-            try:
-                scale = round(max(0.80, min(1.40, float(row[0]))), 2)
-            except (TypeError, ValueError):
-                scale = 1.0
-            theme = str(row[1] or "dark").strip().lower()
-            if theme not in ("dark", "light", "high_contrast"):
-                theme = "dark"
-            return scale, theme
-        except sqlite3.Error:
-            return 1.0, "dark"
+            scale = round(max(0.80, min(1.40, float(row[0]))), 2)
+        except (TypeError, ValueError):
+            scale = 1.0
+        theme = str(row[1] or "dark").strip().lower()
+        return scale, theme if theme in ("dark", "light", "high_contrast") else "dark"
 
     def save_user_accessibility(self, listener_id, text_scale, theme_name):
         """Persist a listener's text size and theme preference in database.db."""
-        if listener_id is None:
-            return
         scale = round(max(0.80, min(1.40, float(text_scale))), 2)
         theme = theme_name if theme_name in ("dark", "light", "high_contrast") else "dark"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme) "
-                    "VALUES (?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET "
-                    "TextScale = excluded.TextScale, Theme = excluded.Theme",
-                    (listener_id, scale, theme),
-                )
-        except sqlite3.Error as err:
-            self.show_db_error("Couldn't save accessibility settings", err)
+        self._upsert_accessibility(listener_id, "Couldn't save accessibility settings", TextScale=scale, Theme=theme)

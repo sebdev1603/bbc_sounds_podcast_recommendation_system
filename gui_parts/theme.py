@@ -439,11 +439,7 @@ class RoundedPanel(tk.Frame):
         m = 1 + self._inset
         w = max(m + 2, width - 1 - self._inset)
         h = max(m + 2, height - 1 - self._inset)
-        r = min(12, (w - m) / 2, (h - m) / 2)
-        self.backdrop.coords(
-            self.shape, r + m, m, w - r, m, w, m, w, r + m, w, h - r, w, h,
-            w - r, h, r + m, h, m, h, m, h - r, m, r + m, m, m,
-        )
+        self.backdrop.coords(self.shape, *rounded_rect_points(m, m, w, h, 12))
 
     def draw_surface(self, event):
         self._redraw_shape(event.width, event.height)
@@ -459,3 +455,87 @@ class RoundedPanel(tk.Frame):
     def set_surface(self, surface, border):
         self.surface = surface
         self.backdrop.itemconfigure(self.shape, fill=surface, outline=border)
+
+
+def rounded_rect_points(x0, y0, x1, y1, radius):
+    """Return smooth Tk Canvas polygon coordinates for a rounded rectangle."""
+    r = max(1.0, min(radius, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    return (
+        x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
+        x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+        x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+    )
+
+
+def pill_points(cx, cy, w, h, radius):
+    """Return smooth Tk Canvas polygon coordinates for a centered rounded pill."""
+    return rounded_rect_points(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0, radius)
+
+
+def apply_windows_titlebar_theme(win, bg_hex=None, text_hex=None, dark_mode=None, hwnd=None):
+    """Apply Windows DWM light/dark mode and custom caption/text/border colours to a Tk window."""
+    if sys.platform != "win32":
+        return hwnd
+    bg_hex = DARK_BG if bg_hex is None else bg_hex
+    text_hex = TITLEBAR_TEXT if text_hex is None else text_hex
+    dark_flag = int(TITLEBAR_DARK_MODE if dark_mode is None else dark_mode)
+    try:
+        if not hwnd:
+            win.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        c_bg = int(bg_hex[1:3], 16) | (int(bg_hex[3:5], 16) << 8) | (int(bg_hex[5:7], 16) << 16)
+        c_txt = int(text_hex[1:3], 16) | (int(text_hex[3:5], 16) << 8) | (int(text_hex[5:7], 16) << 16)
+        for attr, value in ((20, dark_flag), (19, dark_flag), (35, c_bg), (36, c_txt), (34, c_bg)):
+            val = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+            )
+    except Exception:
+        pass
+    return hwnd
+
+
+def center_toplevel(win, parent, *, min_w=0, min_h=0, set_size=False):
+    """Center a Toplevel window over parent, clamped inside the display bounds."""
+    win.update_idletasks()
+    dw = max(min_w, win.winfo_reqwidth())
+    dh = max(min_h, win.winfo_reqheight())
+    sw = max(dw, parent.winfo_screenwidth())
+    sh = max(dh, parent.winfo_screenheight())
+    px = max(0, min(parent.winfo_rootx() + (parent.winfo_width() - dw) // 2, sw - dw))
+    py = max(0, min(parent.winfo_rooty() + (parent.winfo_height() - dh) // 2, sh - dh))
+    win.geometry(f"{dw}x{dh}+{px}+{py}" if set_size else f"+{px}+{py}")
+
+
+def create_minigame_shell(parent, attr_name, window_title, heading_text, initial_status):
+    """Reuse an existing easter-egg window or build a themed centered Toplevel shell."""
+    existing = getattr(parent, attr_name, None)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                existing.deiconify()
+                existing.lift()
+                existing.focus_force()
+                return existing, None, None
+        except tk.TclError:
+            pass
+
+    win = tk.Toplevel(parent)
+    setattr(parent, attr_name, win)
+    win.title(window_title)
+    win.configure(bg=DARK_BG)
+    win.resizable(False, False)
+    try:
+        win.transient(parent)
+    except tk.TclError:
+        pass
+    apply_windows_titlebar_theme(win)
+
+    wrapper = tk.Frame(win, bg=DARK_BG, padx=18, pady=14)
+    wrapper.pack(fill="both", expand=True)
+    header = tk.Frame(wrapper, bg=DARK_BG)
+    header.pack(fill="x", pady=(0, 10))
+    tk.Label(header, text=heading_text, font=(DEFAULT_FONT, 13, "bold"), fg=ORANGE_ACCENT, bg=DARK_BG).pack(side="left")
+    status_lbl = tk.Label(header, text=initial_status, font=(DEFAULT_FONT, 10, "bold"), fg=TEXT_WHITE, bg=DARK_BG)
+    status_lbl.pack(side="right")
+    return win, wrapper, status_lbl

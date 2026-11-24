@@ -31,6 +31,7 @@ from gui_parts.theme import (
     TEXT_WHITE,
     blend_colour,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
@@ -1153,11 +1154,7 @@ class PagesMixin:
 
         def on_clear_name():
             name_var.set("")
-            if self.save_listener_name(self.current_user, ""):
-                name_heading_lbl.configure(text=translate("BBC Sounds listener"))
-                name_status_lbl.configure(text=translate("Name cleared."))
-                refresh_clear_btn()
-                update_name_placeholder()
+            on_save_name()
 
         name_placeholder.bind("<Button-1>", lambda _e: name_entry.focus_set())
         name_entry.bind("<FocusIn>", lambda _e: name_placeholder.place_forget())
@@ -1221,92 +1218,43 @@ class PagesMixin:
         size_controls = tk.Frame(access_row, bg=CARD_BG)
         size_controls.pack(side="right")
 
-        # Divider and Theme selector row inside the same Accessibility settings card.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        theme_row = tk.Frame(access_card, bg=CARD_BG)
-        theme_row.pack(fill="x", padx=18, pady=16)
+        def add_setting_row(heading, status_text, options, active_val, on_select):
+            tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+            row = tk.Frame(access_card, bg=CARD_BG)
+            row.pack(fill="x", padx=18, pady=16)
+            info = tk.Frame(row, bg=CARD_BG)
+            info.pack(side="left", fill="x", expand=True)
+            self.create_label(info, heading, 9, TEXT_GRAY, "bold").pack(anchor="w")
+            self.create_label(info, status_text, 13, TEXT_WHITE, "bold").pack(anchor="w", pady=(4, 0))
+            controls = tk.Frame(row, bg=CARD_BG)
+            controls.pack(side="right")
+            for idx, (opt_val, caption) in enumerate(options):
+                self.create_button(
+                    controls, caption, lambda v=opt_val, fn=on_select: fn(v),
+                    primary=(active_val == opt_val), compact=True,
+                ).pack(side="left", padx=(0 if idx == 0 else 8, 0))
 
-        theme_labels = {
-            "dark": "Dark  ·  Default",
-            "light": "Light",
-            "high_contrast": "High contrast",
-        }
         active_theme = getattr(self, "_theme_name", "dark")
-
-        theme_info = tk.Frame(theme_row, bg=CARD_BG)
-        theme_info.pack(side="left", fill="x", expand=True)
-        self.create_label(theme_info, "APPEARANCE THEME", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            theme_info, theme_labels.get(active_theme, "Dark  ·  Default"), 13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        theme_controls = tk.Frame(theme_row, bg=CARD_BG)
-        theme_controls.pack(side="right")
-        for theme_key, theme_caption in (("dark", "Dark"), ("light", "Light"), ("high_contrast", "High contrast")):
-            is_selected = active_theme == theme_key
-            self.create_button(
-                theme_controls,
-                theme_caption,
-                lambda key=theme_key: self.set_theme(key),
-                primary=is_selected,
-                compact=True,
-            ).pack(side="left", padx=(0 if theme_key == "dark" else 8, 0))
-
-        # Divider and Language selector row (English / Cymraeg) inside the Accessibility settings card.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        lang_row = tk.Frame(access_card, bg=CARD_BG)
-        lang_row.pack(fill="x", padx=18, pady=16)
-
-        lang_labels = {
-            "en": "English  ·  Default",
-            "cy": "Cymraeg  ·  Welsh",
-        }
+        add_setting_row(
+            "APPEARANCE THEME",
+            {"dark": "Dark  ·  Default", "light": "Light", "high_contrast": "High contrast"}.get(active_theme, "Dark  ·  Default"),
+            (("dark", "Dark"), ("light", "Light"), ("high_contrast", "High contrast")),
+            active_theme, self.set_theme,
+        )
         active_lang = getattr(self, "_language", "en")
-
-        lang_info = tk.Frame(lang_row, bg=CARD_BG)
-        lang_info.pack(side="left", fill="x", expand=True)
-        self.create_label(lang_info, "LANGUAGE", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            lang_info, lang_labels.get(active_lang, "English  ·  Default"), 13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        lang_controls = tk.Frame(lang_row, bg=CARD_BG)
-        lang_controls.pack(side="right")
-        for lang_key, lang_caption in (("en", "English"), ("cy", "Cymraeg (Welsh)")):
-            is_selected = active_lang == lang_key
-            self.create_button(
-                lang_controls,
-                lang_caption,
-                lambda code=lang_key: self.set_language(code),
-                primary=is_selected,
-                compact=True,
-            ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
-
-        # Divider and Motion / Animations selector row (Smooth / Reduced) for low-end devices & comfort.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        motion_row = tk.Frame(access_card, bg=CARD_BG)
-        motion_row.pack(fill="x", padx=18, pady=16)
-
+        add_setting_row(
+            "LANGUAGE",
+            {"en": "English  ·  Default", "cy": "Cymraeg  ·  Welsh"}.get(active_lang, "English  ·  Default"),
+            (("en", "English"), ("cy", "Cymraeg (Welsh)")),
+            active_lang, self.set_language,
+        )
         active_reduced = self._is_reduced_motion()
-        motion_info = tk.Frame(motion_row, bg=CARD_BG)
-        motion_info.pack(side="left", fill="x", expand=True)
-        self.create_label(motion_info, "ANIMATIONS", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            motion_info,
+        add_setting_row(
+            "ANIMATIONS",
             "Reduced motion  ·  Faster on older devices" if active_reduced else "Smooth  ·  Default",
-            13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        motion_controls = tk.Frame(motion_row, bg=CARD_BG)
-        motion_controls.pack(side="right")
-        for is_red, caption in ((False, "Smooth"), (True, "Reduced motion")):
-            self.create_button(
-                motion_controls,
-                caption,
-                lambda flag=is_red: self.set_reduced_motion(flag),
-                primary=(active_reduced == is_red),
-                compact=True,
-            ).pack(side="left", padx=(0 if not is_red else 8, 0))
+            ((False, "Smooth"), (True, "Reduced motion")),
+            active_reduced, self.set_reduced_motion,
+        )
 
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
@@ -1395,14 +1343,7 @@ class PagesMixin:
         a_font = (DEFAULT_FONT, max(8, round(10 * scale)), "normal")
 
         def rounded_poly_coords(w, h, r=12):
-            m = 1
-            x1 = max(m + 2, w - 1)
-            y1 = max(m + 2, h - 1)
-            rad = min(r, (x1 - m) / 2, (y1 - m) / 2)
-            return (
-                rad + m, m, x1 - rad, m, x1, m, x1, rad + m, x1, y1 - rad, x1, y1,
-                x1 - rad, y1, rad + m, y1, m, y1, m, y1 - rad, m, rad + m, m, m,
-            )
+            return rounded_rect_points(1, 1, max(3, w - 1), max(3, h - 1), r)
 
         card_fill = qa_canvas.create_polygon(0, 0, 0, 0, smooth=True, fill=CARD_BG, outline="")
 

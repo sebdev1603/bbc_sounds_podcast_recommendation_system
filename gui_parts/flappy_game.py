@@ -1,7 +1,5 @@
 """Hidden BBC Sounds Flappy Bird easter-egg mini-game triggered from the BBC logo."""
-import ctypes
 import random
-import sys
 from time import monotonic
 import tkinter as tk
 
@@ -10,75 +8,18 @@ from gui_parts import theme as _theme
 
 def open_flappy_game(parent):
     """Open (or focus) the BBC Sounds themed Flappy Bird easter-egg window."""
-    existing = getattr(parent, "_flappy_window", None)
-    if existing is not None and existing.winfo_exists():
-        try:
-            existing.deiconify()
-            existing.lift()
-            existing.focus_force()
-        except tk.TclError:
-            pass
-        return existing
-
-    win = tk.Toplevel(parent)
-    parent._flappy_window = win
-    win.title("BBC Sounds · Flappy Bird")
-    win.configure(bg=_theme.DARK_BG)
-    win.resizable(False, False)
-    win.transient(parent)
-
-    # Match the Windows titlebar colour to the active theme.
-    if sys.platform == "win32":
-        try:
-            win.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
-            bg_hex = _theme.DARK_BG
-            txt_hex = _theme.TITLEBAR_TEXT
-
-            def _to_colorref(h):
-                return int(h[1:3], 16) | (int(h[3:5], 16) << 8) | (int(h[5:7], 16) << 16)
-
-            for attr, val_int in (
-                (20, int(_theme.TITLEBAR_DARK_MODE)),
-                (19, int(_theme.TITLEBAR_DARK_MODE)),
-                (35, _to_colorref(bg_hex)),
-                (36, _to_colorref(txt_hex)),
-                (34, _to_colorref(bg_hex)),
-            ):
-                val = ctypes.c_int(val_int)
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                )
-        except Exception:
-            pass
-
-    board_w, board_h = 420, 520
-    ground_h = 44
-    play_h = board_h - ground_h
-    bird_x = 115.0
-    bird_r = 14.0
-    pipe_w = 56.0
-    pipe_gap = 138.0
-    pipe_speed = 165.0
-    pipe_spacing = 215.0
-    gravity = 920.0
-    flap_vel = -325.0
-
-    wrapper = tk.Frame(win, bg=_theme.DARK_BG, padx=18, pady=14)
-    wrapper.pack(fill="both", expand=True)
-
-    header = tk.Frame(wrapper, bg=_theme.DARK_BG)
-    header.pack(fill="x", pady=(0, 10))
-    tk.Label(
-        header, text="BBC SOUNDS FLAPPY BIRD", font=(_theme.DEFAULT_FONT, 13, "bold"),
-        fg=_theme.ORANGE_ACCENT, bg=_theme.DARK_BG,
-    ).pack(side="left")
-
-    score_lbl = tk.Label(
-        header, text="Score: 0   ·   Best: 0", font=(_theme.DEFAULT_FONT, 10, "bold"),
-        fg=_theme.TEXT_WHITE, bg=_theme.DARK_BG,
+    win, wrapper, score_lbl = _theme.create_minigame_shell(
+        parent, "_flappy_window", "BBC Sounds · Flappy Bird",
+        "BBC SOUNDS FLAPPY BIRD", "Score: 0   ·   Best: 0",
     )
-    score_lbl.pack(side="right")
+    if wrapper is None:
+        return win
+
+    board_w, board_h, ground_h = 420, 520, 44
+    play_h = board_h - ground_h
+    bird_x, bird_r = 115.0, 14.0
+    pipe_w, pipe_gap, pipe_speed, pipe_spacing = 56.0, 138.0, 165.0, 215.0
+    gravity, flap_vel = 920.0, -325.0
 
     board = tk.Canvas(
         wrapper, width=board_w, height=board_h,
@@ -283,10 +224,6 @@ def open_flappy_game(parent):
     win.bind("<Destroy>", lambda _e: cancel_loop())
 
     reset_game()
-    win.update_idletasks()
-    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-    px = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
-    py = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
-    win.geometry(f"+{max(0, px)}+{max(0, py)}")
+    _theme.center_toplevel(win, parent)
     win.focus_force()
     return win
