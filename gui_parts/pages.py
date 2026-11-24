@@ -1235,6 +1235,83 @@ class PagesMixin:
                 w_click.bind("<Button-1>", lambda _e, k=av_key: select_avatar(k))
             avatar_choices.append((av_key, thumb, lbl))
 
+        # Change password section inside the profile card.
+        tk.Frame(info_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=20)
+        pw_section = tk.Frame(info_card, bg=CARD_BG)
+        pw_section.pack(fill="x", padx=20, pady=(12, 16))
+        self.create_label(pw_section, "CHANGE PASSWORD", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 8))
+        pw_fields_row = tk.Frame(pw_section, bg=CARD_BG)
+        pw_fields_row.pack(fill="x")
+
+        cur_pw_var = tk.StringVar()
+        new_pw_var = tk.StringVar()
+        cfm_pw_var = tk.StringVar()
+
+        def _make_pw_box(placeholder_txt, var):
+            col_box = tk.Frame(pw_fields_row, bg=CARD_BG)
+            col_box.pack(side="left", padx=(0, 10))
+            self.create_label(col_box, placeholder_txt, 8, TEXT_GRAY, bg=CARD_BG).pack(anchor="w", pady=(0, 3))
+            card_in = self.create_card_frame(col_box, bg=INPUT_BG, width=170, height=34)
+            card_in.pack(anchor="w")
+            card_in.pack_propagate(False)
+            ent = tk.Entry(
+                card_in, textvariable=var, show="•", font=(DEFAULT_FONT, 10),
+                bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE,
+                relief="flat", bd=0, highlightthickness=0,
+            )
+            ent.pack(fill="x", expand=True, padx=10)
+            return ent
+
+        cur_pw_ent = _make_pw_box("Current password", cur_pw_var)
+        new_pw_ent = _make_pw_box("New password", new_pw_var)
+        cfm_pw_ent = _make_pw_box("Confirm password", cfm_pw_var)
+
+        pw_status_lbl = self.create_label(pw_section, "", 9, TEXT_GRAY, bg=CARD_BG)
+        pw_status_lbl.pack(anchor="w", pady=(6, 0))
+
+        def on_change_password(_event=None):
+            cur_val = cur_pw_var.get()
+            new_val = new_pw_var.get()
+            cfm_val = cfm_pw_var.get()
+            if not cur_val:
+                pw_status_lbl.configure(text=translate("Enter your current password."), fg="#ff9868")
+                cur_pw_ent.focus_set()
+                return
+            if not self.verify_listener_password(self.current_user, cur_val):
+                pw_status_lbl.configure(text=translate("Current password is incorrect."), fg="#ff9868")
+                cur_pw_var.set("")
+                cur_pw_ent.focus_set()
+                return
+            if not new_val:
+                pw_status_lbl.configure(text=translate("Enter a new password."), fg="#ff9868")
+                new_pw_ent.focus_set()
+                return
+            if new_val == cur_val:
+                pw_status_lbl.configure(
+                    text=translate("New password cannot be the same as your current password."),
+                    fg="#ff9868",
+                )
+                new_pw_var.set("")
+                cfm_pw_var.set("")
+                new_pw_ent.focus_set()
+                return
+            if new_val != cfm_val:
+                pw_status_lbl.configure(text=translate("New passwords do not match."), fg="#ff9868")
+                cfm_pw_ent.focus_set()
+                return
+            if self.update_listener_password(self.current_user, new_val):
+                cur_pw_var.set("")
+                new_pw_var.set("")
+                cfm_pw_var.set("")
+                pw_status_lbl.configure(text=translate("Password updated."), fg="#7ce38b")
+
+        btn_holder = tk.Frame(pw_fields_row, bg=CARD_BG)
+        btn_holder.pack(side="left", anchor="s", pady=(14, 0))
+        self.create_button(btn_holder, "Update password", on_change_password, primary=True, compact=True).pack(
+            side="left",
+        )
+        cfm_pw_ent.bind("<Return>", on_change_password)
+
         genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "")
         length_str = self.get_row_field(listener_info, "LengthPreference", "") or "Not selected"
         survey_done = bool(self.get_row_field(listener_info, "CompleteSurvey", 0))

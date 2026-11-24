@@ -401,6 +401,48 @@ class DatabaseMixin:
         if "avatar" not in cols:
             conn.execute("ALTER TABLE listeners ADD COLUMN Avatar TEXT")
 
+    @staticmethod
+    def _ensure_listener_password_column(conn):
+        """Ensure every listener row has a Password column defaulting to '1'."""
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
+        if "password" not in cols:
+            conn.execute("ALTER TABLE listeners ADD COLUMN Password TEXT DEFAULT '1'")
+            conn.execute("UPDATE listeners SET Password = '1' WHERE Password IS NULL OR TRIM(Password) = ''")
+
+    def verify_listener_password(self, listener_id, password_text):
+        """Return True if password_text matches the stored Password for listener_id."""
+        if listener_id is None:
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_password_column(conn)
+                row = conn.execute(
+                    "SELECT Password FROM listeners WHERE ListenerID = ?",
+                    (listener_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                stored = str(row[0] if row[0] is not None else "1")
+                return stored == str(password_text)
+        except sqlite3.Error:
+            return False
+
+    def update_listener_password(self, listener_id, new_password):
+        """Persist a new password for listener_id in database.db."""
+        if listener_id is None or not str(new_password):
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_password_column(conn)
+                cur = conn.execute(
+                    "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+                    (str(new_password), listener_id),
+                )
+                return cur.rowcount > 0
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't update password", err)
+            return False
+
     def save_listener_avatar(self, listener_id, avatar_key):
         """Persist a listener's chosen premade avatar key in database.db."""
         if listener_id is None:

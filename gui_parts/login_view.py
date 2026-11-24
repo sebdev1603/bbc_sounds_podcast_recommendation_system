@@ -14,7 +14,9 @@ from gui_parts.theme import (
     ORANGE_HL,
     TEXT_GRAY,
     TEXT_WHITE,
+    apply_windows_titlebar_theme,
     blend_colour,
+    center_toplevel,
     ease_in_out_back,
     ease_out_elastic,
     format_user_id,
@@ -89,23 +91,37 @@ class LoginViewMixin:
         )
         subtitle_label.pack(anchor="w", pady=(0, 30))
 
-        # Rounded sign-in card containing the listener ID input field, error label, and Continue button.
+        # Rounded sign-in card containing listener ID + password inputs, error label, and Continue/Reset buttons.
         login_panel = self.create_card_frame(left_side)
         login_panel.pack(anchor="w", fill="x", padx=(0, 8), pady=(2, 0))
         welcome_label = self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold")
-        welcome_label.pack(anchor="w", padx=20, pady=(19, 4))
-        prompt_label = self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY)
+        welcome_label.pack(anchor="w", padx=20, pady=(18, 3))
+        prompt_label = self.create_label(login_panel, "Enter your listener ID and password to continue.", 10, TEXT_GRAY)
         prompt_label.pack(anchor="w", padx=20)
 
+        id_caption = self.create_label(login_panel, "LISTENER ID", 8, TEXT_GRAY, "bold")
+        id_caption.pack(anchor="w", padx=20, pady=(12, 4))
         id_var = tk.StringVar()
         input_panel = self.create_card_frame(login_panel, bg=INPUT_BG)
-        input_panel.pack(fill="x", padx=20, pady=(15, 10))
+        input_panel.pack(fill="x", padx=20, pady=(0, 10))
         text_entry = tk.Entry(
             input_panel, textvariable=id_var, font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
             disabledbackground=INPUT_BG, disabledforeground=TEXT_WHITE,
             insertbackground=TEXT_WHITE, relief="flat", bd=0, highlightthickness=0,
         )
         text_entry.pack(fill="x", padx=12, pady=5, ipady=4)
+
+        pw_caption = self.create_label(login_panel, "PASSWORD", 8, TEXT_GRAY, "bold")
+        pw_caption.pack(anchor="w", padx=20, pady=(0, 4))
+        pw_var = tk.StringVar()
+        pw_panel = self.create_card_frame(login_panel, bg=INPUT_BG)
+        pw_panel.pack(fill="x", padx=20, pady=(0, 8))
+        pw_entry = tk.Entry(
+            pw_panel, textvariable=pw_var, show="•", font=(DEFAULT_FONT, 13), bg=INPUT_BG, fg=TEXT_WHITE,
+            disabledbackground=INPUT_BG, disabledforeground=TEXT_WHITE,
+            insertbackground=TEXT_WHITE, relief="flat", bd=0, highlightthickness=0,
+        )
+        pw_entry.pack(fill="x", padx=12, pady=5, ipady=4)
 
         status_label = self.create_label(login_panel, error_message, 10, "#ff9868", wraplength=390)
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
@@ -115,36 +131,193 @@ class LoginViewMixin:
             if getattr(login_button, "_expanding_login", False):
                 return
             username_input = id_var.get().strip()
+            password_input = pw_var.get()
             if not username_input:
-                status_label.config(text="Enter your listener ID to continue.")
+                status_label.config(text="Enter your listener ID to continue.", fg="#ff9868")
+                text_entry.focus_set()
+                return
+            if not password_input:
+                status_label.config(text="Enter your password to continue.", fg="#ff9868")
+                pw_entry.focus_set()
                 return
             try:
-                # Verify the entered listener ID exists in SQLite.
+                # Verify the entered listener ID and password against SQLite.
                 with self.get_db_connection() as conn:
+                    self._ensure_listener_password_column(conn)
                     found_record = conn.execute(
-                        "SELECT ListenerID, CompleteSurvey FROM listeners WHERE ListenerID = ?",
+                        "SELECT ListenerID, CompleteSurvey, Password FROM listeners WHERE ListenerID = ?",
                         (format_user_id(username_input),),
                     ).fetchone()
-                if found_record:
-                    self.current_user = found_record[0]
-                    if not found_record["CompleteSurvey"]:
-                        self.active_genres = []
-                        self.active_length = "Medium"
-                    # Load this listener's saved theme and text size before animating into Home.
-                    self.apply_user_accessibility(self.current_user)
-                    # Lock the form, stop the vinyl spin loop, and expand the Continue button into Home.
-                    login_button._expanding_login = True
-                    text_entry.configure(state="disabled")
-                    cancel_record_jobs()
-                    self.expand_login_button_to_home(login_button)
-                else:
-                    status_label.config(text="We couldn't find that listener ID. Check it and try again.")
+                if not found_record:
+                    status_label.config(text="We couldn't find that listener ID. Check it and try again.", fg="#ff9868")
+                    return
+                stored_pw = str(found_record["Password"] if found_record["Password"] is not None else "1")
+                if password_input != stored_pw:
+                    status_label.config(text="Incorrect password. Try again or reset your password.", fg="#ff9868")
+                    pw_var.set("")
+                    pw_entry.focus_set()
+                    return
+                self.current_user = found_record[0]
+                if not found_record["CompleteSurvey"]:
+                    self.active_genres = []
+                    self.active_length = "Medium"
+                # Load this listener's saved theme and text size before animating into Home.
+                self.apply_user_accessibility(self.current_user)
+                # Lock the form, stop the vinyl spin loop, and expand the Continue button into Home.
+                login_button._expanding_login = True
+                text_entry.configure(state="disabled")
+                pw_entry.configure(state="disabled")
+                cancel_record_jobs()
+                self.expand_login_button_to_home(login_button)
             except sqlite3.Error as err:
-                status_label.config(text="Couldn't open the project database: " + str(err))
+                status_label.config(text="Couldn't open the project database: " + str(err), fg="#ff9868")
 
-        login_button = self.create_button(login_panel, "Continue  →", handle_login, primary=True)
+        def open_reset_password_dialog():
+            if getattr(login_button, "_expanding_login", False):
+                return
+            existing = getattr(self, "_active_reset_pw_dialog", None)
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_set()
+                return
+
+            dlg = tk.Toplevel(self)
+            self._active_reset_pw_dialog = dlg
+            dlg.withdraw()
+            dlg.title("Reset password")
+            dlg.configure(bg=DARK_BG)
+            dlg.resizable(False, False)
+            dlg.transient(self)
+
+            def close_dlg(_event=None):
+                if getattr(self, "_active_reset_pw_dialog", None) is dlg:
+                    self._active_reset_pw_dialog = None
+                try:
+                    if dlg.winfo_exists():
+                        dlg.grab_release()
+                        dlg.destroy()
+                except tk.TclError:
+                    pass
+
+            dlg.protocol("WM_DELETE_WINDOW", close_dlg)
+            body = tk.Frame(dlg, bg=DARK_BG, padx=24, pady=20)
+            body.pack(fill="both", expand=True)
+            self.create_label(body, "Reset password", 15, TEXT_WHITE, "bold", bg=DARK_BG).pack(anchor="w")
+            self.create_label(
+                body, "Enter your listener ID and choose a new password.",
+                9, TEXT_GRAY, bg=DARK_BG, wraplength=320,
+            ).pack(anchor="w", pady=(3, 12))
+
+            reset_id_var = tk.StringVar(value=id_var.get().strip())
+            reset_pw_var = tk.StringVar()
+            reset_confirm_var = tk.StringVar()
+
+            def _make_field(caption_txt, var, masked=False):
+                self.create_label(body, caption_txt, 8, TEXT_GRAY, "bold", bg=DARK_BG).pack(anchor="w", pady=(0, 3))
+                box = self.create_card_frame(body, bg=INPUT_BG)
+                box.pack(fill="x", pady=(0, 10))
+                ent = tk.Entry(
+                    box, textvariable=var, show="•" if masked else "",
+                    font=(DEFAULT_FONT, 11), bg=INPUT_BG, fg=TEXT_WHITE,
+                    insertbackground=TEXT_WHITE, relief="flat", bd=0, highlightthickness=0,
+                )
+                ent.pack(fill="x", padx=10, pady=4, ipady=3)
+                return ent
+
+            r_id_ent = _make_field("LISTENER ID", reset_id_var, masked=False)
+            r_pw_ent = _make_field("NEW PASSWORD", reset_pw_var, masked=True)
+            r_cf_ent = _make_field("CONFIRM NEW PASSWORD", reset_confirm_var, masked=True)
+            r_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=320)
+            r_err_lbl.pack(anchor="w", pady=(0, 10))
+
+            def apply_reset(_event=None):
+                raw_id = reset_id_var.get().strip()
+                if not raw_id:
+                    r_err_lbl.configure(text="Enter your listener ID first.")
+                    r_id_ent.focus_set()
+                    return
+                new_pw = reset_pw_var.get()
+                confirm_pw = reset_confirm_var.get()
+                if not new_pw:
+                    r_err_lbl.configure(text="Enter a new password.")
+                    r_pw_ent.focus_set()
+                    return
+                if new_pw != confirm_pw:
+                    r_err_lbl.configure(text="Passwords do not match.")
+                    r_cf_ent.focus_set()
+                    return
+
+                formatted_id = format_user_id(raw_id)
+                try:
+                    with self.get_db_connection() as conn:
+                        self._ensure_listener_password_column(conn)
+                        exists = conn.execute(
+                            "SELECT ListenerID, Password FROM listeners WHERE ListenerID = ?",
+                            (formatted_id,),
+                        ).fetchone()
+                        if not exists:
+                            r_err_lbl.configure(text="We couldn't find that listener ID.")
+                            return
+                        old_pw = str(exists[1] if exists[1] is not None else "1")
+                        if new_pw == old_pw:
+                            r_err_lbl.configure(text="New password cannot be the same as your current password.")
+                            reset_pw_var.set("")
+                            reset_confirm_var.set("")
+                            r_pw_ent.focus_set()
+                            return
+                        conn.execute(
+                            "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+                            (new_pw, exists[0]),
+                        )
+                    id_var.set(str(exists[0]))
+                    pw_var.set("")
+                    status_label.config(
+                        text=f"Password updated for listener {exists[0]}. You can now sign in.",
+                        fg="#7ce38b",
+                    )
+                    close_dlg()
+                    pw_entry.focus_set()
+                except sqlite3.Error as err:
+                    r_err_lbl.configure(text="Database error: " + str(err))
+
+            btn_bar = tk.Frame(body, bg=DARK_BG)
+            btn_bar.pack(fill="x", pady=(2, 0))
+            self.create_button(btn_bar, "Save password", apply_reset, primary=True, compact=True).pack(
+                side="left", padx=(0, 8),
+            )
+            self.create_button(btn_bar, "Cancel", close_dlg, compact=True).pack(side="left")
+
+            apply_windows_titlebar_theme(dlg)
+            center_toplevel(dlg, self, min_w=360, min_h=300, set_size=True)
+            dlg.bind("<Escape>", close_dlg)
+            r_cf_ent.bind("<Return>", apply_reset)
+            dlg.deiconify()
+            dlg.lift()
+            (r_pw_ent if reset_id_var.get().strip() else r_id_ent).focus_set()
+
+            def _grab(attempts=20):
+                try:
+                    if not dlg.winfo_exists():
+                        return
+                    if not dlg.winfo_viewable():
+                        if attempts > 0:
+                            dlg.after(25, _grab, attempts - 1)
+                        return
+                    dlg.grab_set()
+                    dlg.lift()
+                except tk.TclError:
+                    if attempts > 0 and dlg.winfo_exists():
+                        dlg.after(25, _grab, attempts - 1)
+
+            dlg.after(10, _grab)
+
+        login_btn_row = tk.Frame(login_panel, bg=login_panel.cget("bg"))
+        login_btn_row.pack(anchor="w", padx=20, pady=(5, 18))
+        login_button = self.create_button(login_btn_row, "Continue  →", handle_login, primary=True)
         login_button.configure(highlightthickness=0, takefocus=0)
-        login_button.pack(anchor="w", padx=20, pady=(5, 20))
+        login_button.pack(side="left", padx=(0, 10))
+        reset_pw_button = self.create_button(login_btn_row, "Reset password", open_reset_password_dialog, compact=True)
+        reset_pw_button.pack(side="left")
         self._login_button = login_button
         self._login_ui_refs = {
             "logo": logo_widget,
@@ -154,13 +327,20 @@ class LoginViewMixin:
             "login_panel": login_panel,
             "welcome": welcome_label,
             "prompt": prompt_label,
+            "id_caption": id_caption,
             "input_panel": input_panel,
             "entry": text_entry,
             "id_var": id_var,
+            "pw_caption": pw_caption,
+            "pw_panel": pw_panel,
+            "pw_entry": pw_entry,
+            "pw_var": pw_var,
             "status": status_label,
             "button": login_button,
+            "reset_button": reset_pw_button,
         }
-        text_entry.bind("<Return>", handle_login)
+        text_entry.bind("<Return>", lambda _e: handle_login() if pw_var.get() else pw_entry.focus_set())
+        pw_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
         # Right-hand canvas hosting the rotating BBC Sounds vinyl turntable graphic.
@@ -1215,7 +1395,7 @@ class LoginViewMixin:
                 pass
 
         # 2) Paint the rounded login card and input card backgrounds.
-        for key, rad in (("login_panel", 14), ("input_panel", 10)):
+        for key, rad in (("login_panel", 14), ("input_panel", 10), ("pw_panel", 10)):
             panel = refs.get(key)
             pr = _rect(panel)
             if pr is not None:
@@ -1231,6 +1411,8 @@ class LoginViewMixin:
             ("subtitle", "w"),
             ("welcome", "w"),
             ("prompt", "w"),
+            ("id_caption", "w"),
+            ("pw_caption", "w"),
             ("status", "w"),
         ):
             lbl = refs.get(key)
@@ -1255,35 +1437,39 @@ class LoginViewMixin:
                 kwargs["width"] = wrap
             fx_cvs.create_text(tx, ty, **kwargs)
 
-        entry = refs.get("entry")
-        id_var = refs.get("id_var")
-        er = _rect(entry)
-        if er is not None and id_var is not None:
-            val = id_var.get()
-            if val:
-                ex, ey, _ew, eh = er
-                fx_cvs.create_text(
-                    ex + 2, ey + eh / 2.0, text=val, fill=entry.cget("fg"),
-                    font=entry.cget("font"), anchor="w",
-                )
+        for ent_key, var_key, masked in (("entry", "id_var", False), ("pw_entry", "pw_var", True)):
+            entry = refs.get(ent_key)
+            val_var = refs.get(var_key)
+            er = _rect(entry)
+            if er is not None and val_var is not None:
+                val = val_var.get()
+                if val:
+                    shown = "•" * len(val) if masked else val
+                    ex, ey, _ew, eh = er
+                    fx_cvs.create_text(
+                        ex + 2, ey + eh / 2.0, text=shown, fill=entry.cget("fg"),
+                        font=entry.cget("font"), anchor="w",
+                    )
 
-        # 4) Paint the Continue button using its exact pre-rendered anti-aliased pill image when available.
-        btn = refs.get("button")
-        br = _rect(btn)
-        if br is not None:
-            bx, by, bw, bh = br
-            norm_img = getattr(btn, "_normal_image", None)
-            if norm_img is not None:
-                fx_cvs._btn_img_ref = norm_img
-                fx_cvs.create_image(bx + bw / 2.0, by + bh / 2.0, image=norm_img, anchor="center")
-            else:
-                _draw_rounded(bx + 4, by + 4, bx + bw - 4, by + bh - 4, 10, ORANGE_ACCENT)
-            y_sh = getattr(btn, "_hover_y_shift", 0)
-            fx_cvs.create_text(
-                bx + bw / 2.0, by + bh / 2.0 + y_sh,
-                text=btn.cget("text"), fill=btn.cget("fg"),
-                font=btn.cget("font"), anchor="center",
-            )
+        # 4) Paint the Continue and Reset password buttons using their pre-rendered anti-aliased pill images.
+        fx_cvs._btn_img_refs = []
+        for btn_key, fallback_col in (("button", ORANGE_ACCENT), ("reset_button", INPUT_BG)):
+            btn = refs.get(btn_key)
+            br = _rect(btn)
+            if br is not None:
+                bx, by, bw, bh = br
+                norm_img = getattr(btn, "_normal_image", None)
+                if norm_img is not None:
+                    fx_cvs._btn_img_refs.append(norm_img)
+                    fx_cvs.create_image(bx + bw / 2.0, by + bh / 2.0, image=norm_img, anchor="center")
+                else:
+                    _draw_rounded(bx + 4, by + 4, bx + bw - 4, by + bh - 4, 10, fallback_col)
+                y_sh = getattr(btn, "_hover_y_shift", 0)
+                fx_cvs.create_text(
+                    bx + bw / 2.0, by + bh / 2.0 + y_sh,
+                    text=btn.cget("text"), fill=btn.cget("fg"),
+                    font=btn.cget("font"), anchor="center",
+                )
 
         # 5) Paint the right-hand empty turntable (reusing the live spinning _ring_photo so rings keep rotating!).
         fx_cx = (disc_canvas.winfo_rootx() - win_x) + center_x
