@@ -249,13 +249,19 @@ class LoginViewMixin:
                 gdi32.DeleteDC(mdc)
                 user32.ReleaseDC(None, sdc)
 
-            raw = buf.raw
-            rgb = bytearray(win_w * win_h * 3)
-            rgb[0::3] = raw[2::4]
-            rgb[1::3] = raw[1::4]
-            rgb[2::3] = raw[0::4]
+            # Use Pillow's C-level BGRX->RGB conversion when available (~3ms vs ~120ms pure-Python slicing).
+            try:
+                from PIL import Image
+                rgb_bytes = Image.frombuffer("RGB", (win_w, win_h), buf, "raw", "BGRX", 0, 1).tobytes()
+            except Exception:
+                raw = buf.raw
+                rgb = bytearray(win_w * win_h * 3)
+                rgb[0::3] = raw[2::4]
+                rgb[1::3] = raw[1::4]
+                rgb[2::3] = raw[0::4]
+                rgb_bytes = bytes(rgb)
             header = f"P6\n{win_w} {win_h}\n255\n".encode("ascii")
-            return tk.PhotoImage(master=self, data=header + bytes(rgb), format="PPM")
+            return tk.PhotoImage(master=self, data=header + rgb_bytes, format="PPM")
         except Exception:
             return None
 
@@ -270,24 +276,27 @@ class LoginViewMixin:
 
     @staticmethod
     def _set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
-        """Update the 6-primitive rounded pill geometry and optional fill colour."""
+        """Update the 6-primitive rounded pill geometry and optional fill colour in one Tcl batch."""
         w, h = max(1, x1 - x0), max(1, y1 - y0)
         r = max(0, min(radius, w // 2, h // 2))
+        cp = str(canvas)
         if r <= 1:
-            canvas.coords(items[0], x0, y0, x1, y1)
-            for extra in items[1:]:
-                canvas.coords(extra, 0, 0, 0, 0)
+            cmds = [f"{cp} coords {items[0]} {x0} {y0} {x1} {y1}"]
+            cmds.extend(f"{cp} coords {extra} 0 0 0 0" for extra in items[1:])
         else:
             d = r * 2
             ox1, oy1 = max(x0, x1 - 1), max(y0, y1 - 1)
-            canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
-            canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
-            canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
-            canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
-            canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
-            canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
+            cmds = [
+                f"{cp} coords {items[0]} {x0 + r} {y0} {x1 - r} {y1}",
+                f"{cp} coords {items[1]} {x0} {y0 + r} {x1} {y1 - r}",
+                f"{cp} coords {items[2]} {x0} {y0} {x0 + d} {y0 + d}",
+                f"{cp} coords {items[3]} {ox1 - d} {y0} {ox1} {y0 + d}",
+                f"{cp} coords {items[4]} {x0} {oy1 - d} {x0 + d} {oy1}",
+                f"{cp} coords {items[5]} {ox1 - d} {oy1 - d} {ox1} {oy1}",
+            ]
         if fill_col is not None:
-            canvas.itemconfigure(tag, fill=fill_col)
+            cmds.append(f"{cp} itemconfigure {tag} -fill {fill_col}")
+        canvas.tk.eval("\n".join(cmds))
 
     def _create_overlay_pair(self, win_x, win_y, win_w, win_h, key_colour, pill_alpha):
         """Create two withdrawn borderless chroma-key Toplevels aligned over the main window."""
@@ -355,9 +364,9 @@ class LoginViewMixin:
         coil_y = start_y + (start_h - coil_h) / 2.0
         charged_col = blend_colour(start_colour, ORANGE_HL, 0.85)
 
-        total_dur = 0.600  # 0..0.18 coil -> 0.18..0.60 expand -> subtle loading pulse + build Home -> 0.60..1.00 lift curtain.
+        total_dur = 0.520  # 0..0.18 coil -> 0.18..0.56 expand -> subtle loading pulse + build Home -> 0.56..1.00 lift curtain.
         windup_end = 0.18
-        expand_end = 0.60
+        expand_end = 0.56
         anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [start_colour]
         last_rect = [None]
@@ -467,14 +476,15 @@ class LoginViewMixin:
                         if not self.winfo_exists() or not overlay.winfo_exists():
                             finish()
                             return
+                        stop_spinner()
                         tk.Misc.lift(overlay)
                         self.update_idletasks()
                         tk.Misc.lift(overlay)
                         anim_st["last_t"] = monotonic()
-                        self.after(16, draw_frame)
+                        self.after(14, draw_frame)
 
                     # Yield briefly so the loading spinner visibly paints before Home builds.
-                    self.after(24, _build_and_reveal)
+                    self.after(16, _build_and_reveal)
                     return
 
                 u = (p - expand_end) / (1.0 - expand_end)
@@ -487,7 +497,7 @@ class LoginViewMixin:
 
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
-                self.after(self._next_frame_delay(spent, 16), draw_frame)
+                self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
@@ -518,8 +528,17 @@ class LoginViewMixin:
                 overlay.destroy()
             return
         self.apply_interface_scaling(force=True)
-        tk.Misc.lift(overlay)
         self.update_idletasks()
+        # Pre-paint one static frame of the vinyl graphic behind the curtain so it is already
+        # visible as the overlay shrinks (its spin loop stays paused until finish()).
+        disc_static = getattr(self, "_login_disc_canvas", None)
+        if disc_static is not None and disc_static.winfo_exists():
+            class _StaticPaintEvt:
+                widget = disc_static
+                width = max(240, disc_static.winfo_width())
+                height = max(240, disc_static.winfo_height())
+            self.paint_vinyl_record(_StaticPaintEvt())
+            self.update_idletasks()
         tk.Misc.lift(overlay)
 
         target_btn = getattr(self, "_login_button", None)
@@ -609,11 +628,12 @@ class LoginViewMixin:
 
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
-                self.after(self._next_frame_delay(spent, 16), draw_frame)
+                self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
-        self.after(1, draw_frame)
+        # Yield one frame so Tk flushes login layout before frame 1 of the shrink starts.
+        self.after(16, draw_frame)
 
     def expand_login_button_to_home(self, login_button):
         """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
@@ -652,8 +672,8 @@ class LoginViewMixin:
             self.show_home()
             return
 
-        # On Linux (Wayland/X11) and macOS, -transparentcolor Toplevels are unsupported; use the fast in-window overlay.
-        if sys.platform != "win32":
+        # On Linux (Wayland/X11), macOS, or lower-end devices, use the fast single-frame in-window overlay.
+        if sys.platform != "win32" or getattr(self, "_anim_ema_ms", 6.0) > 18.0:
             self._expand_login_in_window(start_x, start_y, start_w, start_h, start_colour)
             return
 
@@ -733,13 +753,15 @@ class LoginViewMixin:
         coil_y = start_y + (start_h - coil_h) // 2
         charged_colour = blend_colour(start_colour, ORANGE_HL, 0.85)
 
-        total_duration = 0.720  # ~0.19s elastic wind-up coil + ~0.53s rounded launch and Home fade-in.
-        max_step = 1.0 / 24.0  # Cap per-frame progress so slow frames never cause visible jumps.
-        windup_end = 0.26  # First 26%: button visibly compresses & brightens, getting ready to launch.
-        fade_start = 0.34  # Begin fading Home in right as the rounded button rockets outward.
+        total_duration = 0.540  # ~0.12s elastic wind-up coil + ~0.42s rounded launch and Home fade-in.
+        max_step = 1.0 / 16.0
+        windup_end = 0.22
+        fade_start = 0.30
         state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_bg = [start_colour]
+        last_alpha = [1.0]
+        backdrop_hidden = [False]
 
         def finish():
             for w in (pill_win, backdrop_win):
@@ -757,7 +779,7 @@ class LoginViewMixin:
 
             now = monotonic()
             if state["last_t"] is None:
-                delta = max_step * 0.5
+                delta = 0.015 / total_duration
             else:
                 delta = min(max_step, (now - state["last_t"]) / total_duration)
             state["last_t"] = now
@@ -765,7 +787,6 @@ class LoginViewMixin:
             progress = state["progress"]
 
             if progress < windup_end:
-                # Phase 1: Elastic anticipation — rounded button compresses inward and brightens.
                 u = progress / windup_end
                 coil_t = 1.0 - (1.0 - u) ** 2
                 cur_x = round(start_x + (coil_x - start_x) * coil_t)
@@ -775,21 +796,19 @@ class LoginViewMixin:
                 cur_r = start_r
                 cur_bg = blend_colour(start_colour, charged_colour, coil_t)
             else:
-                # Phase 2: Rounded elastic launch — expands smoothly while keeping rounded corners
-                # until the final 12% where corners gently settle flush with the window edges.
                 t = (progress - windup_end) / (1.0 - windup_end)
-                launch_eased = 1.0 - (1.0 - t) ** 3
+                launch_eased = 1.0 - (1.0 - t) ** 3.2
                 cur_x = round(coil_x * (1.0 - launch_eased))
                 cur_y = round(coil_y * (1.0 - launch_eased))
                 cur_w = max(1, min(win_w, round(coil_w + (win_w - coil_w) * launch_eased)))
                 cur_h = max(1, min(win_h, round(coil_h + (win_h - coil_h) * launch_eased)))
-                if t < 0.88:
-                    cur_r = round(start_r + 8 * min(1.0, t / 0.30))
+                if t < 0.86:
+                    cur_r = round(start_r + 8 * min(1.0, t / 0.28))
                 else:
-                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.12))
+                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.14))
 
                 if t <= 0.65:
-                    cp = min(1.0, t / 0.60)
+                    cp = min(1.0, t / 0.58)
                     cur_bg = blend_colour(charged_colour, DARK_BG, cp * cp * (3.0 - 2.0 * cp))
                 else:
                     cur_bg = last_bg[0]
@@ -803,8 +822,12 @@ class LoginViewMixin:
             fill_update = cur_bg if cur_bg != last_bg[0] else None
             if rect_key != last_rect[0] or fill_update is not None:
                 set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, cur_r, fill_update)
-                if cutout_visible[0] and rect_key != last_rect[0]:
-                    set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
+                if cutout_visible[0] and not backdrop_hidden[0] and rect_key != last_rect[0]:
+                    if x0 <= 0 and y0 <= 0 and x1 >= win_w and y1 >= win_h and cur_r <= 1:
+                        backdrop_win.withdraw()
+                        backdrop_hidden[0] = True
+                    else:
+                        set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
                 last_rect[0] = rect_key
                 if fill_update is not None:
                     last_bg[0] = fill_update
@@ -812,20 +835,23 @@ class LoginViewMixin:
             if progress >= fade_start:
                 fade_p = min(1.0, (progress - fade_start) / (1.0 - fade_start))
                 fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
-                try:
-                    pill_win.attributes("-alpha", max(0.0, 1.0 - fade_eased))
-                except tk.TclError:
-                    finish()
-                    return
+                alpha = max(0.0, 1.0 - fade_eased)
+                if abs(alpha - last_alpha[0]) >= 0.015 or (alpha == 0.0 and last_alpha[0] != 0.0):
+                    try:
+                        pill_win.attributes("-alpha", alpha)
+                        last_alpha[0] = alpha
+                    except tk.TclError:
+                        finish()
+                        return
 
             if progress < 1.0:
                 spent_ms = (monotonic() - now) * 1000.0
-                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
+                self.after(self._next_frame_delay(spent_ms, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
         # Start after queued idle layout/scaling callbacks finish so the animation runs uninterrupted.
-        self.after(16, draw_frame)
+        self.after(14, draw_frame)
 
     def sign_out_to_login(self):
         """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
@@ -844,7 +870,7 @@ class LoginViewMixin:
             self.show_login()
             return
 
-        if sys.platform != "win32":
+        if sys.platform != "win32" or getattr(self, "_anim_ema_ms", 6.0) > 18.0:
             self._sign_out_in_window()
             return
 
@@ -874,47 +900,34 @@ class LoginViewMixin:
             for _ in range(4)
         )
 
-        # Pre-compute smooth quarter-circle steps (5 segments per corner) for fast, seamless rounded clipping.
+        # Pre-compute smooth quarter-circle steps (3 segments per corner) and batch all clip updates in one Tcl eval.
         arc_steps = tuple(
             (math.cos(math.radians(a)), math.sin(math.radians(a)))
-            for a in (0, 18, 36, 54, 72, 90)
+            for a in (0, 30, 60, 90)
         )
+        page_cp = str(page_canvas)
+        page_eval = page_canvas.tk.eval
 
         def update_page_clip(x0, y0, x1, y1, radius):
-            # Inset the clipped page snapshot 1-2px strictly inside pill_win's rounded boundary so
-            # bright pixels from page_snap can never poke past the pill's rounded corners.
-            lx = max(0, x0 + 1)
-            ly = max(0, y0 + 1)
-            rx = min(win_w, max(lx, x1 - 2))
-            by = min(win_h, max(ly, y1 - 2))
-            page_canvas.coords(outer_masks[0], 0, 0, win_w, ly)
-            page_canvas.coords(outer_masks[1], 0, by, win_w, win_h)
-            page_canvas.coords(outer_masks[2], 0, ly, lx, by)
-            page_canvas.coords(outer_masks[3], rx, ly, win_w, by)
-
+            lx, ly = max(0, x0 + 1), max(0, y0 + 1)
+            rx, by = min(win_w, max(lx, x1 - 2)), min(win_h, max(ly, y1 - 2))
+            cmds = [
+                f"{page_cp} coords {outer_masks[0]} 0 0 {win_w} {ly}",
+                f"{page_cp} coords {outer_masks[1]} 0 {by} {win_w} {win_h}",
+                f"{page_cp} coords {outer_masks[2]} 0 {ly} {lx} {by}",
+                f"{page_cp} coords {outer_masks[3]} {rx} {ly} {win_w} {by}",
+            ]
             r = max(0, min(radius + 1, (rx - lx) // 2, (by - ly) // 2))
             if r <= 1:
-                for cm in corner_masks:
-                    page_canvas.coords(cm, 0, 0, 0, 0, 0, 0)
-                return
-
-            # Top-left, top-right, bottom-left, bottom-right inverse rounded corner masks with 2px outer overlap.
-            tl = [lx - 2, ly - 2]
-            for c, s in arc_steps:
-                tl.extend((lx + r - r * s, ly + r - r * c))
-            tr = [rx + 2, ly - 2]
-            for c, s in arc_steps:
-                tr.extend((rx - r + r * c, ly + r - r * s))
-            bl = [lx - 2, by + 2]
-            for c, s in arc_steps:
-                bl.extend((lx + r - r * c, by - r + r * s))
-            br = [rx + 2, by + 2]
-            for c, s in arc_steps:
-                br.extend((rx - r + r * s, by - r + r * c))
-            page_canvas.coords(corner_masks[0], *tl)
-            page_canvas.coords(corner_masks[1], *tr)
-            page_canvas.coords(corner_masks[2], *bl)
-            page_canvas.coords(corner_masks[3], *br)
+                cmds.extend(f"{page_cp} coords {cm} 0 0 0 0 0 0" for cm in corner_masks)
+            else:
+                tl = [f"{lx - 2} {ly - 2}"] + [f"{lx + r - r * s:.1f} {ly + r - r * c:.1f}" for c, s in arc_steps]
+                tr = [f"{rx + 2} {ly - 2}"] + [f"{rx - r + r * c:.1f} {ly + r - r * s:.1f}" for c, s in arc_steps]
+                bl = [f"{lx - 2} {by + 2}"] + [f"{lx + r - r * c:.1f} {by - r + r * s:.1f}" for c, s in arc_steps]
+                br = [f"{rx + 2} {by + 2}"] + [f"{rx - r + r * s:.1f} {by - r + r * c:.1f}" for c, s in arc_steps]
+                for cm, pts in zip(corner_masks, (tl, tr, bl, br)):
+                    cmds.append(f"{page_cp} coords {cm} {' '.join(pts)}")
+            page_eval("\n".join(cmds))
 
         pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
         pill_canvas.pack(fill="both", expand=True)
@@ -1002,9 +1015,9 @@ class LoginViewMixin:
         squash_y = end_y + (end_h - squash_h) // 2
         impact_colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.85)
 
-        total_duration = 0.680  # ~0.39s snappy shrink into button + ~0.29s lively elastic spring bounce.
-        max_step = 1.0 / 20.0
-        shrink_end = 0.58
+        total_duration = 0.520  # ~0.29s snappy shrink into button + ~0.23s lively elastic spring bounce.
+        max_step = 1.0 / 16.0
+        shrink_end = 0.56
         state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_bg = [DARK_BG]
@@ -1071,8 +1084,8 @@ class LoginViewMixin:
                 fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
                 cur_bg = blend_colour(DARK_BG, impact_colour, fade_eased)
                 alpha = fade_eased
-                # Hide page_win the instant pill_win is fully opaque so no snapshot edges can ever show.
-                if alpha >= 0.99 and not page_hidden[0]:
+                # Hide page_win the instant pill_win is virtually opaque so DWM stops compositing the snapshot.
+                if alpha >= 0.96 and not page_hidden[0]:
                     page_win.withdraw()
                     page_hidden[0] = True
             else:
@@ -1108,7 +1121,7 @@ class LoginViewMixin:
                 if fill_update is not None:
                     last_bg[0] = fill_update
 
-            if abs(alpha - last_alpha[0]) >= 0.008 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
+            if abs(alpha - last_alpha[0]) >= 0.015 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
                 try:
                     pill_win.attributes("-alpha", alpha)
                     last_alpha[0] = alpha
@@ -1118,11 +1131,11 @@ class LoginViewMixin:
 
             if progress < 1.0:
                 spent_ms = (monotonic() - now) * 1000.0
-                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
+                self.after(self._next_frame_delay(spent_ms, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
-        self.after(16, draw_frame)
+        self.after(14, draw_frame)
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
