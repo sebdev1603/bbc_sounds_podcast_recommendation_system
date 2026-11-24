@@ -69,8 +69,10 @@ class LoginViewMixin:
         # Header row with the BBC Sounds logo on the left and tagline on the right.
         top_header = tk.Frame(main_box, bg=DARK_BG)
         top_header.pack(fill="x")
-        self.draw_app_logo(top_header, 1.25).pack(side="left")
-        self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold").pack(side="right")
+        logo_widget = self.draw_app_logo(top_header, 1.25)
+        logo_widget.pack(side="left")
+        tagline_label = self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold")
+        tagline_label.pack(side="right")
 
         # Two-column split: hero copy + sign-in card on the left, animated vinyl turntable on the right.
         content_split = tk.Frame(main_box, bg=DARK_BG)
@@ -78,20 +80,22 @@ class LoginViewMixin:
 
         left_side = tk.Frame(content_split, bg=DARK_BG)
         left_side.pack(side="left", fill="both", expand=True, padx=(0, 30))
-        self.create_label(left_side, "YOUR NEXT LISTEN\nIS WAITING", 37, TEXT_WHITE, "bold", justify="left").pack(
-            anchor="w", pady=(46, 13)
-        )
-        self.create_label(
+        hero_label = self.create_label(left_side, "YOUR NEXT LISTEN\nIS WAITING", 37, TEXT_WHITE, "bold", justify="left")
+        hero_label.pack(anchor="w", pady=(46, 13))
+        subtitle_label = self.create_label(
             left_side,
             "Find programmes that fit your mood.\nDiscover new voices, stories and ideas.",
             14, TEXT_GRAY, justify="left",
-        ).pack(anchor="w", pady=(0, 30))
+        )
+        subtitle_label.pack(anchor="w", pady=(0, 30))
 
         # Rounded sign-in card containing the listener ID input field, error label, and Continue button.
         login_panel = self.create_card_frame(left_side)
         login_panel.pack(anchor="w", fill="x", padx=(0, 8), pady=(2, 0))
-        self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold").pack(anchor="w", padx=20, pady=(19, 4))
-        self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY).pack(anchor="w", padx=20)
+        welcome_label = self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold")
+        welcome_label.pack(anchor="w", padx=20, pady=(19, 4))
+        prompt_label = self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY)
+        prompt_label.pack(anchor="w", padx=20)
 
         id_var = tk.StringVar()
         input_panel = self.create_card_frame(login_panel, bg=INPUT_BG)
@@ -142,6 +146,20 @@ class LoginViewMixin:
         login_button.configure(highlightthickness=0, takefocus=0)
         login_button.pack(anchor="w", padx=20, pady=(5, 20))
         self._login_button = login_button
+        self._login_ui_refs = {
+            "logo": logo_widget,
+            "tagline": tagline_label,
+            "hero": hero_label,
+            "subtitle": subtitle_label,
+            "login_panel": login_panel,
+            "welcome": welcome_label,
+            "prompt": prompt_label,
+            "input_panel": input_panel,
+            "entry": text_entry,
+            "id_var": id_var,
+            "status": status_label,
+            "button": login_button,
+        }
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
@@ -1139,6 +1157,195 @@ class LoginViewMixin:
 
         self.after(14, draw_frame)
 
+    def _create_in_window_fx_canvas(
+        self, disc_canvas, center_x, center_y, vinyl_r, tonearm_spec, empty_caption, on_dismiss=None,
+    ):
+        """Create a single double-buffered full-window Canvas mirroring the login UI so vinyl FX float flicker-free."""
+        win_x, win_y = self.winfo_rootx(), self.winfo_rooty()
+        win_w, win_h = max(1, self.winfo_width()), max(1, self.winfo_height())
+        if win_w <= 1 or win_h <= 1:
+            return None
+
+        fx_cvs = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        refs = getattr(self, "_login_ui_refs", None) or {}
+
+        def _rect(w):
+            if w is None or not w.winfo_exists() or w.winfo_width() <= 1:
+                return None
+            return (w.winfo_rootx() - win_x, w.winfo_rooty() - win_y, w.winfo_width(), w.winfo_height())
+
+        def _draw_rounded(x0, y0, x1, y1, rad, fill_col):
+            r = max(0, min(rad, (x1 - x0) // 2, (y1 - y0) // 2))
+            if r <= 1:
+                fx_cvs.create_rectangle(x0, y0, x1, y1, fill=fill_col, outline="")
+                return
+            d = r * 2
+            fx_cvs.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill_col, outline="")
+            fx_cvs.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill_col, outline="")
+            fx_cvs.create_oval(x0, y0, x0 + d, y0 + d, fill=fill_col, outline="")
+            fx_cvs.create_oval(x1 - d, y0, x1, y0 + d, fill=fill_col, outline="")
+            fx_cvs.create_oval(x0, y1 - d, x0 + d, y1, fill=fill_col, outline="")
+            fx_cvs.create_oval(x1 - d, y1 - d, x1, y1, fill=fill_col, outline="")
+
+        # 1) Paint the top-left BBC Sounds logo by cloning its canvas items at the exact window offset.
+        logo_w = refs.get("logo")
+        lr = _rect(logo_w)
+        if lr is not None:
+            lx, ly, _lw, _lh = lr
+            try:
+                for iid in logo_w.find_all():
+                    itype = logo_w.type(iid)
+                    coords = logo_w.coords(iid)
+                    shifted = [c + (lx if i % 2 == 0 else ly) for i, c in enumerate(coords)]
+                    if itype == "rectangle":
+                        fx_cvs.create_rectangle(
+                            *shifted,
+                            fill=logo_w.itemcget(iid, "fill"),
+                            outline=logo_w.itemcget(iid, "outline"),
+                        )
+                    elif itype == "text":
+                        fx_cvs.create_text(
+                            *shifted,
+                            text=logo_w.itemcget(iid, "text"),
+                            fill=logo_w.itemcget(iid, "fill"),
+                            font=logo_w.itemcget(iid, "font"),
+                            anchor=logo_w.itemcget(iid, "anchor"),
+                        )
+            except tk.TclError:
+                pass
+
+        # 2) Paint the rounded login card and input card backgrounds.
+        for key, rad in (("login_panel", 14), ("input_panel", 10)):
+            panel = refs.get(key)
+            pr = _rect(panel)
+            if pr is not None:
+                px, py, pw, ph = pr
+                inset = getattr(panel, "_inset", 0)
+                col = getattr(panel, "surface", None) or panel.cget("bg")
+                _draw_rounded(px + inset, py + inset, px + pw - inset, py + ph - inset, rad, col)
+
+        # 3) Paint all text labels (tagline, hero heading, subtitle, card headings, status, and entry text).
+        for key, align in (
+            ("tagline", "e"),
+            ("hero", "w"),
+            ("subtitle", "w"),
+            ("welcome", "w"),
+            ("prompt", "w"),
+            ("status", "w"),
+        ):
+            lbl = refs.get(key)
+            r = _rect(lbl)
+            if r is None:
+                continue
+            txt = lbl.cget("text")
+            if not txt:
+                continue
+            lx, ly, lw, lh = r
+            tx = lx + lw if align == "e" else lx
+            ty = ly + lh / 2.0
+            wrap = int(lbl.cget("wraplength") or 0)
+            kwargs = {
+                "text": txt,
+                "fill": lbl.cget("fg"),
+                "font": lbl.cget("font"),
+                "anchor": align,
+                "justify": lbl.cget("justify") or "left",
+            }
+            if wrap > 0:
+                kwargs["width"] = wrap
+            fx_cvs.create_text(tx, ty, **kwargs)
+
+        entry = refs.get("entry")
+        id_var = refs.get("id_var")
+        er = _rect(entry)
+        if er is not None and id_var is not None:
+            val = id_var.get()
+            if val:
+                ex, ey, _ew, eh = er
+                fx_cvs.create_text(
+                    ex + 2, ey + eh / 2.0, text=val, fill=entry.cget("fg"),
+                    font=entry.cget("font"), anchor="w",
+                )
+
+        # 4) Paint the Continue button using its exact pre-rendered anti-aliased pill image when available.
+        btn = refs.get("button")
+        br = _rect(btn)
+        if br is not None:
+            bx, by, bw, bh = br
+            norm_img = getattr(btn, "_normal_image", None)
+            if norm_img is not None:
+                fx_cvs._btn_img_ref = norm_img
+                fx_cvs.create_image(bx + bw / 2.0, by + bh / 2.0, image=norm_img, anchor="center")
+            else:
+                _draw_rounded(bx + 4, by + 4, bx + bw - 4, by + bh - 4, 10, ORANGE_ACCENT)
+            y_sh = getattr(btn, "_hover_y_shift", 0)
+            fx_cvs.create_text(
+                bx + bw / 2.0, by + bh / 2.0 + y_sh,
+                text=btn.cget("text"), fill=btn.cget("fg"),
+                font=btn.cget("font"), anchor="center",
+            )
+
+        # 5) Paint the right-hand empty turntable (reusing the live spinning _ring_photo so rings keep rotating!).
+        fx_cx = (disc_canvas.winfo_rootx() - win_x) + center_x
+        fx_cy = (disc_canvas.winfo_rooty() - win_y) + center_y
+        ring_photo = getattr(disc_canvas, "_ring_photo", None)
+        if ring_photo is not None:
+            fx_cvs._ring_photo_ref = ring_photo
+            fx_cvs.create_image(fx_cx, fx_cy, image=ring_photo, anchor="center")
+
+        pad_r = vinyl_r + 3.0
+        fx_cvs.create_oval(
+            fx_cx - pad_r, fx_cy - pad_r, fx_cx + pad_r, fx_cy + pad_r,
+            fill=DARK_BG, outline="",
+        )
+        sp_r = max(5.0, vinyl_r * 0.08)
+        fx_cvs.create_oval(
+            fx_cx - sp_r, fx_cy - sp_r, fx_cx + sp_r, fx_cy + sp_r,
+            fill="#1b1d22", outline="#6e7380", width=1.5,
+        )
+        fx_cvs.create_text(
+            fx_cx, fx_cy + vinyl_r * 0.52, text=empty_caption,
+            fill=TEXT_GRAY, font=(DEFAULT_FONT, max(8, round(vinyl_r * 0.11))),
+        )
+        if tonearm_spec is not None:
+            ox = fx_cx - center_x
+            oy = fx_cy - center_y
+            pivot_x, pivot_y, base_r, cw_x, cw_y, elbow_x, elbow_y, tip_x, tip_y, head_x, head_y = tonearm_spec
+            fx_cvs.create_oval(
+                pivot_x + ox - base_r, pivot_y + oy - base_r,
+                pivot_x + ox + base_r, pivot_y + oy + base_r,
+                fill="#2b2e35", outline="#7c808b", width=2,
+            )
+            fx_cvs.create_oval(
+                pivot_x + ox - base_r * 0.55, pivot_y + oy - base_r * 0.55,
+                pivot_x + ox + base_r * 0.55, pivot_y + oy + base_r * 0.55,
+                fill="#565b66", outline="#c7cbd4", width=1,
+            )
+            fx_cvs.create_line(
+                pivot_x + ox, pivot_y + oy, cw_x + ox, cw_y + oy,
+                fill="#aeb3bd", width=max(5, round(vinyl_r * 0.06)), capstyle="round",
+            )
+            fx_cvs.create_line(
+                pivot_x + ox, pivot_y + oy, elbow_x + ox, elbow_y + oy, tip_x + ox, tip_y + oy,
+                fill="#c6cad2", width=max(4, round(vinyl_r * 0.045)), smooth=True, capstyle="round",
+            )
+            fx_cvs.create_line(
+                tip_x + ox, tip_y + oy, head_x + ox, head_y + oy,
+                fill="#1f2126", width=max(8, round(vinyl_r * 0.09)), capstyle="butt",
+            )
+            fx_cvs.create_oval(
+                head_x + ox - 3, head_y + oy - 3, head_x + ox + 3, head_y + oy + 3,
+                fill=ORANGE_ACCENT, outline="",
+            )
+
+        if on_dismiss is not None:
+            fx_cvs.bind("<Button-1>", lambda _e: on_dismiss())
+
+        fx_cvs.place(x=0, y=0, width=win_w, height=win_h)
+        tk.Misc.lift(fx_cvs)
+        fx_cvs.update_idletasks()
+        return fx_cvs, fx_cx, fx_cy, win_w, win_h
+
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
         canvas_obj = event.widget
@@ -1364,8 +1571,11 @@ class LoginViewMixin:
                 canvas_obj.tag_lower(mid, tonearm_first_id)
                 shatter_mask_ids.append(mid)
 
-        def _make_full_window_fx_canvas():
-            """Create a full-window transparent overlay canvas on Windows (or fall back to disc_canvas)."""
+        tonearm_spec = (pivot_x, pivot_y, base_r, cw_x, cw_y, elbow_x, elbow_y, tip_x, tip_y, head_x, head_y)
+
+        def _make_full_window_fx_canvas(empty_caption="Vinyl shattered! Click to replace"):
+            """Create a full-window transparent overlay on Windows or a double-buffered full-window Canvas on Linux/macOS."""
+            _cancel_shatter()
             if sys.platform == "win32":
                 try:
                     win_x, win_y = self.winfo_rootx(), self.winfo_rooty()
@@ -1391,6 +1601,15 @@ class LoginViewMixin:
                     return ov_cvs, fx_cx, fx_cy, win_w, win_h
                 except tk.TclError:
                     _cancel_shatter()
+            else:
+                built = self._create_in_window_fx_canvas(
+                    canvas_obj, center_x, center_y, vinyl_r, tonearm_spec, empty_caption,
+                    on_dismiss=_cancel_shatter,
+                )
+                if built is not None:
+                    fx_cvs, fx_cx, fx_cy, win_w, win_h = built
+                    shatter_overlay[0] = fx_cvs
+                    return fx_cvs, fx_cx, fx_cy, win_w, win_h
             cw_f = max(w, canvas_obj.winfo_width())
             ch_f = max(h, canvas_obj.winfo_height())
             return canvas_obj, center_x, center_y, cw_f, ch_f
@@ -1403,12 +1622,16 @@ class LoginViewMixin:
                     pass
                 shatter_job[0] = None
             if shatter_overlay[0] is not None:
+                ov_ref = shatter_overlay[0]
+                shatter_overlay[0] = None
                 try:
-                    if shatter_overlay[0].winfo_exists():
-                        shatter_overlay[0].destroy()
+                    if ov_ref.winfo_exists():
+                        if not isinstance(ov_ref, tk.Toplevel):
+                            tk.Misc.lower(ov_ref)
+                            self.update_idletasks()
+                        ov_ref.destroy()
                 except tk.TclError:
                     pass
-                shatter_overlay[0] = None
 
         canvas_obj.bind("<Destroy>", _cancel_shatter, add="+")
 
@@ -1534,7 +1757,7 @@ class LoginViewMixin:
             except tk.TclError:
                 pass
 
-            fly_canvas, fx_cx, fx_cy, fx_w, fx_h = _make_full_window_fx_canvas()
+            fly_canvas, fx_cx, fx_cy, fx_w, fx_h = _make_full_window_fx_canvas("Vinyl flew off! Click to replace")
             fly_path = str(fly_canvas)
             fly_eval = fly_canvas.tk.eval
 
@@ -1573,7 +1796,7 @@ class LoginViewMixin:
             sp_r = max(5.0, vinyl_r * 0.08)
             hole_id = fly_canvas.create_oval(
                 fx_cx - sp_r, fx_cy - sp_r, fx_cx + sp_r, fx_cy + sp_r,
-                fill="#010203" if shatter_overlay[0] is not None else canvas_obj.cget("bg"),
+                fill="#010203" if isinstance(shatter_overlay[0], tk.Toplevel) else DARK_BG,
                 outline=TEXT_WHITE, width=2,
             )
             all_fly_ids = [disc_id, sh1_id, sh2_id, *(gid for gid, _ in grooves), lbl_id, bbc_id, snd_id, hole_id]
@@ -1668,7 +1891,7 @@ class LoginViewMixin:
             except tk.TclError:
                 pass
 
-            shard_canvas, sh_cx, sh_cy, _fx_w, fx_h = _make_full_window_fx_canvas()
+            shard_canvas, sh_cx, sh_cy, _fx_w, fx_h = _make_full_window_fx_canvas("Vinyl shattered! Click to replace")
             fall_limit = fx_h + vinyl_r + 100.0
 
             shard_path = str(shard_canvas)
