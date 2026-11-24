@@ -97,10 +97,9 @@ class DetailViewMixin:
             add_box(rx, ry, rx + 76, ry + 18, r=4, stroke=soft_col)
             add_box(rx, ry + 32, rx + min(right_w, 290), ry + 78, r=6)
         add_box(rx, ry + 104, rx + 218, ry + 124, r=4, stroke=soft_col)
-        add_box(rx, ry + 138, rx + 148, ry + 158, r=4, stroke=soft_col)
 
         # Controls row: rounded-square Play button, Listen now, vertical divider, and 2 action pills.
-        cy = ry + 158 + round(28 * scale)
+        cy = ry + 124 + round(26 * scale)
         if not skip_play_button:
             add_box(rx + 6, cy + 6, rx + play_sz - 6, cy + play_sz - 6, r=round(play_sz * 0.22))
         lx = rx + play_sz + round(14 * scale)
@@ -334,8 +333,6 @@ class DetailViewMixin:
             length_text = "Episode length not listed" if podcast_rec[3] is None else f"{podcast_rec[3]} minutes"
             meta_label = self.create_label(right_pane, f"BBC SOUNDS  ·  {length_text}", 11, TEXT_GRAY)
             meta_label.pack(anchor="w")
-            avg_label = self.create_label(right_pane, self.podcast_average_text(podcast_id), 11, GOLD_STAR)
-            avg_label.pack(anchor="w", pady=(5, 0))
 
             controls_row = tk.Frame(right_pane, bg=DARK_BG)
             controls_row.pack(anchor="w", pady=(26, 0))
@@ -777,7 +774,6 @@ class DetailViewMixin:
                     wraplength=round(max(400, min(720, 500 * scale))),
                 )
                 meta_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
-                avg_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
                 sim_notice_label.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "italic"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
@@ -815,7 +811,6 @@ class DetailViewMixin:
                 "category_label": category_label,
                 "title_label": title_label,
                 "meta_label": meta_label,
-                "avg_label": avg_label,
                 "play_canvas": play_canvas,
                 "listen_label": listen_label,
                 "v_divider": v_divider,
