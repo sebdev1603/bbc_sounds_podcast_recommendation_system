@@ -851,6 +851,47 @@ class PagesMixin:
             evaporate_anim=evap_spec,
         )
 
+    def show_downloads(self):
+        """Render the Downloads tab listing programmes downloaded by the active listener."""
+        page = self.build_shell("Downloads")
+        self.render_page_title(page, "Your downloads", "Programmes saved to your simulated downloads.")
+        dl_rows = list(self.fetch_user_downloads())
+        pending_ins = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending_ins if (pending_ins and pending_ins.get("mode") == "downloads") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            for idx_d, row_d in enumerate(dl_rows):
+                if str(row_d[0]) == target_pid:
+                    if idx_d != 0:
+                        dl_rows.insert(0, dl_rows.pop(idx_d))
+                    break
+
+        pending_evap = getattr(self, "_pending_card_evaporate", None)
+        evap_spec = pending_evap if (pending_evap and pending_evap.get("mode") == "downloads") else None
+        if evap_spec is not None:
+            self._pending_card_evaporate = None
+            target_pid = evap_spec["podcast_id"]
+            if not any(str(r[0]) == str(target_pid) for r in dl_rows):
+                rec = self.get_single_podcast(target_pid)
+                if rec:
+                    dl_rows.insert(0, rec)
+
+        if not dl_rows:
+            self.render_empty_message(page, "No downloads yet", "Open any programme and click Download to keep it here.")
+            self.create_button(
+                page, "Find a programme",
+                lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
+            ).pack(anchor="w", pady=6)
+            return
+
+        self.render_podcast_grid(
+            page, dl_rows, columns_count=6,
+            show_play=True, max_count=len(dl_rows),
+            insert_anim=insert_spec,
+            evaporate_anim=evap_spec,
+        )
+
     def show_history(self):
         """Render the Listening History tab with per-item removal and Clear History controls."""
         page = self.build_shell("History")

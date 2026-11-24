@@ -195,6 +195,49 @@ class DatabaseMixin:
         favourite_string = str(self.get_row_field(listener_row, "FavoritePodcasts", "") or "")
         return str(pid) in [val.strip() for val in favourite_string.split(",")]
 
+    @staticmethod
+    def _ensure_downloads_table(conn):
+        """Create the per-user downloads table in database.db if it does not exist."""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_downloads ("
+            "ListenerID NOT NULL, "
+            "PodcastID NOT NULL, "
+            "DownloadedAt REAL NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (ListenerID, PodcastID))"
+        )
+
+    def check_if_downloaded(self, pid):
+        """Return True if the active listener has downloaded the given PodcastID."""
+        if self.current_user is None:
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                row = conn.execute(
+                    "SELECT 1 FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                    (self.current_user, pid),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    def fetch_user_downloads(self):
+        """Return podcast rows downloaded by the active listener, newest first."""
+        if self.current_user is None:
+            return []
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                return conn.execute(
+                    "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins "
+                    "FROM user_downloads d JOIN podcasts p ON p.PodcastID = d.PodcastID "
+                    "WHERE d.ListenerID = ? "
+                    "ORDER BY d.DownloadedAt DESC, p.Title COLLATE NOCASE",
+                    (self.current_user,),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+
     def show_db_error(self, title_text, err_obj):
         """Display a modal error dialog for SQLite failures."""
         messagebox.showerror(title_text, str(err_obj), parent=self)

@@ -613,8 +613,9 @@ class EffectsMixin:
         nav_links = [
             ("Home", self.show_home), ("Genres", self.show_search),
             ("For you", self.show_recommendations), ("Favourites", self.show_favourites),
-            ("History", self.show_history), ("Ratings", self.show_ratings),
-            ("Report", self.show_report), ("Settings", self.show_profile),
+            ("Downloads", self.show_downloads), ("History", self.show_history),
+            ("Ratings", self.show_ratings), ("Report", self.show_report),
+            ("Settings", self.show_profile),
         ]
         profile_tab_active = active_tab_title in ("Your genres", "Profile & survey")
         active_nav_tab = (
@@ -1317,6 +1318,7 @@ class EffectsMixin:
             "Genres": self.show_search,
             "For you": self.show_recommendations,
             "Favourites": self.show_favourites,
+            "Downloads": self.show_downloads,
             "History": self.show_history,
             "Ratings": self.show_ratings,
             "Report": self.show_report,
@@ -2606,6 +2608,118 @@ class EffectsMixin:
                                 star_id = expander.create_polygon(pts, fill=DARK_BG, outline="")
                                 fade_items.append((star_id, DARK_BG, GOLD_STAR if s_i <= s_active else STAR_EMPTY, None))
 
+                    # Expand the Listener Ratings card and grow its 5 star bars in sync with the rest of the UI.
+                    ratings_card_anim = None
+                    ratings_bar_anims = []
+                    rc_w = dw.get("ratings_card")
+                    if rc_w is not None and rc_w.winfo_exists() and rc_w.winfo_width() > 20:
+                        rcx0 = rc_w.winfo_rootx() - sh_rx + 1
+                        rcy0 = rc_w.winfo_rooty() - sh_ry - target_y + 1
+                        rcw = max(4, rc_w.winfo_width() - 2)
+                        rch = max(4, rc_w.winfo_height() - 2)
+                        rc_cx, rc_cy = rcx0 + rcw / 2.0, rcy0 + rch / 2.0
+                        rc_id = expander.create_polygon(
+                            *_rounded_pts(rc_cx - 2, rc_cy - 2, rc_cx + 2, rc_cy + 2, 2.0),
+                            smooth=True, fill=DARK_BG, outline=DARK_BG,
+                        )
+                        ratings_card_anim = (rc_id, rc_cx, rc_cy, rcw, rch)
+                        fade_items.append((rc_id, DARK_BG, SUBCARD_BG, BORDER_LINE))
+                        for r_key, r_fg in (
+                            ("ratings_heading", ORANGE_HL),
+                            ("ratings_sub", dw.get("ratings_sub_color", TEXT_WHITE)),
+                        ):
+                            rw_lbl = dw.get(r_key)
+                            if rw_lbl is not None and rw_lbl.winfo_exists() and rw_lbl.winfo_width() > 2:
+                                rlx = rw_lbl.winfo_rootx() - sh_rx + 1
+                                rly = rw_lbl.winfo_rooty() - sh_ry - target_y + 1
+                                rtid = expander.create_text(
+                                    rlx, rly, text=rw_lbl.cget("text"), fill=DARK_BG,
+                                    font=rw_lbl.cget("font"), anchor="nw",
+                                )
+                                fade_items.append((rtid, DARK_BG, r_fg, None))
+                        ch_w = dw.get("ratings_chart_widget")
+                        r_counts = dw.get("ratings_counts")
+                        if ch_w is not None and ch_w.winfo_exists() and ch_w.winfo_width() > 40 and r_counts:
+                            ch_x0 = ch_w.winfo_rootx() - sh_rx
+                            ch_y0 = ch_w.winfo_rooty() - sh_ry - target_y
+                            ch_wd = ch_w.winfo_width()
+                            ch_ht = ch_w.winfo_height()
+                            plot_x0 = ch_x0 + ch_wd * 0.14
+                            plot_x1 = ch_x0 + ch_wd * 0.88
+                            plot_w = max(10.0, plot_x1 - plot_x0)
+                            plot_y0 = ch_y0 + ch_ht * 0.05
+                            plot_h = max(10.0, ch_ht * 0.90)
+                            row_h = plot_h / 5.0
+                            bar_h = row_h * 0.52
+                            max_c = max(r_counts.values()) if r_counts else 0
+                            x_cap = max(1.0, max_c * 1.18)
+                            track_x1 = plot_x0 + plot_w * 0.90
+                            track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
+                            for idx_s, s_val in enumerate((5, 4, 3, 2, 1)):
+                                cnt = r_counts.get(s_val, 0)
+                                ym = plot_y0 + (idx_s + 0.5) * row_h
+                                by0, by1 = ym - bar_h / 2.0, ym + bar_h / 2.0
+                                lbl_id = expander.create_text(
+                                    plot_x0 - 6, ym, text=f"{s_val} ★", fill=DARK_BG,
+                                    font=(DEFAULT_FONT, 8, "bold"), anchor="e",
+                                )
+                                fade_items.append((lbl_id, DARK_BG, TEXT_WHITE, None))
+                                trk_id = expander.create_rectangle(
+                                    plot_x0, by0, plot_x0, by1, fill=track_col, outline="",
+                                )
+                                bar_id = expander.create_rectangle(
+                                    plot_x0, by0, plot_x0, by1, fill=ORANGE_ACCENT, outline="",
+                                )
+                                cnt_id = expander.create_text(
+                                    plot_x0 + plot_w * 0.93, ym, text=str(cnt), fill=DARK_BG,
+                                    font=(DEFAULT_FONT, 8, "bold" if cnt > 0 else "normal"), anchor="w",
+                                )
+                                fade_items.append((cnt_id, DARK_BG, TEXT_WHITE if cnt > 0 else TEXT_GRAY, None))
+                                target_bw = plot_w * (cnt / x_cap) if cnt > 0 else 0.0
+                                ratings_bar_anims.append((trk_id, bar_id, plot_x0, by0, by1, track_x1 - plot_x0, target_bw, idx_s * 0.05))
+
+                    # Fade/expand the bottom Programme Details card (Region, Downloads, Award, Download button).
+                    ic_w = dw.get("info_card")
+                    if ic_w is not None and ic_w.winfo_exists() and ic_w.winfo_width() > 20:
+                        ix0 = ic_w.winfo_rootx() - sh_rx + 1
+                        iy0 = ic_w.winfo_rooty() - sh_ry - target_y + 1
+                        ix1 = ix0 + ic_w.winfo_width() - 2
+                        iy1 = iy0 + ic_w.winfo_height() - 2
+                        icid = expander.create_polygon(
+                            *_rounded_pts(ix0, iy0, ix1, iy1, 12),
+                            smooth=True, fill=DARK_BG, outline=DARK_BG,
+                        )
+                        fade_items.append((icid, DARK_BG, SUBCARD_BG, BORDER_LINE))
+                        for iw_lbl, iw_fg in dw.get("info_texts", ()):
+                            if iw_lbl is not None and iw_lbl.winfo_exists() and iw_lbl.winfo_width() > 2:
+                                ilx = iw_lbl.winfo_rootx() - sh_rx + 1
+                                ily = iw_lbl.winfo_rooty() - sh_ry - target_y + 1
+                                itid = expander.create_text(
+                                    ilx, ily, text=iw_lbl.cget("text"), fill=DARK_BG,
+                                    font=iw_lbl.cget("font"), anchor="nw",
+                                )
+                                fade_items.append((itid, DARK_BG, iw_fg, None))
+                        dl_btn = dw.get("download_button")
+                        if dl_btn is not None and dl_btn.winfo_exists() and dl_btn.winfo_width() > 4:
+                            y_sh = getattr(dl_btn, "_hover_y_shift", 0)
+                            h_sz = getattr(dl_btn, "_hover_size", None)
+                            dbw = h_sz[0] if h_sz else max(10, dl_btn.winfo_width() - 10)
+                            dbh = h_sz[1] if h_sz else max(10, dl_btn.winfo_height() - 10 - y_sh * 2)
+                            dbcx = (dl_btn.winfo_rootx() - sh_rx) + dl_btn.winfo_width() / 2.0
+                            dbcy = (dl_btn.winfo_rooty() - sh_ry - target_y) + dl_btn.winfo_height() / 2.0 - y_sh
+                            dl_prim = bool(dw.get("download_primary", False))
+                            dl_face = ORANGE_ACCENT if dl_prim else ACTION_BTN_BG
+                            dl_fg = PRIMARY_BTN_FG if dl_prim else ACTION_BTN_FG
+                            d_poly = expander.create_polygon(
+                                *_rounded_pts(dbcx - 2, dbcy - 2, dbcx + 2, dbcy + 2, 2.0),
+                                smooth=True, fill=dl_face, outline="",
+                            )
+                            d_txt = expander.create_text(
+                                dbcx, dbcy + y_sh, text=dl_btn.cget("text"),
+                                fill=dl_face, font=dl_btn.cget("font"), anchor="center",
+                            )
+                            pill_specs.append([d_poly, None, d_txt, dbcx, dbcy, dbw, dbh, dl_face, dl_fg, 0.14, False])
+
                     from_x, from_y = last_cov_abs[0]
                     from_cat_x, from_cat_y = last_cat_abs[0]
                     from_tit_x, from_tit_y = last_title_abs[0]
@@ -2705,7 +2819,20 @@ class EffectsMixin:
                                 tf = max(0.0, min(1.0, (lp - 0.25) / 0.50))
                                 expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
 
-                        # 4. Smoothly fade in metadata, divider rules, and bottom listening card (including border & text).
+                        # 4. Expand the Listener Ratings card and grow its 5 star bars smoothly in sync.
+                        if ratings_card_anim is not None:
+                            rc_id, rc_cx, rc_cy, rcw, rch = ratings_card_anim
+                            re = 1.0 if bp >= 0.88 else max(0.0, ease_out_elastic(min(1.0, bp / 0.88), damping=5.4, frequency=1.12))
+                            scale_r = 0.86 + 0.14 * re
+                            hw, hh = (rcw / 2.0) * scale_r, (rch / 2.0) * scale_r
+                            expander.coords(rc_id, *_rounded_pts(rc_cx - hw, rc_cy - hh, rc_cx + hw, rc_cy + hh, 12.0))
+                        for trk_id, bar_id, bx0, by0, by1, trk_w, tgt_bw, stag_b in ratings_bar_anims:
+                            bp_bar = max(0.0, min(1.0, (bp - stag_b) / max(0.25, 0.86 - stag_b)))
+                            be = 1.0 - (1.0 - bp_bar) ** 3
+                            expander.coords(trk_id, bx0, by0, bx0 + trk_w * be, by1)
+                            expander.coords(bar_id, bx0, by0, bx0 + tgt_bw * be, by1)
+
+                        # 5. Smoothly fade in metadata, divider rules, and bottom listening cards (including border & text).
                         fp = min(1.0, bp / 0.78)
                         for fid, c0, c1, out_c in fade_items:
                             if out_c is not None:

@@ -1,6 +1,7 @@
 """Podcast detail view, playback simulation, star-picker rating dialog, and library actions."""
 import math
 import sqlite3
+import time
 import tkinter as tk
 from tkinter import messagebox
 
@@ -32,7 +33,7 @@ from gui_parts.theme import (
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
 
-    def show_detail(self, podcast_id, *, show_simulated_notice=False):
+    def show_detail(self, podcast_id, *, show_simulated_notice=False, show_download_notice=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
@@ -45,6 +46,24 @@ class DetailViewMixin:
                     "SELECT TimesListened, RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                rating_rows = conn.execute(
+                    "SELECT RatingGiven, COUNT(*) FROM listening_history "
+                    "WHERE PodcastID = ? AND RatingGiven BETWEEN 1 AND 5 GROUP BY RatingGiven",
+                    (podcast_id,),
+                ).fetchall()
+                extra_rec = conn.execute(
+                    "SELECT BBCRegion, DownloadCount, AwardWinner FROM podcasts WHERE PodcastID = ?",
+                    (podcast_id,),
+                ).fetchone()
+            rating_counts = {star: 0 for star in (5, 4, 3, 2, 1)}
+            for star_val, cnt in rating_rows:
+                s = int(round(float(star_val)))
+                if s in rating_counts:
+                    rating_counts[s] += int(cnt)
+            total_ratings = sum(rating_counts.values())
+            region_text = str(extra_rec[0]).strip() if (extra_rec and extra_rec[0]) else "UK-wide"
+            download_state = {"count": int(extra_rec[1]) if (extra_rec and extra_rec[1] is not None) else 0}
+            is_award_winner = bool(extra_rec and str(extra_rec[2] or "").strip().lower() in ("yes", "1", "true"))
 
             page = self.build_shell("Programme details")
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
@@ -259,12 +278,19 @@ class DetailViewMixin:
 
             if show_simulated_notice:
                 show_detail_notice("Playback is simulated")
+            elif show_download_notice:
+                show_detail_notice("Download is simulated")
 
             bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
-            bottom_rule.pack(fill="x", pady=(0, 22))
+            bottom_rule.pack(fill="x", pady=(0, 18))
 
-            sub_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
-            sub_card.pack(fill="x", padx=28, pady=(0, 8))
+            bottom_cards = tk.Frame(detail_column, bg=DARK_BG)
+            bottom_cards.pack(fill="x", padx=28, pady=(0, 14))
+            bottom_cards.grid_columnconfigure(0, weight=1, uniform="detail-bottom")
+            bottom_cards.grid_columnconfigure(1, weight=1, uniform="detail-bottom")
+
+            sub_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
+            sub_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
             play_count = (history_record[0] or 0) if history_record else 0
@@ -326,6 +352,68 @@ class DetailViewMixin:
 
             draw_inline_stars()
 
+            # Compact community rating breakdown card placed beside Your Listening.
+            ratings_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
+            ratings_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+            ratings_heading = self.create_label(ratings_card, "LISTENER RATINGS", 8, ORANGE_HL, "bold")
+            ratings_heading.pack(anchor="w", padx=16, pady=(12, 2))
+            ratings_sub_text = (
+                f"{total_ratings} {'rating' if total_ratings == 1 else 'ratings'}  ·  {self.podcast_average_text(podcast_id)}"
+                if total_ratings else "No listener ratings yet."
+            )
+            ratings_sub_color = TEXT_WHITE if total_ratings else TEXT_GRAY
+            ratings_sub = self.create_label(ratings_card, ratings_sub_text, 9, ratings_sub_color)
+            ratings_sub.pack(anchor="w", padx=16, pady=(0, 4))
+
+            ratings_chart_widget = self._render_ratings_bar_chart(ratings_card, rating_counts)
+
+            # Bottom programme metadata card: Region, Download count, Award status, and simulated Download toggle.
+            is_downloaded = self.check_if_downloaded(podcast_id)
+            info_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
+            info_card.pack(fill="x", padx=28, pady=(0, 22))
+            info_heading = self.create_label(info_card, "PROGRAMME DETAILS", 8, ORANGE_HL, "bold", bg=SUBCARD_BG)
+            info_heading.pack(anchor="w", padx=18, pady=(12, 6))
+
+            info_grid = tk.Frame(info_card, bg=SUBCARD_BG)
+            info_grid.pack(fill="x", padx=18, pady=(0, 14))
+            for col_i in range(3):
+                info_grid.grid_columnconfigure(col_i, weight=1, uniform="podcast-meta")
+            info_grid.grid_columnconfigure(3, weight=0)
+
+            meta_captions = []
+            meta_values = []
+            award_text = "★  Award Winner" if is_award_winner else "No"
+            award_color = GOLD_STAR if is_award_winner else TEXT_GRAY
+            for col_i, (cap_txt, val_txt, val_col) in enumerate((
+                ("BBC REGION", region_text, TEXT_WHITE),
+                ("DOWNLOADS", f"{download_state['count']:,}", TEXT_WHITE),
+                ("AWARD WINNER", award_text, award_color),
+            )):
+                cell = tk.Frame(info_grid, bg=SUBCARD_BG)
+                cell.grid(row=0, column=col_i, sticky="w", padx=(0, 12))
+                cap_lbl = self.create_label(cell, cap_txt, 8, TEXT_GRAY, "bold", bg=SUBCARD_BG)
+                cap_lbl.pack(anchor="w")
+                val_lbl = self.create_label(cell, val_txt, 12, val_col, "bold", bg=SUBCARD_BG)
+                val_lbl.pack(anchor="w", pady=(3, 0))
+                meta_captions.append(cap_lbl)
+                meta_values.append((val_lbl, val_col))
+
+            download_button = self.create_button(
+                info_grid,
+                "☁  Remove download" if is_downloaded else "☁  Download",
+                lambda: self.toggle_download(podcast_id),
+                primary=not is_downloaded,
+                compact=True,
+                face=ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
+                fg=ACTION_BTN_FG if is_downloaded else PRIMARY_BTN_FG,
+            )
+            download_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
+            action_buttons.append((
+                download_button,
+                ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
+                SECONDARY_HOVER_BG if is_downloaded else ORANGE_HL,
+            ))
+
             last_layout = {"cover": 0}
             resize_job = [None]
 
@@ -383,6 +471,13 @@ class DetailViewMixin:
                 star_state["size"] = max(20, round(22 * font_scale))
                 star_state["gap"] = max(3, round(4 * font_scale))
                 draw_inline_stars()
+                ratings_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                ratings_sub.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale))))
+                info_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                for cap_lbl in meta_captions:
+                    cap_lbl.configure(font=(DEFAULT_FONT, max(8, round(8 * font_scale)), "bold"))
+                for val_lbl, _vc in meta_values:
+                    val_lbl.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale)), "bold"))
                 action_font_size = max(10, round(11 * font_scale))
                 fav_button.pack_configure(pady=(0, round(8 * scale)))
                 for btn, face_col, hover_col in action_buttons:
@@ -419,9 +514,77 @@ class DetailViewMixin:
                 "rating_caption": rating_caption,
                 "star_canvas": star_canvas,
                 "star_state": star_state,
+                "ratings_card": ratings_card,
+                "ratings_heading": ratings_heading,
+                "ratings_sub": ratings_sub,
+                "ratings_sub_color": ratings_sub_color,
+                "ratings_chart_widget": ratings_chart_widget,
+                "ratings_counts": rating_counts,
+                "info_card": info_card,
+                "info_texts": [
+                    (info_heading, ORANGE_HL),
+                    *((c_lbl, TEXT_GRAY) for c_lbl in meta_captions),
+                    *meta_values,
+                ],
+                "download_button": download_button,
+                "download_primary": not is_downloaded,
             }
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
+
+    def _render_ratings_bar_chart(self, parent_card, rating_counts):
+        """Render a compact themed horizontal Matplotlib bar chart of 5-to-1 star listener rating counts."""
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except Exception:
+            self.create_label(
+                parent_card, "Install matplotlib to view the star rating chart.", 9, TEXT_GRAY,
+            ).pack(anchor="w", padx=16, pady=(0, 10))
+            return None
+
+        stars = [5, 4, 3, 2, 1]
+        labels = [f"{s} ★" for s in stars]
+        counts = [rating_counts.get(s, 0) for s in stars]
+        max_count = max(counts) if counts else 0
+
+        fig = Figure(figsize=(4.0, 1.18), dpi=90, facecolor=SUBCARD_BG)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(SUBCARD_BG)
+
+        # Subtle background tracks + foreground orange bars showing counts per star level.
+        track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
+        x_cap = max(1.0, max_count * 1.18)
+        ax.barh(labels, [x_cap * 0.90] * 5, height=0.52, color=track_col, edgecolor="none", zorder=1)
+        bars = ax.barh(labels, counts, height=0.52, color=ORANGE_ACCENT, edgecolor="none", zorder=2)
+
+        ax.invert_yaxis()
+        ax.set_xlim(0, x_cap)
+        ax.set_xticks([])
+        ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=8.5)
+        for tick_lbl in ax.get_yticklabels():
+            tick_lbl.set_fontweight("bold")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        for bar, cnt in zip(bars, counts):
+            y_mid = bar.get_y() + bar.get_height() / 2.0
+            ax.text(
+                x_cap * 0.93, y_mid, str(cnt),
+                va="center", ha="left",
+                color=TEXT_WHITE if cnt > 0 else TEXT_GRAY,
+                fontsize=8.5, fontweight="bold" if cnt > 0 else "normal",
+            )
+
+        fig.subplots_adjust(left=0.14, right=0.88, top=0.95, bottom=0.05)
+
+        chart_canvas = FigureCanvasTkAgg(fig, master=parent_card)
+        chart_canvas.draw()
+        chart_widget = chart_canvas.get_tk_widget()
+        chart_widget.configure(bg=SUBCARD_BG, highlightthickness=0, bd=0)
+        chart_widget.pack(fill="x", padx=10, pady=(0, 10))
+        chart_widget.bind("<Destroy>", lambda _e, f=fig: f.clear())
+        return chart_widget
 
     def listen(self, podcast_id, *, open_detail=True):
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
@@ -723,6 +886,55 @@ class DetailViewMixin:
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
+
+    def toggle_download(self, podcast_id):
+        """Toggle a simulated download for the active listener, updating DownloadCount and animating Downloads."""
+        if self._is_busy_transitioning() or self.current_user is None:
+            return
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                existing = conn.execute(
+                    "SELECT 1 FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                    (self.current_user, podcast_id),
+                ).fetchone()
+                was_added = existing is None
+                if was_added:
+                    conn.execute(
+                        "INSERT INTO user_downloads (ListenerID, PodcastID, DownloadedAt) VALUES (?, ?, ?)",
+                        (self.current_user, podcast_id, time.time()),
+                    )
+                    conn.execute(
+                        "UPDATE podcasts SET DownloadCount = COALESCE(DownloadCount, 0) + 1 WHERE PodcastID = ?",
+                        (podcast_id,),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                        (self.current_user, podcast_id),
+                    )
+                    conn.execute(
+                        "UPDATE podcasts SET DownloadCount = MAX(0, COALESCE(DownloadCount, 0) - 1) WHERE PodcastID = ?",
+                        (podcast_id,),
+                    )
+            if not self._is_reduced_motion():
+                self._detail_hero_origin = None
+                anim_payload = {
+                    "mode": "downloads",
+                    "podcast_id": podcast_id,
+                    "return_tab": "Programme details",
+                    "return_fn": lambda pid=podcast_id, added=was_added: self.show_detail(pid, show_download_notice=added),
+                }
+                if was_added:
+                    anim_payload["target_rating"] = None
+                    self._pending_card_insert = anim_payload
+                else:
+                    self._pending_card_evaporate = anim_payload
+                self.transition_to(self.show_downloads, "Downloads")
+                return
+            self.show_detail(podcast_id, show_download_notice=was_added)
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't update downloads", err)
 
     def remove_from_history(self, podcast_id, evaporate=None):
         """Delete one programme from the listener's listening history, evaporating its card first."""
