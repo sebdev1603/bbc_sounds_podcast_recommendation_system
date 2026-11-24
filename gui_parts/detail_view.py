@@ -293,7 +293,23 @@ class DetailViewMixin:
             is_award_winner = bool(extra_rec and str(extra_rec[2] or "").strip().lower() in ("yes", "1", "true"))
             release_freq_text = str(extra_rec[3]).strip() if (extra_rec and extra_rec[3]) else "Not listed"
 
-            page = self.build_shell("Programme details")
+            # If rebuilding Programme details in place, keep the old page visible while the new
+            # detail layout, cover art, and Matplotlib chart render off-screen so nothing flashes blank.
+            defer_rebuild = (
+                getattr(self, "_active_nav_tab", None) == "Programme details"
+                and not getattr(self, "_defer_old_page_destroy", False)
+            )
+            deferred_detail_old = None
+            if defer_rebuild:
+                self._deferred_old_page = None
+                self._defer_old_page_destroy = True
+            try:
+                page = self.build_shell("Programme details")
+            finally:
+                if defer_rebuild:
+                    self._defer_old_page_destroy = False
+                    deferred_detail_old = getattr(self, "_deferred_old_page", None)
+                    self._deferred_old_page = None
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
             back_tab, back_handler, back_name = getattr(
                 self, "_last_non_detail_tab", ("Genres", self.show_search, "genres"),
@@ -519,7 +535,8 @@ class DetailViewMixin:
             sub_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 8))
-            play_count = (history_record[0] or 0) if history_record else 0
+            play_count_box = [(history_record[0] or 0) if history_record else 0]
+            play_count = play_count_box[0]
             given_rating = int(history_record[1]) if (history_record and history_record[1] is not None) else 0
 
             listening_body = tk.Frame(sub_card, bg=SUBCARD_BG)
@@ -799,7 +816,7 @@ class DetailViewMixin:
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
                 sim_notice_label.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "italic"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
-                if play_count:
+                if play_count_box[0]:
                     summary_label.configure(font=(DEFAULT_FONT, max(16, round(18 * font_scale)), "bold"))
                 else:
                     summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
@@ -829,7 +846,101 @@ class DetailViewMixin:
 
             detail_column.bind("<Configure>", schedule_detail_scale)
             apply_detail_scale()
+
+            if defer_rebuild:
+                # Swap the freshly built detail page into view atomically and drop the old page.
+                new_target = getattr(self, "_page_transition_target", None)
+                if new_target:
+                    new_cvs, new_win = new_target
+                    if new_cvs.winfo_exists():
+                        try:
+                            new_cvs.coords(new_win, 0, 0)
+                            new_cvs.update_idletasks()
+                        except tk.TclError:
+                            pass
+                if deferred_detail_old is not None:
+                    o_page, o_win = deferred_detail_old
+                    if o_page is not None and o_page.winfo_exists():
+                        try:
+                            o_page.destroy()
+                        except tk.TclError:
+                            pass
+                    if o_win is not None and new_target and new_target[0].winfo_exists():
+                        try:
+                            new_target[0].delete(o_win)
+                        except tk.TclError:
+                            pass
+
+            live_chart_ref = [ratings_chart_widget]
+
+            def update_live_listen(new_play_count):
+                if not summary_label.winfo_exists():
+                    return
+                play_count_box[0] = int(new_play_count or 0)
+                cnt = play_count_box[0]
+                win_w = max(1024, self.winfo_width())
+                win_h = max(700, self.winfo_height())
+                sc = max(0.92, min(1.75, min(win_w / 1180, win_h / 760)))
+                f_sc = sc * getattr(self, "_text_scale", 1.0)
+                summary_label.configure(
+                    text=translate(f"{cnt} {'play' if cnt == 1 else 'plays'}"),
+                    fg=TEXT_WHITE,
+                    font=(DEFAULT_FONT, max(16, round(18 * f_sc)), "bold"),
+                )
+                show_detail_notice("Playback is simulated")
+
+            def update_live_rating(new_score, animate=True):
+                if not star_canvas.winfo_exists():
+                    return
+                cancel_star_anim()
+                score_int = int(new_score)
+                star_state["score"] = score_int
+                if rating_score_label.winfo_exists():
+                    rating_score_label.configure(
+                        text=f"{score_int} / 5" if score_int > 0 else translate("Not rated"),
+                        fg=GOLD_STAR if score_int > 0 else TEXT_GRAY,
+                    )
+                if animate and score_int > 0 and not self._is_reduced_motion():
+                    star_state["animating"] = True
+                    star_state["anim_job"] = self.after(40, animate_detail_stars)
+                else:
+                    star_state["animating"] = False
+                    draw_inline_stars()
+                # Refresh community rating summary and bar chart in place without rebuilding the page.
+                try:
+                    with self.get_db_connection() as conn:
+                        r_rows = conn.execute(
+                            "SELECT RatingGiven, COUNT(*) FROM listening_history "
+                            "WHERE PodcastID = ? AND RatingGiven BETWEEN 1 AND 5 GROUP BY RatingGiven",
+                            (podcast_id,),
+                        ).fetchall()
+                    new_counts = {s: 0 for s in (5, 4, 3, 2, 1)}
+                    for sv, c_val in r_rows:
+                        si = int(round(float(sv)))
+                        if si in new_counts:
+                            new_counts[si] += int(c_val)
+                    new_total = sum(new_counts.values())
+                    if ratings_sub.winfo_exists():
+                        sub_txt = (
+                            f"{new_total} {'rating' if new_total == 1 else 'ratings'}  ·  {self.podcast_average_text(podcast_id)}"
+                            if new_total else "No listener ratings yet."
+                        )
+                        ratings_sub.configure(
+                            text=translate(sub_txt),
+                            fg=TEXT_WHITE if new_total else TEXT_GRAY,
+                        )
+                    if ratings_card.winfo_exists():
+                        old_chart = live_chart_ref[0]
+                        if old_chart is not None and old_chart.winfo_exists():
+                            old_chart.destroy()
+                        live_chart_ref[0] = self._render_ratings_bar_chart(ratings_card, new_counts)
+                except sqlite3.Error:
+                    pass
+
             self._detail_widgets = {
+                "podcast_id": podcast_id,
+                "on_live_listen": update_live_listen,
+                "on_live_rating": update_live_rating,
                 "back_btn": back_btn,
                 "now_playing_lbl": now_playing_lbl,
                 "top_rule": top_rule,
@@ -992,11 +1103,13 @@ class DetailViewMixin:
                 is_first_listen = (existing_entry is None) or (not (existing_entry[0] or 0))
                 if existing_entry:
                     # Increment the existing play counter safely even if TimesListened was NULL.
+                    new_play_count = int(existing_entry[0] or 0) + 1
                     conn.execute(
                         "UPDATE listening_history SET TimesListened = COALESCE(TimesListened, 0) + 1 "
                         "WHERE ListenerID = ? AND PodcastID = ?", (self.current_user, podcast_id),
                     )
                 else:
+                    new_play_count = 1
                     # Create a new listening_history record starting at 1 play.
                     conn.execute(
                         "INSERT INTO listening_history (PodcastID, ListenerID, TimesListened) VALUES (?, ?, 1)",
@@ -1019,7 +1132,15 @@ class DetailViewMixin:
                     }
                     self.transition_to(self.show_history, "History")
                     return "first_time"
-                self.show_detail(podcast_id, show_simulated_notice=True)
+                dw = getattr(self, "_detail_widgets", None) or {}
+                if (
+                    getattr(self, "_active_nav_tab", None) == "Programme details"
+                    and str(dw.get("podcast_id")) == str(podcast_id)
+                    and callable(dw.get("on_live_listen"))
+                ):
+                    dw["on_live_listen"](new_play_count)
+                else:
+                    self.show_detail(podcast_id, show_simulated_notice=True)
             return "first_time" if is_first_listen else True
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update listening history", err)
@@ -1049,7 +1170,15 @@ class DetailViewMixin:
             if callback_func:
                 callback_func()
             else:
-                self.show_detail(podcast_id, animate_rating=not self._is_reduced_motion())
+                dw = getattr(self, "_detail_widgets", None) or {}
+                if (
+                    getattr(self, "_active_nav_tab", None) == "Programme details"
+                    and str(dw.get("podcast_id")) == str(podcast_id)
+                    and callable(dw.get("on_live_rating"))
+                ):
+                    dw["on_live_rating"](new_score, animate=not self._is_reduced_motion())
+                else:
+                    self.show_detail(podcast_id, animate_rating=not self._is_reduced_motion())
         except sqlite3.Error as err:
             self.show_db_error("Couldn't save your rating", err)
 
