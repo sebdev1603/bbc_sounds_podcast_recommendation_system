@@ -126,9 +126,78 @@ class LoginViewMixin:
         status_label = self.create_label(login_panel, error_message, 10, "#ff9868", wraplength=390)
         status_label.pack(anchor="w", padx=20, pady=(0, 4))
 
+        # Persist failed-login rate-limit state across login screen reloads to slow brute-force attempts.
+        # After 5 consecutive failed sign-ins, lock the login form for 15s -> 30s -> 60s (exponential backoff).
+        max_failed_attempts = 5
+        rate_state = getattr(self, "_login_rate_state", None)
+        if rate_state is None:
+            rate_state = {"failures": 0, "lockout_count": 0, "locked_until": 0.0}
+            self._login_rate_state = rate_state
+        cooldown_job = [None]
+
+        def cancel_cooldown_job(_event=None):
+            if cooldown_job[0] is not None:
+                try:
+                    self.after_cancel(cooldown_job[0])
+                except tk.TclError:
+                    pass
+                cooldown_job[0] = None
+
+        login_panel.bind("<Destroy>", cancel_cooldown_job, add="+")
+
+        def update_cooldown_ui():
+            """Keep the login form disabled with a live countdown until the cooldown timer expires."""
+            cooldown_job[0] = None
+            if not status_label.winfo_exists() or getattr(login_button, "_expanding_login", False):
+                return
+            remaining = rate_state["locked_until"] - monotonic()
+            if remaining > 0.05:
+                secs = max(1, math.ceil(remaining))
+                status_label.config(
+                    text=f"Too many failed attempts. Try again in {secs}s.",
+                    fg="#ff9868",
+                )
+                login_button.configure(state="disabled")
+                text_entry.configure(state="disabled")
+                pw_entry.configure(state="disabled")
+                cooldown_job[0] = self.after(250, update_cooldown_ui)
+            else:
+                rate_state["locked_until"] = 0.0
+                login_button.configure(state="normal")
+                text_entry.configure(state="normal")
+                pw_entry.configure(state="normal")
+                status_label.config(text="You can try signing in again.", fg=TEXT_GRAY)
+                pw_entry.focus_set()
+
+        def record_login_failure(base_msg):
+            """Increment consecutive failed attempts and trigger a cooldown lockout once the limit is reached."""
+            rate_state["failures"] += 1
+            remaining_tries = max_failed_attempts - rate_state["failures"]
+            if remaining_tries <= 0:
+                rate_state["failures"] = 0
+                rate_state["lockout_count"] += 1
+                # Exponential backoff: 15s, 30s, then capped at 60s on repeated lockouts.
+                cooldown_secs = min(60, 15 * (2 ** (rate_state["lockout_count"] - 1)))
+                rate_state["locked_until"] = monotonic() + cooldown_secs
+                cancel_cooldown_job()
+                update_cooldown_ui()
+                return
+            if remaining_tries <= 3:
+                plural = "attempt" if remaining_tries == 1 else "attempts"
+                status_label.config(
+                    text=f"{base_msg} ({remaining_tries} {plural} left before cooldown)",
+                    fg="#ff9868",
+                )
+            else:
+                status_label.config(text=base_msg, fg="#ff9868")
+
         def handle_login(_event=None):
             # Ignore duplicate clicks or Enter presses while the transition animation is already running.
             if getattr(login_button, "_expanding_login", False):
+                return
+            # Block sign-in attempts while a rate-limit cooldown is active.
+            if monotonic() < rate_state["locked_until"]:
+                update_cooldown_ui()
                 return
             username_input = id_var.get().strip()
             password_input = pw_var.get()
@@ -149,15 +218,20 @@ class LoginViewMixin:
                         (format_user_id(username_input),),
                     ).fetchone()
                 if not found_record:
-                    status_label.config(text="We couldn't find that listener ID. Check it and try again.", fg="#ff9868")
+                    record_login_failure("We couldn't find that listener ID. Check it and try again.")
                     return
                 # Verify the entered password against the stored salted scrypt hash in constant time.
                 stored_pw = found_record["Password"] if found_record["Password"] is not None else ""
                 if not self.check_password_hash(password_input, stored_pw):
-                    status_label.config(text="Incorrect password. Try again or reset your password.", fg="#ff9868")
                     pw_var.set("")
                     pw_entry.focus_set()
+                    record_login_failure("Incorrect password. Try again or reset your password.")
                     return
+                # Successful sign-in resets all failed-attempt and lockout counters.
+                rate_state["failures"] = 0
+                rate_state["lockout_count"] = 0
+                rate_state["locked_until"] = 0.0
+                cancel_cooldown_job()
                 self.current_user = found_record[0]
                 if not found_record["CompleteSurvey"]:
                     self.active_genres = []
@@ -486,6 +560,8 @@ class LoginViewMixin:
         text_entry.bind("<Return>", lambda _e: handle_login() if pw_var.get() else pw_entry.focus_set())
         pw_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
+        if monotonic() < rate_state["locked_until"]:
+            update_cooldown_ui()
 
         # Right-hand canvas hosting the rotating BBC Sounds vinyl turntable graphic.
         right_side = tk.Frame(content_split, bg=DARK_BG, width=460)
