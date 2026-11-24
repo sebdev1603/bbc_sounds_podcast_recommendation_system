@@ -1133,9 +1133,13 @@ class PagesMixin:
         self.render_page_title(page, "Profile & survey", "Update your preferences whenever your listening changes.")
         info_card = self.create_card_frame(page)
         info_card.pack(fill="x", pady=(4, 12))
-        avatar = self.create_default_profile_avatar(info_card, 112)
+        profile_top = tk.Frame(info_card, bg=CARD_BG)
+        profile_top.pack(fill="x")
+        saved_avatar = str(self.get_row_field(listener_info, "Avatar", "default") or "default").strip()
+        active_avatar = [saved_avatar]
+        avatar = self.create_default_profile_avatar(profile_top, 112, avatar_key=saved_avatar)
         avatar.pack(side="left", padx=(20, 18), pady=18)
-        profile_details = tk.Frame(info_card, bg=CARD_BG)
+        profile_details = tk.Frame(profile_top, bg=CARD_BG)
         profile_details.pack(side="left", fill="both", expand=True, pady=18, padx=(0, 20))
         saved_name = str(
             self.get_row_field(listener_info, "Name", None)
@@ -1210,6 +1214,40 @@ class PagesMixin:
         clear_name_btn.pack(side="left")
         refresh_clear_btn()
         update_name_placeholder()
+
+        # Premade profile picture selector row inside the profile card.
+        tk.Frame(info_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=20)
+        avatar_picker = tk.Frame(info_card, bg=CARD_BG)
+        avatar_picker.pack(fill="x", padx=20, pady=(12, 16))
+        self.create_label(avatar_picker, "CHOOSE PROFILE PICTURE", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 8))
+        avatar_row = tk.Frame(avatar_picker, bg=CARD_BG)
+        avatar_row.pack(anchor="w")
+        avatar_choices = []
+
+        def select_avatar(chosen_key):
+            if chosen_key == active_avatar[0]:
+                return
+            if self.save_listener_avatar(self.current_user, chosen_key):
+                active_avatar[0] = chosen_key
+                self.draw_profile_avatar(avatar, 112, avatar_key=chosen_key)
+                for item_key, item_cvs, item_lbl in avatar_choices:
+                    is_sel = item_key == chosen_key
+                    self.draw_profile_avatar(item_cvs, 50, avatar_key=item_key, selected=is_sel)
+                    item_lbl.configure(fg=ORANGE_HL if is_sel else TEXT_GRAY)
+
+        for av_key, av_label in self.PREMADE_AVATARS:
+            slot = tk.Frame(avatar_row, bg=CARD_BG, cursor="hand2")
+            slot.pack(side="left", padx=(0, 12))
+            is_sel = av_key == active_avatar[0]
+            thumb = self.create_default_profile_avatar(slot, 50, avatar_key=av_key, selected=is_sel)
+            thumb.configure(cursor="hand2")
+            thumb.pack()
+            lbl = self.create_label(slot, av_label, 8, ORANGE_HL if is_sel else TEXT_GRAY, "bold")
+            lbl.configure(cursor="hand2")
+            lbl.pack(pady=(3, 0))
+            for w_click in (slot, thumb, lbl):
+                w_click.bind("<Button-1>", lambda _e, k=av_key: select_avatar(k))
+            avatar_choices.append((av_key, thumb, lbl))
 
         genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "")
         length_str = self.get_row_field(listener_info, "LengthPreference", "") or "Not selected"
@@ -1296,6 +1334,13 @@ class PagesMixin:
             ((False, "Smooth"), (True, "Reduced motion")),
             active_reduced, self.set_reduced_motion,
         )
+        active_sr = self._is_screen_reader_enabled()
+        add_setting_row(
+            "SCREEN READER",
+            "On  ·  Reads buttons, pages, and cards aloud" if active_sr else "Off  ·  Default",
+            ((False, "Off"), (True, "On")),
+            active_sr, self.set_screen_reader,
+        )
 
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
@@ -1308,10 +1353,17 @@ class PagesMixin:
             cur_theme = getattr(self, "_theme_name", "dark")
             cur_lang = getattr(self, "_language", "en")
             cur_reduced = self._is_reduced_motion()
+            cur_sr = self._is_screen_reader_enabled()
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en" and not cur_reduced
+            at_defaults = (
+                abs(scale_val - 1.0) < 0.005
+                and cur_theme == "dark"
+                and cur_lang == "en"
+                and not cur_reduced
+                and not cur_sr
+            )
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):

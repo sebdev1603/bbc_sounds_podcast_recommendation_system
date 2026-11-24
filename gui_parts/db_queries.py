@@ -276,6 +276,31 @@ class DatabaseMixin:
         if "name" not in cols:
             conn.execute("ALTER TABLE listeners ADD COLUMN Name TEXT")
 
+    @staticmethod
+    def _ensure_listener_avatar_column(conn):
+        """Ensure the listeners table has an Avatar column for storing the chosen premade avatar key."""
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
+        if "avatar" not in cols:
+            conn.execute("ALTER TABLE listeners ADD COLUMN Avatar TEXT")
+
+    def save_listener_avatar(self, listener_id, avatar_key):
+        """Persist a listener's chosen premade avatar key in database.db."""
+        if listener_id is None:
+            return False
+        valid_keys = ("default", "vinyl", "headphones", "mic", "waves", "owl", "bot", "sunset")
+        stored = avatar_key if avatar_key in valid_keys else "default"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_avatar_column(conn)
+                conn.execute(
+                    "UPDATE listeners SET Avatar = ? WHERE ListenerID = ?",
+                    (stored, listener_id),
+                )
+            return True
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save profile picture", err)
+            return False
+
     def save_listener_name(self, listener_id, name_value):
         """Persist (or clear) a listener's display name in database.db."""
         if listener_id is None:
@@ -303,12 +328,14 @@ class DatabaseMixin:
             "TextScale REAL NOT NULL DEFAULT 1.0, "
             "Theme TEXT NOT NULL DEFAULT 'dark', "
             "Language TEXT NOT NULL DEFAULT 'en', "
-            "ReducedMotion INTEGER NOT NULL DEFAULT 0)"
+            "ReducedMotion INTEGER NOT NULL DEFAULT 0, "
+            "ScreenReader INTEGER NOT NULL DEFAULT 0)"
         )
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(user_accessibility)").fetchall()}
         for col, ddl in (
             ("language", "Language TEXT NOT NULL DEFAULT 'en'"),
             ("reducedmotion", "ReducedMotion INTEGER NOT NULL DEFAULT 0"),
+            ("screenreader", "ScreenReader INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in cols:
                 conn.execute(f"ALTER TABLE user_accessibility ADD COLUMN {ddl}")
@@ -333,6 +360,7 @@ class DatabaseMixin:
             "Theme": getattr(self, "_theme_name", "dark"),
             "Language": getattr(self, "_language", "en"),
             "ReducedMotion": 1 if getattr(self, "_reduced_motion", False) else 0,
+            "ScreenReader": 1 if getattr(self, "_screen_reader", False) else 0,
             **updates,
         }
         set_clause = ", ".join(f"{col} = excluded.{col}" for col in updates)
@@ -340,12 +368,24 @@ class DatabaseMixin:
             with self.get_db_connection() as conn:
                 self._ensure_accessibility_table(conn)
                 conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion) "
-                    f"VALUES (?, ?, ?, ?, ?) ON CONFLICT(ListenerID) DO UPDATE SET {set_clause}",
-                    (listener_id, values["TextScale"], values["Theme"], values["Language"], values["ReducedMotion"]),
+                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion, ScreenReader) "
+                    f"VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ListenerID) DO UPDATE SET {set_clause}",
+                    (
+                        listener_id, values["TextScale"], values["Theme"],
+                        values["Language"], values["ReducedMotion"], values["ScreenReader"],
+                    ),
                 )
         except sqlite3.Error as err:
             self.show_db_error(err_title, err)
+
+    def load_user_screen_reader(self, listener_id):
+        """Load the listener's saved screen-reader preference (bool), defaulting to False."""
+        row = self._query_accessibility_row(listener_id, "ScreenReader")
+        return bool(row and row[0])
+
+    def save_user_screen_reader(self, listener_id, enabled):
+        """Persist a listener's screen-reader preference in database.db."""
+        self._upsert_accessibility(listener_id, "Couldn't save screen reader setting", ScreenReader=1 if enabled else 0)
 
     def load_user_reduced_motion(self, listener_id):
         """Load the listener's saved reduced-motion preference (bool), defaulting to False."""

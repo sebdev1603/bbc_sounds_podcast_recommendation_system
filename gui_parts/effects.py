@@ -474,6 +474,197 @@ class EffectsMixin:
         clamped_spent = max(0.0, min(60.0, float(spent_ms)))
         return max(min_yield_ms, round(float(base_ms) - clamped_spent))
 
+    def _is_screen_reader_enabled(self):
+        """Screen reader is active only for a signed-in user who enabled it (never on the login screen)."""
+        return (
+            bool(getattr(self, "_screen_reader", False))
+            and self.current_user is not None
+            and not getattr(self, "_signing_out", False)
+        )
+
+    def _ensure_speech_worker(self):
+        """Lazily start a non-blocking Windows SAPI speech pipe (or detect Linux/macOS CLI speaker)."""
+        if sys.platform == "win32":
+            proc = getattr(self, "_sr_proc", None)
+            if proc is not None and proc.poll() is None:
+                return proc
+            try:
+                import subprocess
+                ps_script = (
+                    "$v = New-Object -ComObject SAPI.SpVoice; "
+                    "while ($null -ne ($line = [Console]::In.ReadLine())) { "
+                    "if ($line -eq '__STOP__') { $v.Speak('', 3) | Out-Null } "
+                    "elseif ($line.Length -gt 0) { $v.Speak($line, 3) | Out-Null } }"
+                )
+                proc = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    text=True, encoding="utf-8", errors="ignore",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                self._sr_proc = proc
+                return proc
+            except Exception:
+                return None
+        return None
+
+    def stop_screen_reader_speech(self):
+        """Immediately silence any in-progress screen reader utterance."""
+        job = getattr(self, "_sr_hover_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+            self._sr_hover_job = None
+        if sys.platform == "win32":
+            proc = getattr(self, "_sr_proc", None)
+            if proc is not None and proc.poll() is None and proc.stdin:
+                try:
+                    proc.stdin.write("__STOP__\n")
+                    proc.stdin.flush()
+                except Exception:
+                    pass
+        else:
+            proc = getattr(self, "_sr_cli_proc", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                self._sr_cli_proc = None
+
+    def close_screen_reader(self):
+        """Terminate any background screen reader process cleanly on shutdown."""
+        self.stop_screen_reader_speech()
+        for attr in ("_sr_proc", "_sr_cli_proc"):
+            proc = getattr(self, attr, None)
+            if proc is not None:
+                setattr(self, attr, None)
+                try:
+                    if proc.stdin:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    def speak_text(self, text, *, force=False):
+        """Speak text non-blockingly when Screen Reader is enabled, interrupting prior speech."""
+        if not force and not self._is_screen_reader_enabled():
+            return
+        cleaned = str(text or "")
+        for sym, repl in (("★", " stars "), ("♥", ""), ("·", ", "), ("←", ""), ("→", ""), ("×", ""), ("▸", ""), ("▾", ""), ("A−", "Smaller text"), ("A+", "Larger text")):
+            cleaned = cleaned.replace(sym, repl)
+        cleaned = " ".join(cleaned.split()).strip()
+        if not cleaned:
+            return
+        now = monotonic()
+        last_txt, last_t = getattr(self, "_sr_last_spoken", ("", 0.0))
+        if not force and cleaned == last_txt and (now - last_t) < 1.2:
+            return
+        self._sr_last_spoken = (cleaned, now)
+
+        if sys.platform == "win32":
+            proc = self._ensure_speech_worker()
+            if proc is not None and proc.stdin:
+                try:
+                    proc.stdin.write(cleaned.replace("\n", " ") + "\n")
+                    proc.stdin.flush()
+                except Exception:
+                    self._sr_proc = None
+            return
+
+        import shutil
+        import subprocess
+        self.stop_screen_reader_speech()
+        cmd = None
+        if sys.platform == "darwin" and shutil.which("say"):
+            cmd = ["say", cleaned]
+        else:
+            for tool in ("spd-say", "espeak-ng", "espeak"):
+                if shutil.which(tool):
+                    cmd = [tool, cleaned]
+                    break
+        if cmd:
+            try:
+                self._sr_cli_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def _describe_widget_for_sr(self, widget):
+        """Build a concise screen-reader announcement for a hovered or focused Tk widget."""
+        if widget is None:
+            return ""
+        custom = getattr(widget, "_sr_label", None)
+        if custom:
+            return str(custom)
+        cls = widget.winfo_class()
+        try:
+            txt = str(widget.cget("text") or "").strip() if cls in ("Button", "Label", "Checkbutton", "Radiobutton") else ""
+        except tk.TclError:
+            txt = ""
+        if cls == "Button" and txt:
+            return f"Button: {txt}"
+        if cls == "Label" and txt:
+            return txt
+        if cls == "Entry":
+            try:
+                val = widget.get().strip()
+            except tk.TclError:
+                val = ""
+            return f"Text input: {val}" if val else "Text input"
+        return ""
+
+    def _install_screen_reader_hooks(self):
+        """Attach global hover (debounced) and keyboard-focus screen reader hooks once."""
+        if getattr(self, "_sr_hooks_installed", False):
+            return
+        self._sr_hooks_installed = True
+
+        def _on_sr_enter(evt):
+            if not self._is_screen_reader_enabled():
+                return
+            w = evt.widget
+            desc = self._describe_widget_for_sr(w)
+            if not desc:
+                return
+            prev = getattr(self, "_sr_hover_job", None)
+            if prev is not None:
+                try:
+                    self.after_cancel(prev)
+                except tk.TclError:
+                    pass
+            self._sr_hover_job = self.after(150, lambda d=desc: self.speak_text(d))
+
+        def _on_sr_focus(evt):
+            if not self._is_screen_reader_enabled():
+                return
+            desc = self._describe_widget_for_sr(evt.widget)
+            if desc:
+                self.speak_text(desc)
+
+        self.bind_all("<Enter>", _on_sr_enter, add="+")
+        self.bind_all("<FocusIn>", _on_sr_focus, add="+")
+
+    def set_screen_reader(self, enabled, refresh=True, persist=True):
+        """Toggle built-in Screen Reader mode, save per user, and refresh Settings if requested."""
+        flag = bool(enabled)
+        if bool(getattr(self, "_screen_reader", False)) == flag and not refresh:
+            return
+        self._screen_reader = flag
+        if flag:
+            self._install_screen_reader_hooks()
+            self.speak_text("Screen reader on", force=True)
+        else:
+            self.close_screen_reader()
+        if persist and self.current_user is not None:
+            self.save_user_screen_reader(self.current_user, flag)
+        if refresh and self.current_user is not None:
+            self.show_profile()
+
     def set_reduced_motion(self, enabled, refresh=True, persist=True):
         """Toggle Reduced Motion mode, save per user, and refresh the Settings view if requested."""
         flag = bool(enabled)
@@ -486,15 +677,21 @@ class EffectsMixin:
             self.show_profile()
 
     def apply_user_accessibility(self, listener_id):
-        """Load and apply the signed-in listener's saved text size, theme, language, and motion from database.db."""
+        """Load and apply the signed-in listener's saved text size, theme, language, motion, and screen reader."""
         saved_scale, saved_theme = self.load_user_accessibility(listener_id)
         saved_lang = self.load_user_language(listener_id)
         saved_reduced = self.load_user_reduced_motion(listener_id)
+        saved_sr = self.load_user_screen_reader(listener_id)
         theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
         self._text_scale = saved_scale
         self._theme_name = saved_theme
         self._language = saved_lang
         self._reduced_motion = saved_reduced
+        self._screen_reader = saved_sr
+        if saved_sr:
+            self._install_screen_reader_hooks()
+        else:
+            self.close_screen_reader()
         set_active_language(saved_lang)
         if theme_changed:
             apply_theme_palette(saved_theme)
@@ -503,25 +700,29 @@ class EffectsMixin:
             self._titlebar_colour = None
 
     def reset_accessibility_settings(self):
-        """Restore all accessibility settings (text size, theme, language, motion) to defaults and save."""
+        """Restore all accessibility settings (text size, theme, language, motion, screen reader) to defaults."""
         theme_changed = getattr(self, "_theme_name", "dark") != "dark"
         lang_changed = getattr(self, "_language", "en") != "en"
         motion_changed = bool(getattr(self, "_reduced_motion", False))
+        sr_changed = bool(getattr(self, "_screen_reader", False))
         self._text_scale = 1.0
         self._language = "en"
         self._reduced_motion = False
+        self._screen_reader = False
+        self.close_screen_reader()
         set_active_language("en")
         if self.current_user is not None:
             self.save_user_accessibility(self.current_user, 1.0, "dark")
             self.save_user_language(self.current_user, "en")
             self.save_user_reduced_motion(self.current_user, False)
+            self.save_user_screen_reader(self.current_user, False)
         if theme_changed:
             self.set_theme("dark", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
         elif lang_changed:
             self.set_language("en", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
-        elif motion_changed and self.current_user is not None:
+        elif (motion_changed or sr_changed) and self.current_user is not None:
             self.show_profile()
             self.apply_interface_scaling(force=True)
         else:
@@ -629,6 +830,8 @@ class EffectsMixin:
             if prev_non_detail != active_tab_title:
                 self._tab_podcast_order_cache = {}
                 self._last_visited_non_detail_tab = active_tab_title
+                if self._is_screen_reader_enabled():
+                    self.speak_text(f"{active_tab_title} page")
             nav_map = dict(nav_links)
             if active_tab_title == "Your genres":
                 self._last_non_detail_tab = ("Settings", self.show_genres, "your genres")
@@ -1205,12 +1408,100 @@ class EffectsMixin:
         row = tk.Frame(footer, bg=footer.cget("bg"))
         row.pack(fill="x", padx=10, pady=7)
 
+        dismissing = [False]
+
         def dismiss():
+            if dismissing[0]:
+                return
+            dismissing[0] = True
             self._dismissed_last_listened = podcast_id
             self._bottom_bar_info = None
             self._shell_bottom_bar = None
             self._shell_bottom_bar_key = None
+
+            if (
+                self._is_reduced_motion()
+                or not footer.winfo_exists()
+                or not shell.winfo_exists()
+                or footer.winfo_width() <= 4
+                or footer.winfo_height() <= 4
+            ):
+                if footer.winfo_exists():
+                    footer.destroy()
+                return
+
+            # Capture exact mini-bar bounds inside shell before replacing it with the CRT turn-off beam.
+            fx = footer.winfo_rootx() - shell.winfo_rootx()
+            fy = footer.winfo_rooty() - shell.winfo_rooty()
+            fw = footer.winfo_width()
+            fh = footer.winfo_height()
+            mid_x = fx + fw / 2.0
+            mid_y = fy + fh / 2.0
             footer.destroy()
+
+            tv_beam = tk.Frame(shell, bg=MINI_BAR_BG, bd=0, highlightthickness=1, highlightbackground="#ffffff")
+            tv_beam.place(x=fx, y=fy, width=fw, height=fh)
+            tk.Misc.lift(tv_beam)
+
+            total_dur = 0.340  # 0..0.42 vertical squash to scanline -> 0.42..0.82 horizontal shrink to dot -> 0.82..1.00 vanish.
+            st = {"progress": 0.0, "last_t": None}
+            last_rect = [None]
+            last_col = [MINI_BAR_BG]
+
+            def _step_tv_off():
+                if not tv_beam.winfo_exists() or not shell.winfo_exists():
+                    return
+                now = monotonic()
+                dt = 0.015 if st["last_t"] is None else max(0.004, min(0.036, now - st["last_t"]))
+                st["last_t"] = now
+                st["progress"] = min(1.0, st["progress"] + dt / total_dur)
+                p = st["progress"]
+
+                if p < 0.42:
+                    # Phase 1: Vertical collapse into a bright glowing horizontal CRT scanline.
+                    u = p / 0.42
+                    e = 1.0 - (1.0 - u) ** 3.0
+                    cur_w = max(4, round(fw * (1.0 + 0.018 * (1.0 - abs(2.0 * u - 1.0)))))
+                    cur_h = max(3, round(fh + (3.0 - fh) * e))
+                    cur_col = blend_colour(MINI_BAR_BG, "#fff5eb", min(1.0, u * 1.15))
+                    cur_border = blend_colour(ORANGE_ACCENT, "#ffffff", min(1.0, u * 1.3))
+                elif p < 0.82:
+                    # Phase 2: Horizontal scanline snaps inward into a bright phosphor dot.
+                    u = (p - 0.42) / 0.40
+                    e = u * u * (3.0 - 2.0 * u)
+                    cur_w = max(6, round(fw + (6.0 - fw) * e))
+                    cur_h = 3 if u < 0.72 else max(4, round(3.0 + 3.0 * ((u - 0.72) / 0.28)))
+                    cur_col = "#ffffff"
+                    cur_border = "#ffd7b0"
+                else:
+                    # Phase 3: Tiny centre phosphor dot blinks warm and vanishes.
+                    u = (p - 0.82) / 0.18
+                    dot_sz = max(1, round(6.0 * (1.0 - u)))
+                    cur_w = dot_sz
+                    cur_h = dot_sz
+                    cur_col = blend_colour("#ffffff", ORANGE_ACCENT, min(1.0, u * 1.1))
+                    cur_border = cur_col
+
+                cx = round(mid_x - cur_w / 2.0)
+                cy = round(mid_y - cur_h / 2.0)
+                rect = (cx, cy, cur_w, cur_h)
+                if rect != last_rect[0]:
+                    tv_beam.place(x=cx, y=cy, width=cur_w, height=cur_h)
+                    last_rect[0] = rect
+                if cur_col != last_col[0]:
+                    tv_beam.configure(bg=cur_col, highlightbackground=cur_border)
+                    last_col[0] = cur_col
+
+                if p < 1.0:
+                    spent = (monotonic() - now) * 1000.0
+                    self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), _step_tv_off)
+                else:
+                    try:
+                        tv_beam.destroy()
+                    except tk.TclError:
+                        pass
+
+            _step_tv_off()
 
         bar_bg = row.cget("bg")
         sim_fade_job = [None]
