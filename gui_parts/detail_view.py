@@ -279,7 +279,7 @@ class DetailViewMixin:
                     (podcast_id,),
                 ).fetchall()
                 extra_rec = conn.execute(
-                    "SELECT BBCRegion, DownloadCount, AwardWinner FROM podcasts WHERE PodcastID = ?",
+                    "SELECT BBCRegion, DownloadCount, AwardWinner, ReleaseFrequency FROM podcasts WHERE PodcastID = ?",
                     (podcast_id,),
                 ).fetchone()
             rating_counts = {star: 0 for star in (5, 4, 3, 2, 1)}
@@ -291,6 +291,7 @@ class DetailViewMixin:
             region_text = str(extra_rec[0]).strip() if (extra_rec and extra_rec[0]) else "UK-wide"
             download_state = {"count": int(extra_rec[1]) if (extra_rec and extra_rec[1] is not None) else 0}
             is_award_winner = bool(extra_rec and str(extra_rec[2] or "").strip().lower() in ("yes", "1", "true"))
+            release_freq_text = str(extra_rec[3]).strip() if (extra_rec and extra_rec[3]) else "Not listed"
 
             page = self.build_shell("Programme details")
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
@@ -517,34 +518,54 @@ class DetailViewMixin:
             sub_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
             sub_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
-            listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
+            listening_heading.pack(anchor="w", padx=18, pady=(13, 8))
             play_count = (history_record[0] or 0) if history_record else 0
             given_rating = int(history_record[1]) if (history_record and history_record[1] is not None) else 0
+
+            listening_body = tk.Frame(sub_card, bg=SUBCARD_BG)
+            listening_body.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+
+            # Unified play-count stat row filling the upper half of the card cleanly.
+            plays_row = tk.Frame(listening_body, bg=SUBCARD_BG)
+            plays_row.pack(fill="x", pady=(4, 10))
             if play_count:
                 summary_text = f"{play_count} {'play' if play_count == 1 else 'plays'}"
                 summary_color = TEXT_WHITE
+                summary_label = self.create_label(plays_row, summary_text, 18, summary_color, "bold", bg=SUBCARD_BG)
             else:
                 summary_text = "You haven't listened to this podcast yet."
                 summary_color = TEXT_GRAY
-            summary_label = self.create_label(sub_card, summary_text, 11, summary_color)
-            summary_label.pack(anchor="w", padx=18, pady=(0, 8))
+                summary_label = self.create_label(plays_row, summary_text, 12, summary_color, bg=SUBCARD_BG)
+            summary_label.pack(anchor="w", pady=(2, 2))
 
-            # Read-only 5-star polygon display aligned with the personal rating label.
-            rating_row = tk.Frame(sub_card, bg=SUBCARD_BG)
-            rating_row.pack(anchor="w", padx=18, pady=(0, 14))
+            tk.Frame(listening_body, bg=DIVIDER_LINE, height=1).pack(fill="x", pady=(2, 12))
+
+            # Personal rating header + larger 5-star polygon display filling the lower half of the card.
+            rating_header = tk.Frame(listening_body, bg=SUBCARD_BG)
+            rating_header.pack(fill="x", pady=(0, 4))
             rating_caption = self.create_label(
-                rating_row,
-                "Your rating:",
-                10, TEXT_GRAY, "bold", bg=SUBCARD_BG,
+                rating_header,
+                "YOUR RATING",
+                9, TEXT_GRAY, "bold", bg=SUBCARD_BG,
             )
-            rating_caption.pack(side="left", padx=(0, 10))
+            rating_caption.pack(side="left")
+            rating_score_text = f"{given_rating} / 5" if given_rating > 0 else "Not rated"
+            rating_score_label = self.create_label(
+                rating_header,
+                rating_score_text,
+                10, GOLD_STAR if given_rating > 0 else TEXT_GRAY, "bold", bg=SUBCARD_BG,
+            )
+            rating_score_label.pack(side="right")
+
+            rating_row = tk.Frame(listening_body, bg=SUBCARD_BG)
+            rating_row.pack(fill="x", pady=(0, 2))
 
             star_state = {
-                "size": 22, "gap": 4, "score": given_rating,
+                "size": 30, "gap": 8, "score": given_rating,
                 "animating": bool(animate_rating and given_rating > 0 and not self._is_reduced_motion()),
                 "anim_job": None,
             }
-            star_pad = max(6, round(star_state["size"] * 0.28))
+            star_pad = max(7, round(star_state["size"] * 0.28))
             star_canvas = tk.Canvas(
                 rating_row,
                 width=5 * star_state["size"] + 4 * star_state["gap"] + star_pad * 2,
@@ -553,7 +574,7 @@ class DetailViewMixin:
                 bd=0,
                 highlightthickness=0,
             )
-            star_canvas.pack(side="left", pady=(1, 0))
+            star_canvas.pack(anchor="w")
 
             def _star_pts(cx, cy, r_out, rot_deg=0.0):
                 r_in = r_out * 0.43
@@ -686,15 +707,16 @@ class DetailViewMixin:
 
             info_grid = tk.Frame(info_card, bg=SUBCARD_BG)
             info_grid.pack(fill="x", padx=18, pady=(0, 14))
-            for col_i in range(3):
+            for col_i in range(4):
                 info_grid.grid_columnconfigure(col_i, weight=1, uniform="podcast-meta")
-            info_grid.grid_columnconfigure(3, weight=0)
+            info_grid.grid_columnconfigure(4, weight=0)
 
             meta_captions = []
             meta_values = []
             award_text = "★  Award Winner" if is_award_winner else "No"
             award_color = GOLD_STAR if is_award_winner else TEXT_GRAY
             for col_i, (cap_txt, val_txt, val_col) in enumerate((
+                ("NEW EPISODES", release_freq_text, TEXT_WHITE),
                 ("BBC REGION", region_text, TEXT_WHITE),
                 ("DOWNLOADS", f"{download_state['count']:,}", TEXT_WHITE),
                 ("AWARD WINNER", award_text, award_color),
@@ -719,7 +741,7 @@ class DetailViewMixin:
             )
             if not is_downloaded:
                 download_button._icon_kind = "cloud"
-            download_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
+            download_button.grid(row=0, column=4, sticky="e", padx=(12, 0))
             action_buttons.append((
                 download_button,
                 ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
@@ -777,10 +799,14 @@ class DetailViewMixin:
                 listen_label.configure(font=(DEFAULT_FONT, max(13, round(14 * font_scale)), "bold"))
                 sim_notice_label.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "italic"))
                 listening_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
-                summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
-                rating_caption.configure(font=(DEFAULT_FONT, max(9, round(10 * font_scale)), "bold"))
-                star_state["size"] = max(20, round(22 * font_scale))
-                star_state["gap"] = max(3, round(4 * font_scale))
+                if play_count:
+                    summary_label.configure(font=(DEFAULT_FONT, max(16, round(18 * font_scale)), "bold"))
+                else:
+                    summary_label.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale))))
+                rating_caption.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                rating_score_label.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale)), "bold"))
+                star_state["size"] = max(26, round(30 * font_scale))
+                star_state["gap"] = max(6, round(8 * font_scale))
                 draw_inline_stars()
                 ratings_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
                 ratings_sub.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale))))
