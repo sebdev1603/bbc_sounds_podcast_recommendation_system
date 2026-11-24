@@ -443,6 +443,31 @@ class DatabaseMixin:
             self.show_db_error("Couldn't update password", err)
             return False
 
+    def create_listener_account(self, password, age_group="19-25"):
+        """Create a new listener row with the next sequential ListenerID and return that ID."""
+        if not str(password):
+            return None
+        valid_ages = ("16-18", "19-25", "26-35", "36-50", "50+")
+        chosen_age = age_group if age_group in valid_ages else "19-25"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_name_column(conn)
+                self._ensure_listener_avatar_column(conn)
+                self._ensure_listener_password_column(conn)
+                row = conn.execute("SELECT MAX(ListenerID) FROM listeners").fetchone()
+                next_id = int(row[0] if (row and row[0] is not None) else 1000) + 1
+                conn.execute(
+                    "INSERT INTO listeners "
+                    "(ListenerID, AgeGroup, PreferredCategory, ListeningHoursPerWeek, CompleteSurvey, "
+                    "LengthPreference, FavoritePodcasts, FavoriteGenres, Name, Avatar, Password) "
+                    "VALUES (?, ?, ?, 0, 0, 'Medium', '', '', NULL, 'default', ?)",
+                    (next_id, chosen_age, "", str(password)),
+                )
+            return next_id
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't create account", err)
+            return None
+
     def save_listener_avatar(self, listener_id, avatar_key):
         """Persist a listener's chosen premade avatar key in database.db."""
         if listener_id is None:

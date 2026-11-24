@@ -311,11 +311,151 @@ class LoginViewMixin:
 
             dlg.after(10, _grab)
 
+        def open_create_account_dialog():
+            if getattr(login_button, "_expanding_login", False):
+                return
+            existing = getattr(self, "_active_create_acct_dialog", None)
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_set()
+                return
+
+            dlg = tk.Toplevel(self)
+            self._active_create_acct_dialog = dlg
+            dlg.withdraw()
+            dlg.title("Create account")
+            dlg.configure(bg=DARK_BG)
+            dlg.resizable(False, False)
+            dlg.transient(self)
+
+            def close_dlg(_event=None):
+                if getattr(self, "_active_create_acct_dialog", None) is dlg:
+                    self._active_create_acct_dialog = None
+                try:
+                    if dlg.winfo_exists():
+                        dlg.grab_release()
+                        dlg.destroy()
+                except tk.TclError:
+                    pass
+
+            dlg.protocol("WM_DELETE_WINDOW", close_dlg)
+            body = tk.Frame(dlg, bg=DARK_BG, padx=24, pady=20)
+            body.pack(fill="both", expand=True)
+            self.create_label(body, "Create a new account", 15, TEXT_WHITE, "bold", bg=DARK_BG).pack(anchor="w")
+            self.create_label(
+                body,
+                "A new Listener ID will be assigned to you automatically. Choose your age group and a password.",
+                9, TEXT_GRAY, bg=DARK_BG, wraplength=340,
+            ).pack(anchor="w", pady=(3, 12))
+
+            self.create_label(body, "AGE GROUP", 8, TEXT_GRAY, "bold", bg=DARK_BG).pack(anchor="w", pady=(0, 5))
+            age_row = tk.Frame(body, bg=DARK_BG)
+            age_row.pack(fill="x", pady=(0, 12))
+            selected_age = ["19-25"]
+            age_btns = {}
+
+            def pick_age(choice):
+                selected_age[0] = choice
+                for k, b in age_btns.items():
+                    is_sel = (k == choice)
+                    self.style_rounded_button(
+                        b,
+                        ORANGE_ACCENT if is_sel else INPUT_BG,
+                        ORANGE_HL if is_sel else blend_colour(INPUT_BG, TEXT_WHITE, 0.14),
+                    )
+                    b.configure(fg="#111111" if is_sel else TEXT_WHITE)
+
+            for age_opt in ("16-18", "19-25", "26-35", "36-50", "50+"):
+                is_sel = age_opt == selected_age[0]
+                ab = self.create_button(
+                    age_row, age_opt, lambda a=age_opt: pick_age(a),
+                    primary=is_sel, compact=True,
+                )
+                ab.pack(side="left", padx=(0, 5))
+                age_btns[age_opt] = ab
+
+            new_pw_var = tk.StringVar()
+            cfm_pw_var = tk.StringVar()
+
+            def _make_pw_field(caption_txt, var):
+                self.create_label(body, caption_txt, 8, TEXT_GRAY, "bold", bg=DARK_BG).pack(anchor="w", pady=(0, 3))
+                box = self.create_card_frame(body, bg=INPUT_BG)
+                box.pack(fill="x", pady=(0, 10))
+                ent = tk.Entry(
+                    box, textvariable=var, show="•",
+                    font=(DEFAULT_FONT, 11), bg=INPUT_BG, fg=TEXT_WHITE,
+                    insertbackground=TEXT_WHITE, relief="flat", bd=0, highlightthickness=0,
+                )
+                ent.pack(fill="x", padx=10, pady=4, ipady=3)
+                return ent
+
+            c_pw_ent = _make_pw_field("PASSWORD", new_pw_var)
+            c_cf_ent = _make_pw_field("CONFIRM PASSWORD", cfm_pw_var)
+            c_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=340)
+            c_err_lbl.pack(anchor="w", pady=(0, 10))
+
+            def submit_create(_event=None):
+                p1 = new_pw_var.get()
+                p2 = cfm_pw_var.get()
+                if not p1:
+                    c_err_lbl.configure(text="Enter a password for your new account.")
+                    c_pw_ent.focus_set()
+                    return
+                if p1 != p2:
+                    c_err_lbl.configure(text="Passwords do not match.")
+                    c_cf_ent.focus_set()
+                    return
+                new_id = self.create_listener_account(p1, age_group=selected_age[0])
+                if new_id is None:
+                    c_err_lbl.configure(text="Couldn't create account. Please try again.")
+                    return
+                id_var.set(str(new_id))
+                pw_var.set("")
+                status_label.config(
+                    text=f"Account created! Your new Listener ID is {new_id}. Enter your password to sign in.",
+                    fg="#7ce38b",
+                )
+                close_dlg()
+                pw_entry.focus_set()
+
+            btn_bar = tk.Frame(body, bg=DARK_BG)
+            btn_bar.pack(fill="x", pady=(2, 0))
+            self.create_button(btn_bar, "Create account", submit_create, primary=True, compact=True).pack(
+                side="left", padx=(0, 8),
+            )
+            self.create_button(btn_bar, "Cancel", close_dlg, compact=True).pack(side="left")
+
+            apply_windows_titlebar_theme(dlg)
+            center_toplevel(dlg, self, min_w=390, min_h=320, set_size=True)
+            dlg.bind("<Escape>", close_dlg)
+            c_cf_ent.bind("<Return>", submit_create)
+            dlg.deiconify()
+            dlg.lift()
+            c_pw_ent.focus_set()
+
+            def _grab(attempts=20):
+                try:
+                    if not dlg.winfo_exists():
+                        return
+                    if not dlg.winfo_viewable():
+                        if attempts > 0:
+                            dlg.after(25, _grab, attempts - 1)
+                        return
+                    dlg.grab_set()
+                    dlg.lift()
+                except tk.TclError:
+                    if attempts > 0 and dlg.winfo_exists():
+                        dlg.after(25, _grab, attempts - 1)
+
+            dlg.after(10, _grab)
+
         login_btn_row = tk.Frame(login_panel, bg=login_panel.cget("bg"))
         login_btn_row.pack(anchor="w", padx=20, pady=(5, 18))
         login_button = self.create_button(login_btn_row, "Continue  →", handle_login, primary=True)
         login_button.configure(highlightthickness=0, takefocus=0)
-        login_button.pack(side="left", padx=(0, 10))
+        login_button.pack(side="left", padx=(0, 8))
+        create_acct_button = self.create_button(login_btn_row, "Create account", open_create_account_dialog, compact=True)
+        create_acct_button.pack(side="left", padx=(0, 8))
         reset_pw_button = self.create_button(login_btn_row, "Reset password", open_reset_password_dialog, compact=True)
         reset_pw_button.pack(side="left")
         self._login_button = login_button
@@ -337,6 +477,7 @@ class LoginViewMixin:
             "pw_var": pw_var,
             "status": status_label,
             "button": login_button,
+            "create_button": create_acct_button,
             "reset_button": reset_pw_button,
         }
         text_entry.bind("<Return>", lambda _e: handle_login() if pw_var.get() else pw_entry.focus_set())
@@ -1451,9 +1592,13 @@ class LoginViewMixin:
                         font=entry.cget("font"), anchor="w",
                     )
 
-        # 4) Paint the Continue and Reset password buttons using their pre-rendered anti-aliased pill images.
+        # 4) Paint the Continue, Create account, and Reset password buttons using their pre-rendered pill images.
         fx_cvs._btn_img_refs = []
-        for btn_key, fallback_col in (("button", ORANGE_ACCENT), ("reset_button", INPUT_BG)):
+        for btn_key, fallback_col in (
+            ("button", ORANGE_ACCENT),
+            ("create_button", INPUT_BG),
+            ("reset_button", INPUT_BG),
+        ):
             btn = refs.get(btn_key)
             br = _rect(btn)
             if br is not None:
