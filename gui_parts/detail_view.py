@@ -516,13 +516,17 @@ class DetailViewMixin:
     def rate_programme(self, podcast_id, callback_func=None, *, on_unplayed=None):
         """Open a dark interactive 5-star picker dialog to rate or update a programme's score."""
         existing_dlg = getattr(self, "_active_rating_dialog", None)
-        if existing_dlg is not None and existing_dlg.winfo_exists():
+        if existing_dlg is not None:
             try:
-                existing_dlg.lift()
-                existing_dlg.focus_force()
+                if existing_dlg.winfo_exists():
+                    existing_dlg.deiconify()
+                    existing_dlg.lift()
+                    existing_dlg.focus_set()
+                    return
             except tk.TclError:
                 pass
-            return
+            self._active_rating_dialog = None
+        dialog = None
         try:
             with self.get_db_connection() as conn:
                 prior_record = conn.execute(
@@ -538,35 +542,30 @@ class DetailViewMixin:
             dialog_title = "Rate this programme" if prior_record[1] is None else "Update your rating"
 
             dialog = tk.Toplevel(self)
+            dialog.withdraw()
             self._active_rating_dialog = dialog
             dialog.title(dialog_title)
             dialog.configure(bg=DARK_BG)
             dialog.resizable(False, False)
-            dialog.transient(self)
-            dialog.grab_set()
+            try:
+                dialog.transient(self)
+            except tk.TclError:
+                pass
 
-            # Style the popup dialog's Windows titlebar to match the active theme.
-            if sys.platform == "win32":
+            def close_dialog(_event=None):
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
                 try:
-                    dialog.update_idletasks()
-                    dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
-
-                    def _to_colorref(hex_col):
-                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
-
-                    for attr, value in (
-                        (20, int(TITLEBAR_DARK_MODE)),
-                        (19, int(TITLEBAR_DARK_MODE)),
-                        (35, _to_colorref(DARK_BG)),
-                        (36, _to_colorref(TITLEBAR_TEXT)),
-                        (34, _to_colorref(DARK_BG)),
-                    ):
-                        val = ctypes.c_int(value)
-                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                        )
-                except Exception:
+                    dialog.grab_release()
+                except tk.TclError:
                     pass
+                try:
+                    if dialog.winfo_exists():
+                        dialog.destroy()
+                except tk.TclError:
+                    pass
+
+            dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
             body = tk.Frame(dialog, bg=DARK_BG, padx=28, pady=22)
             body.pack(fill="both", expand=True)
@@ -603,23 +602,94 @@ class DetailViewMixin:
 
             def confirm_rating():
                 chosen = selected["score"]
-                dialog.destroy()
+                close_dialog()
                 self.save_programme_rating(podcast_id, chosen, callback_func=callback_func)
 
             btn_row = tk.Frame(body, bg=DARK_BG)
             btn_row.pack()
             self.create_button(btn_row, "Save rating", confirm_rating, primary=True, compact=True).pack(side="left", padx=(0, 8))
-            self.create_button(btn_row, "Cancel", dialog.destroy, compact=True).pack(side="left")
+            self.create_button(btn_row, "Cancel", close_dialog, compact=True).pack(side="left")
 
             dialog.update_idletasks()
-            dw, dh = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
+
+            # Style the popup dialog's Windows titlebar to match the active theme before showing.
+            if sys.platform == "win32":
+                try:
+                    dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
+
+                    def _to_colorref(hex_col):
+                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
+
+                    for attr, value in (
+                        (20, int(TITLEBAR_DARK_MODE)),
+                        (19, int(TITLEBAR_DARK_MODE)),
+                        (35, _to_colorref(DARK_BG)),
+                        (36, _to_colorref(TITLEBAR_TEXT)),
+                        (34, _to_colorref(DARK_BG)),
+                    ):
+                        val = ctypes.c_int(value)
+                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
+                        )
+                except Exception:
+                    pass
+
+            dw = max(260, dialog.winfo_reqwidth())
+            dh = max(180, dialog.winfo_reqheight())
+            screen_w = max(dw, self.winfo_screenwidth())
+            screen_h = max(dh, self.winfo_screenheight())
             px = self.winfo_rootx() + (self.winfo_width() - dw) // 2
             py = self.winfo_rooty() + (self.winfo_height() - dh) // 2
-            dialog.geometry(f"+{max(0, px)}+{max(0, py)}")
+            px = max(0, min(px, screen_w - dw))
+            py = max(0, min(py, screen_h - dh))
+            dialog.geometry(f"{dw}x{dh}+{px}+{py}")
             dialog.bind("<Return>", lambda _e: confirm_rating())
-            dialog.bind("<Escape>", lambda _e: dialog.destroy())
+            dialog.bind("<Escape>", close_dialog)
+
+            dialog.deiconify()
+            dialog.lift()
+            dialog.focus_set()
+
+            # Acquire modal grab only after the WM has actually mapped the dialog; calling
+            # grab_set() immediately on Linux (X11/Wayland) or slower hardware raises
+            # TclError ("grab failed: window not viewable") and prevents the popup from appearing.
+            def _acquire_grab(attempts_left=20):
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                    if not dialog.winfo_viewable():
+                        if attempts_left > 0:
+                            dialog.after(25, _acquire_grab, attempts_left - 1)
+                        return
+                    dialog.grab_set()
+                    dialog.lift()
+                    dialog.focus_set()
+                except tk.TclError:
+                    if attempts_left > 0:
+                        try:
+                            if dialog.winfo_exists():
+                                dialog.after(25, _acquire_grab, attempts_left - 1)
+                        except tk.TclError:
+                            pass
+
+            dialog.after(10, _acquire_grab)
         except sqlite3.Error as err:
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
             self.show_db_error("Couldn't save your rating", err)
+        except tk.TclError:
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
 
     def remove_rating(self, podcast_id, evaporate=None):
         """Clear the active listener's rating for a podcast, evaporating its card before reloading."""
