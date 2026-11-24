@@ -926,11 +926,12 @@ class EffectsMixin:
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
             logo_widget = self.draw_app_logo(topbar, 1.05)
-            logo_widget.pack(side="left", padx=(20, 12), pady=22)
+            logo_widget.pack(side="left", padx=(20, 12))
 
             nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
-            nav_row.pack(side="left", padx=(4, 10), pady=18)
+            nav_row.pack(side="left", padx=(4, 10))
             self._shell_nav_buttons = {}
+            nav_y_shift = 0
             for label_text, handler in nav_links:
                 selected_flag = label_text == active_nav_tab
                 btn = self.create_button(
@@ -946,12 +947,18 @@ class EffectsMixin:
                     ORANGE_HL if selected_flag else SECONDARY_HOVER_BG,
                 )
                 btn._nav_selected = selected_flag
+                nav_y_shift = max(nav_y_shift, getattr(btn, "_hover_y_shift", 0))
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
+            # Compensate for Linux/macOS FreeType button bottom padding (2 * y_shift) so the visible
+            # nav pills and Sign out pill sit on the exact same vertical centerline as the BBC logo.
+            if nav_y_shift > 0:
+                nav_row.pack_configure(pady=(nav_y_shift * 2, 0))
             sign_out_btn = self.create_button(topbar, "Sign out", self.sign_out_to_login, compact=True)
-            sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
+            so_y_shift = getattr(sign_out_btn, "_hover_y_shift", 0)
+            sign_out_btn.pack(side="right", padx=(6, 14), pady=(so_y_shift * 2, 0))
             search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=210, height=38)
-            search_container.pack(side="right", padx=(6, 10), pady=23)
+            search_container.pack(side="right", padx=(6, 10))
             search_container.pack_propagate(False)
             self._search_container = search_container
 
@@ -977,9 +984,11 @@ class EffectsMixin:
                     last_search_size[0] = target_w
                     last_search_size[1] = target_h
                     search_container.configure(width=target_w, height=target_h)
+                self.update_search_prompt()
 
             topbar.bind("<Configure>", resize_search_bar)
             nav_row.bind("<Configure>", resize_search_bar)
+            search_container.bind("<Configure>", lambda _event: self.update_search_prompt())
             self._resize_search_bar = resize_search_bar
             self.after_idle(resize_search_bar)
             self._search_entry = tk.Entry(
@@ -987,10 +996,10 @@ class EffectsMixin:
                 bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
                 bd=0, highlightthickness=0,
             )
-            self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
+            self._search_entry.pack(fill="x", expand=True, padx=10)
             self._search_prompt = tk.Label(
                 search_container, text=translate("Search programmes..."), font=(DEFAULT_FONT, 10),
-                bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
+                bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm", bd=0, highlightthickness=0, padx=0, pady=0,
             )
             self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
             self._search_entry.bind("<FocusIn>", lambda _event: self._search_prompt.place_forget())
@@ -4118,13 +4127,31 @@ class EffectsMixin:
         self._search_after_id = self.after(180, self.apply_live_search)
 
     def update_search_prompt(self):
-        """Show or hide the placeholder prompt inside the header search box."""
+        """Show or hide the placeholder prompt inside the header search box, shortening it when narrow."""
         if self._search_prompt is None or not self._search_prompt.winfo_exists():
             return
+        full_prompt = translate("Search programmes...")
+        short_prompt = translate("Search...")
+        container = getattr(self, "_search_container", None)
+        avail_w = 0
+        if container is not None and container.winfo_exists():
+            avail_w = container.winfo_width()
+            if avail_w <= 1:
+                avail_w = container.winfo_reqwidth()
+        use_short = False
+        if avail_w > 1:
+            try:
+                prompt_font = tkfont.Font(font=self._search_prompt.cget("font"))
+                use_short = prompt_font.measure(full_prompt) + 22 > avail_w
+            except tk.TclError:
+                use_short = avail_w < 175
+        desired_text = short_prompt if use_short else full_prompt
+        if self._search_prompt.cget("text") != desired_text:
+            self._search_prompt.configure(text=desired_text)
         if self.search_text.get() or self.focus_get() == self._search_entry:
             self._search_prompt.place_forget()
         else:
-            self._search_prompt.place(x=9, rely=0.5, anchor="w")
+            self._search_prompt.place(x=10, rely=0.5, anchor="w")
 
     def apply_live_search(self):
         """Invoke the active page's search callback, or open the Genres/Search tab."""
