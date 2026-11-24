@@ -1,6 +1,10 @@
 """SQLite connection manager and read-only query helpers for the BBC Sounds GUI."""
 from contextlib import contextmanager
+from difflib import SequenceMatcher
+import hashlib
+import hmac
 import random
+import secrets
 import sqlite3
 from tkinter import messagebox
 
@@ -103,21 +107,138 @@ class DatabaseMixin:
             ).fetchone()
 
     def query_podcasts(self, search_term="", item_limit=100, *, shuffle=False):
-        """Search podcasts by title or category, optionally returning a weighted shuffle."""
-        query_str = "SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts"
-        params = []
-        # Add a parameterized LIKE filter when a non-empty search keyword is supplied.
-        if search_term.strip():
-            pattern = f"%{search_term.strip()}%"
-            query_str += " WHERE Title LIKE ? OR Category LIKE ?"
-            params.extend([pattern, pattern])
-        # When not shuffling, let SQLite sort and cap the result set directly.
-        if not shuffle:
-            query_str += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
-            params.append(item_limit)
+        """Search podcasts: exact/closest match first, then similar title/genre/region in rating-weighted random order."""
+        cleaned = " ".join(str(search_term or "").strip().split())
+        if not cleaned:
+            query_str = "SELECT PodcastID, Title, Category, AverageLengthMins FROM podcasts"
+            params = []
+            if not shuffle:
+                query_str += f" ORDER BY {self.determine_sort_sql()} LIMIT ?"
+                params.append(item_limit)
+            with self.get_db_connection() as conn:
+                rows = conn.execute(query_str, params).fetchall()
+            return self.shuffle_podcasts(rows, item_limit) if shuffle else rows
+
         with self.get_db_connection() as conn:
-            rows = conn.execute(query_str, params).fetchall()
-        return self.shuffle_podcasts(rows, item_limit) if shuffle else rows
+            all_rows = conn.execute(
+                "SELECT PodcastID, Title, Category, AverageLengthMins, BBCRegion, AudienceRating "
+                "FROM podcasts"
+            ).fetchall()
+        if not all_rows:
+            return []
+
+        q = cleaned.lower()
+        q_tokens = [tok for tok in q.split() if tok]
+        averages = self.get_podcast_averages()
+
+        def row_rating(row):
+            avg = averages.get(row[0])
+            if avg is not None:
+                return float(avg)
+            aud = row[5]
+            return float(aud) if aud is not None else 2.5
+
+        def direct_match_rank(row):
+            title_l = str(row[1] or "").lower().strip()
+            cat_l = str(row[2] or "").lower().strip()
+            reg_l = str(row[4] or "").lower().strip()
+            if title_l == q:
+                tier = 0
+            elif title_l.startswith(q):
+                tier = 1
+            elif q in title_l:
+                tier = 2
+            elif cat_l == q or reg_l == q:
+                tier = 3
+            elif q in cat_l or q in reg_l:
+                tier = 4
+            elif q_tokens and all(
+                (tok in title_l or tok in cat_l or tok in reg_l) for tok in q_tokens
+            ):
+                tier = 5
+            else:
+                return None
+            return (tier, len(title_l), -row_rating(row))
+
+        direct_candidates = []
+        for row in all_rows:
+            rank = direct_match_rank(row)
+            if rank is not None:
+                direct_candidates.append((rank, row))
+
+        if direct_candidates:
+            direct_candidates.sort(key=lambda item: item[0])
+            primary_row = direct_candidates[0][1]
+        else:
+            # Fuzzy fallback: pick the closest title/genre/region to the query as the top match.
+            best_score = 0.0
+            primary_row = None
+            for row in all_rows:
+                title_l = str(row[1] or "").lower().strip()
+                cat_l = str(row[2] or "").lower().strip()
+                reg_l = str(row[4] or "").lower().strip()
+                fuzzy = max(
+                    SequenceMatcher(None, q, title_l).ratio(),
+                    SequenceMatcher(None, q, cat_l).ratio() * 0.9,
+                    SequenceMatcher(None, q, reg_l).ratio() * 0.85,
+                )
+                if fuzzy > best_score:
+                    best_score = fuzzy
+                    primary_row = row
+            if primary_row is None or best_score < 0.35:
+                return []
+
+        primary_id = primary_row[0]
+        primary_title = str(primary_row[1] or "").lower().strip()
+        primary_cat = str(primary_row[2] or "").lower().strip()
+        primary_reg = str(primary_row[4] or "").lower().strip()
+        query_matched_title = (q in primary_title) or (
+            bool(q_tokens) and any(tok in primary_title for tok in q_tokens)
+        )
+        ref_tokens = {tok for tok in q_tokens if len(tok) >= 2}
+        if query_matched_title:
+            ref_tokens |= {tok for tok in primary_title.split() if len(tok) >= 2}
+
+        related_pool = []
+        for row in all_rows:
+            if row[0] == primary_id:
+                continue
+            title_l = str(row[1] or "").lower().strip()
+            cat_l = str(row[2] or "").lower().strip()
+            reg_l = str(row[4] or "").lower().strip()
+
+            sim = 0.0
+            if q in title_l:
+                sim += 4.5
+            if q in cat_l:
+                sim += 4.0
+            if q in reg_l:
+                sim += 3.5
+            if primary_cat and cat_l == primary_cat:
+                sim += 2.6
+            if primary_reg and reg_l == primary_reg:
+                sim += 2.0
+
+            title_tokens = {tok for tok in title_l.split() if len(tok) >= 2}
+            if ref_tokens and title_tokens:
+                overlap = len(ref_tokens & title_tokens) / float(len(ref_tokens))
+                sim += overlap * 1.6
+            title_ratio = SequenceMatcher(None, q, title_l).ratio()
+            if query_matched_title:
+                title_ratio = max(title_ratio, SequenceMatcher(None, primary_title, title_l).ratio() * 0.85)
+            if title_ratio >= 0.45:
+                sim += title_ratio * 1.8
+
+            if sim >= 2.0:
+                rating = max(0.5, row_rating(row))
+                # Order semi-randomly while clearly favouring higher ratings (highest to lowest) and stronger similarity.
+                jitter = random.uniform(-0.85, 0.85) if shuffle else 0.0
+                score = rating * 2.0 + sim * 0.65 + jitter
+                related_pool.append((-score, title_l, row))
+
+        related_pool.sort(key=lambda item: (item[0], item[1]))
+        ordered = [primary_row] + [row for _, _, row in related_pool]
+        return [(r[0], r[1], r[2], r[3]) for r in ordered[:item_limit]]
 
     def fetch_user_history(self):
         """Return the active listener's listening history ordered newest-played first."""
@@ -195,6 +316,49 @@ class DatabaseMixin:
         favourite_string = str(self.get_row_field(listener_row, "FavoritePodcasts", "") or "")
         return str(pid) in [val.strip() for val in favourite_string.split(",")]
 
+    @staticmethod
+    def _ensure_downloads_table(conn):
+        """Create the per-user downloads table in database.db if it does not exist."""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_downloads ("
+            "ListenerID NOT NULL, "
+            "PodcastID NOT NULL, "
+            "DownloadedAt REAL NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (ListenerID, PodcastID))"
+        )
+
+    def check_if_downloaded(self, pid):
+        """Return True if the active listener has downloaded the given PodcastID."""
+        if self.current_user is None:
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                row = conn.execute(
+                    "SELECT 1 FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                    (self.current_user, pid),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    def fetch_user_downloads(self):
+        """Return podcast rows downloaded by the active listener, newest first."""
+        if self.current_user is None:
+            return []
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                return conn.execute(
+                    "SELECT p.PodcastID, p.Title, p.Category, p.AverageLengthMins "
+                    "FROM user_downloads d JOIN podcasts p ON p.PodcastID = d.PodcastID "
+                    "WHERE d.ListenerID = ? "
+                    "ORDER BY d.DownloadedAt DESC, p.Title COLLATE NOCASE",
+                    (self.current_user,),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+
     def show_db_error(self, title_text, err_obj):
         """Display a modal error dialog for SQLite failures."""
         messagebox.showerror(title_text, str(err_obj), parent=self)
@@ -233,6 +397,214 @@ class DatabaseMixin:
         if "name" not in cols:
             conn.execute("ALTER TABLE listeners ADD COLUMN Name TEXT")
 
+    @staticmethod
+    def _ensure_listener_avatar_column(conn):
+        """Ensure the listeners table has an Avatar column for storing the chosen premade avatar key."""
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
+        if "avatar" not in cols:
+            conn.execute("ALTER TABLE listeners ADD COLUMN Avatar TEXT")
+
+    @staticmethod
+    def validate_password_strength(password):
+        """Enforce password policy for new/changed/reset passwords (existing legacy logins remain valid).
+
+        Policy: 8-128 characters, including at least one uppercase letter, one lowercase letter,
+        and one digit. Capping length at 128 also prevents CPU DoS against scrypt hashing.
+        Returns (True, "") if valid, otherwise (False, reason_message).
+        """
+        pw = str(password or "")
+        if len(pw) < 8:
+            return False, "Password must be at least 8 characters long."
+        if len(pw) > 128:
+            return False, "Password must be 128 characters or fewer."
+        missing = []
+        if not any(ch.isupper() for ch in pw):
+            missing.append("an uppercase letter")
+        if not any(ch.islower() for ch in pw):
+            missing.append("a lowercase letter")
+        if not any(ch.isdigit() for ch in pw):
+            missing.append("a number")
+        if missing:
+            return False, "Password must include " + ", ".join(missing) + "."
+        return True, ""
+
+    @staticmethod
+    def password_strength_summary(password):
+        """Return a (label, hex_colour) live strength indicator for password input fields."""
+        pw = str(password or "")
+        if not pw:
+            return "", "#9a9fa8"
+        score = 0
+        if len(pw) >= 8:
+            score += 1
+        if len(pw) >= 12:
+            score += 1
+        if any(ch.isupper() for ch in pw) and any(ch.islower() for ch in pw):
+            score += 1
+        if any(ch.isdigit() for ch in pw):
+            score += 1
+        if any(not ch.isalnum() for ch in pw):
+            score += 1
+        if score <= 2 or len(pw) < 8:
+            return "Strength: Weak  ·  Use 8+ chars, upper, lower & a number", "#ff6b6b"
+        if score == 3:
+            return "Strength: Fair  ·  Meets policy (add length or a symbol to strengthen)", "#ffb347"
+        return "Strength: Strong", "#7ce38b"
+
+    @staticmethod
+    def hash_password(password):
+        """Hash a plaintext password using scrypt with a unique random 16-byte salt.
+
+        Format returned: 'scrypt$<salt_hex>$<hash_hex>'
+        - Random salt ensures identical passwords (e.g. default '1') produce completely
+          different hashes for every listener, defeating rainbow-table lookups.
+        - scrypt (n=2**14, r=8, p=1) is intentionally slow and memory-hard so an attacker
+          with a copy of database.db cannot rapidly brute-force passwords on a GPU.
+        """
+        # Generate 16 cryptographically secure random bytes (128 bits) for this password's salt.
+        salt = secrets.token_bytes(16)
+        # Derive a 32-byte (256-bit) key from the UTF-8 password bytes and salt using scrypt.
+        digest = hashlib.scrypt(
+            str(password).encode("utf-8"),
+            salt=salt,
+            n=2**14,   # CPU/memory cost factor (16,384 iterations)
+            r=8,       # Block size factor (memory usage scales with r * n)
+            p=1,       # Parallelization factor
+            dklen=32,  # Output hash length in bytes
+        )
+        # Store the algorithm tag, hex-encoded salt, and hex-encoded hash together in one column.
+        return f"scrypt${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def check_password_hash(password, stored_value):
+        """Verify a candidate plaintext password against a stored salted scrypt hash.
+
+        Uses hmac.compare_digest for constant-time comparison so execution time never
+        leaks how many leading bytes of the hash matched (prevents timing attacks).
+        """
+        stored = str(stored_value or "")
+        # Safety fallback if a legacy row has not yet been migrated from plaintext.
+        if not stored.startswith("scrypt$"):
+            return hmac.compare_digest(str(password), stored)
+        try:
+            # Split 'scrypt$<salt_hex>$<hash_hex>' back into its original salt and expected digest.
+            _scheme, salt_hex, hash_hex = stored.split("$", 2)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            # Re-run scrypt with the exact same salt and cost parameters on the candidate password.
+            actual = hashlib.scrypt(
+                str(password).encode("utf-8"),
+                salt=salt,
+                n=2**14,
+                r=8,
+                p=1,
+                dklen=len(expected),
+            )
+            # Compare both byte strings in constant time; returns True only on an exact match.
+            return hmac.compare_digest(actual, expected)
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _ensure_listener_password_column(cls, conn):
+        """Ensure listeners.Password exists and migrate any plaintext rows to salted scrypt hashes."""
+        cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
+        if "password" not in cols:
+            conn.execute("ALTER TABLE listeners ADD COLUMN Password TEXT")
+        # Find any rows whose Password is missing or still stored in plaintext (no 'scrypt$' prefix).
+        unhashed = conn.execute(
+            "SELECT ListenerID, Password FROM listeners "
+            "WHERE Password IS NULL OR Password NOT LIKE 'scrypt$%'"
+        ).fetchall()
+        # Hash each legacy row once with its own unique salt; future runs skip this loop completely.
+        for lid, raw_pw in unhashed:
+            plain = str(raw_pw) if (raw_pw is not None and str(raw_pw) != "") else "1"
+            conn.execute(
+                "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+                (cls.hash_password(plain), lid),
+            )
+
+    def verify_listener_password(self, listener_id, password_text):
+        """Return True if password_text matches the salted scrypt hash stored for listener_id."""
+        if listener_id is None:
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_password_column(conn)
+                row = conn.execute(
+                    "SELECT Password FROM listeners WHERE ListenerID = ?",
+                    (listener_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                # Never compare plaintext directly; re-hash candidate with the row's stored salt.
+                return self.check_password_hash(password_text, row[0] if row[0] is not None else "")
+        except sqlite3.Error:
+            return False
+
+    def update_listener_password(self, listener_id, new_password):
+        """Hash new_password with a fresh random salt and persist it for listener_id."""
+        if listener_id is None or not str(new_password):
+            return False
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_password_column(conn)
+                # Always generate a brand-new salt whenever a password is changed.
+                hashed_pw = self.hash_password(new_password)
+                cur = conn.execute(
+                    "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+                    (hashed_pw, listener_id),
+                )
+                return cur.rowcount > 0
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't update password", err)
+            return False
+
+    def create_listener_account(self, password, age_group="19-25"):
+        """Create a new listener row with the next sequential ListenerID and a salted password hash."""
+        if not str(password):
+            return None
+        valid_ages = ("16-18", "19-25", "26-35", "36-50", "50+")
+        chosen_age = age_group if age_group in valid_ages else "19-25"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_name_column(conn)
+                self._ensure_listener_avatar_column(conn)
+                self._ensure_listener_password_column(conn)
+                row = conn.execute("SELECT MAX(ListenerID) FROM listeners").fetchone()
+                next_id = int(row[0] if (row and row[0] is not None) else 1000) + 1
+                # Hash the chosen password with a unique random salt before storing it in SQLite.
+                hashed_pw = self.hash_password(password)
+                conn.execute(
+                    "INSERT INTO listeners "
+                    "(ListenerID, AgeGroup, PreferredCategory, ListeningHoursPerWeek, CompleteSurvey, "
+                    "LengthPreference, FavoritePodcasts, FavoriteGenres, Name, Avatar, Password) "
+                    "VALUES (?, ?, ?, 0, 0, 'Medium', '', '', NULL, 'default', ?)",
+                    (next_id, chosen_age, "", hashed_pw),
+                )
+            return next_id
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't create account", err)
+            return None
+
+    def save_listener_avatar(self, listener_id, avatar_key):
+        """Persist a listener's chosen premade avatar key in database.db."""
+        if listener_id is None:
+            return False
+        valid_keys = ("default", "vinyl", "headphones", "mic", "waves", "owl", "bot", "sunset")
+        stored = avatar_key if avatar_key in valid_keys else "default"
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_listener_avatar_column(conn)
+                conn.execute(
+                    "UPDATE listeners SET Avatar = ? WHERE ListenerID = ?",
+                    (stored, listener_id),
+                )
+            return True
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't save profile picture", err)
+            return False
+
     def save_listener_name(self, listener_id, name_value):
         """Persist (or clear) a listener's display name in database.db."""
         if listener_id is None:
@@ -260,126 +632,98 @@ class DatabaseMixin:
             "TextScale REAL NOT NULL DEFAULT 1.0, "
             "Theme TEXT NOT NULL DEFAULT 'dark', "
             "Language TEXT NOT NULL DEFAULT 'en', "
-            "ReducedMotion INTEGER NOT NULL DEFAULT 0)"
+            "ReducedMotion INTEGER NOT NULL DEFAULT 0, "
+            "ScreenReader INTEGER NOT NULL DEFAULT 0)"
         )
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(user_accessibility)").fetchall()}
-        if "language" not in cols:
-            conn.execute("ALTER TABLE user_accessibility ADD COLUMN Language TEXT NOT NULL DEFAULT 'en'")
-        if "reducedmotion" not in cols:
-            conn.execute("ALTER TABLE user_accessibility ADD COLUMN ReducedMotion INTEGER NOT NULL DEFAULT 0")
+        for col, ddl in (
+            ("language", "Language TEXT NOT NULL DEFAULT 'en'"),
+            ("reducedmotion", "ReducedMotion INTEGER NOT NULL DEFAULT 0"),
+            ("screenreader", "ScreenReader INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE user_accessibility ADD COLUMN {ddl}")
 
-    def load_user_reduced_motion(self, listener_id):
-        """Load the listener's saved reduced-motion preference (bool), defaulting to False."""
+    def _query_accessibility_row(self, listener_id, columns):
         if listener_id is None:
-            return False
+            return None
         try:
             with self.get_db_connection() as conn:
                 self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT ReducedMotion FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
+                return conn.execute(
+                    f"SELECT {columns} FROM user_accessibility WHERE ListenerID = ?", (listener_id,),
                 ).fetchone()
-            return bool(row and row[0])
         except sqlite3.Error:
-            return False
+            return None
 
-    def save_user_reduced_motion(self, listener_id, reduced_motion):
-        """Persist a listener's reduced-motion preference in database.db."""
+    def _upsert_accessibility(self, listener_id, err_title, **updates):
         if listener_id is None:
             return
-        flag = 1 if reduced_motion else 0
+        values = {
+            "TextScale": getattr(self, "_text_scale", 1.0),
+            "Theme": getattr(self, "_theme_name", "dark"),
+            "Language": getattr(self, "_language", "en"),
+            "ReducedMotion": 1 if getattr(self, "_reduced_motion", False) else 0,
+            "ScreenReader": 1 if getattr(self, "_screen_reader", False) else 0,
+            **updates,
+        }
+        set_clause = ", ".join(f"{col} = excluded.{col}" for col in updates)
         try:
             with self.get_db_connection() as conn:
                 self._ensure_accessibility_table(conn)
                 conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion) "
-                    "VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET ReducedMotion = excluded.ReducedMotion",
+                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language, ReducedMotion, ScreenReader) "
+                    f"VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ListenerID) DO UPDATE SET {set_clause}",
                     (
-                        listener_id,
-                        getattr(self, "_text_scale", 1.0),
-                        getattr(self, "_theme_name", "dark"),
-                        getattr(self, "_language", "en"),
-                        flag,
+                        listener_id, values["TextScale"], values["Theme"],
+                        values["Language"], values["ReducedMotion"], values["ScreenReader"],
                     ),
                 )
         except sqlite3.Error as err:
-            self.show_db_error("Couldn't save motion setting", err)
+            self.show_db_error(err_title, err)
+
+    def load_user_screen_reader(self, listener_id):
+        """Load the listener's saved screen-reader preference (bool), defaulting to False."""
+        row = self._query_accessibility_row(listener_id, "ScreenReader")
+        return bool(row and row[0])
+
+    def save_user_screen_reader(self, listener_id, enabled):
+        """Persist a listener's screen-reader preference in database.db."""
+        self._upsert_accessibility(listener_id, "Couldn't save screen reader setting", ScreenReader=1 if enabled else 0)
+
+    def load_user_reduced_motion(self, listener_id):
+        """Load the listener's saved reduced-motion preference (bool), defaulting to False."""
+        row = self._query_accessibility_row(listener_id, "ReducedMotion")
+        return bool(row and row[0])
+
+    def save_user_reduced_motion(self, listener_id, reduced_motion):
+        """Persist a listener's reduced-motion preference in database.db."""
+        self._upsert_accessibility(listener_id, "Couldn't save motion setting", ReducedMotion=1 if reduced_motion else 0)
 
     def load_user_language(self, listener_id):
         """Load the listener's saved UI language ('en' or 'cy'), defaulting to 'en'."""
-        if listener_id is None:
-            return "en"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT Language FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
-                ).fetchone()
-            if not row or not row[0]:
-                return "en"
-            lang = str(row[0]).strip().lower()
-            return "cy" if lang == "cy" else "en"
-        except sqlite3.Error:
-            return "en"
+        row = self._query_accessibility_row(listener_id, "Language")
+        return "cy" if row and row[0] and str(row[0]).strip().lower() == "cy" else "en"
 
     def save_user_language(self, listener_id, lang_code):
         """Persist a listener's UI language ('en' or 'cy') in database.db."""
-        if listener_id is None:
-            return
         lang = "cy" if str(lang_code or "").strip().lower() == "cy" else "en"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme, Language) "
-                    "VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET Language = excluded.Language",
-                    (listener_id, getattr(self, "_text_scale", 1.0), getattr(self, "_theme_name", "dark"), lang),
-                )
-        except sqlite3.Error as err:
-            self.show_db_error("Couldn't save language setting", err)
+        self._upsert_accessibility(listener_id, "Couldn't save language setting", Language=lang)
 
     def load_user_accessibility(self, listener_id):
         """Load (text_scale, theme_name) for a listener from SQLite, defaulting to (1.0, 'dark')."""
-        if listener_id is None:
+        row = self._query_accessibility_row(listener_id, "TextScale, Theme")
+        if not row:
             return 1.0, "dark"
         try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                row = conn.execute(
-                    "SELECT TextScale, Theme FROM user_accessibility WHERE ListenerID = ?",
-                    (listener_id,),
-                ).fetchone()
-            if not row:
-                return 1.0, "dark"
-            try:
-                scale = round(max(0.80, min(1.40, float(row[0]))), 2)
-            except (TypeError, ValueError):
-                scale = 1.0
-            theme = str(row[1] or "dark").strip().lower()
-            if theme not in ("dark", "light", "high_contrast"):
-                theme = "dark"
-            return scale, theme
-        except sqlite3.Error:
-            return 1.0, "dark"
+            scale = round(max(0.80, min(1.40, float(row[0]))), 2)
+        except (TypeError, ValueError):
+            scale = 1.0
+        theme = str(row[1] or "dark").strip().lower()
+        return scale, theme if theme in ("dark", "light", "high_contrast") else "dark"
 
     def save_user_accessibility(self, listener_id, text_scale, theme_name):
         """Persist a listener's text size and theme preference in database.db."""
-        if listener_id is None:
-            return
         scale = round(max(0.80, min(1.40, float(text_scale))), 2)
         theme = theme_name if theme_name in ("dark", "light", "high_contrast") else "dark"
-        try:
-            with self.get_db_connection() as conn:
-                self._ensure_accessibility_table(conn)
-                conn.execute(
-                    "INSERT INTO user_accessibility (ListenerID, TextScale, Theme) "
-                    "VALUES (?, ?, ?) "
-                    "ON CONFLICT(ListenerID) DO UPDATE SET "
-                    "TextScale = excluded.TextScale, Theme = excluded.Theme",
-                    (listener_id, scale, theme),
-                )
-        except sqlite3.Error as err:
-            self.show_db_error("Couldn't save accessibility settings", err)
+        self._upsert_accessibility(listener_id, "Couldn't save accessibility settings", TextScale=scale, Theme=theme)
