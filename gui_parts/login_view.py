@@ -1336,26 +1336,178 @@ class LoginViewMixin:
 
         # Continuous time-based rotation loop that adapts its frame rate on lower-end devices
         # and pauses automatically while dragging/resizing or when Reduced Motion is enabled.
+        normal_tick_speed = 30.0
         state = {
             "tick": getattr(canvas_obj, "_spin_tick", 0.0),
             "last_t": None,
             "frame_n": 0,
+            "velocity": normal_tick_speed,
         }
+        scratch = {
+            "active": False,
+            "last_angle": 0.0,
+            "last_time": 0.0,
+            "last_render": 0.0,
+            "velocity": 0.0,
+        }
+        grab_r = outer_r * 1.08
+        vinyl_deg_per_tick = 2.2
         canvas_path = str(canvas_obj)
         tk_eval = canvas_obj.tk.eval
         cos = math.cos
         sin = math.sin
+        atan2 = math.atan2
+        hypot = math.hypot
+        degrees = math.degrees
         deg2rad = math.pi / 180.0
         top_r = label_r * 0.45
         bot_r = label_r * 0.48
         # Use ~30fps on Linux/macOS or Canvas fallback so the turntable looks smooth while staying light on CPU.
         spin_base_ms = 22 if sys.platform == "win32" else 33
 
+        def render_frame_at(t, force_all_angles=False):
+            if not canvas_obj.winfo_exists():
+                return False
+            bucket = state["frame_n"] % 6
+            state["frame_n"] += 1
+
+            if gdi_rings is not None:
+                gdi_rings(t)
+                return True
+
+            cmds = []
+            append = cmds.append
+            # Lightweight Canvas fallback: stagger expensive FreeType -angle updates across 6 buckets
+            # unless actively scratching.
+            for item_id, base_deg, radius, speed, slot in ring_items:
+                deg = (base_deg + t * speed) % 360.0
+                rad = (deg - 90.0) * deg2rad
+                append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.1f} {center_y + radius * sin(rad):.1f}")
+                if force_all_angles or ((slot == bucket % 3) and (bucket < 3)):
+                    append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.1f}")
+
+            # Rotate the vinyl highlights and specular glints clockwise.
+            vinyl_deg = (t * vinyl_deg_per_tick) % 360.0
+            append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.1f}")
+
+            # Orbit the centre label dot and "BBC / SOUNDS" text.
+            v_rad = (vinyl_deg - 90.0) * deg2rad
+            cv, sv = cos(v_rad), sin(v_rad)
+            mx = center_x + label_dot_r * cv
+            my = center_y + label_dot_r * sv
+            append(f"{canvas_path} coords {label_marker} {mx - 3:.1f} {my - 3:.1f} {mx + 3:.1f} {my + 3:.1f}")
+            append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.1f} {center_y + top_r * sv:.1f}")
+            append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.1f} {center_y - bot_r * sv:.1f}")
+            append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.1f}")
+
+            try:
+                tk_eval("\n".join(cmds))
+            except tk.TclError:
+                return False
+            return True
+
+        def _on_vinyl_press(evt):
+            if getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            if hypot(dx, dy) > grab_r:
+                return
+            now_t = monotonic()
+            scratch["active"] = True
+            scratch["last_angle"] = degrees(atan2(dy, dx))
+            scratch["last_time"] = now_t
+            scratch["velocity"] = 0.0
+            state["velocity"] = 0.0
+            try:
+                canvas_obj.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_drag(evt):
+            if not scratch["active"] or getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            now_t = monotonic()
+            # Ignore tiny jitter right over the spindle centre so atan2 never flips 180 degrees.
+            if hypot(dx, dy) < 4.0:
+                scratch["last_time"] = now_t
+                return
+            angle = degrees(atan2(dy, dx))
+            delta_deg = (angle - scratch["last_angle"] + 180.0) % 360.0 - 180.0
+            scratch["last_angle"] = angle
+
+            delta_tick = delta_deg / vinyl_deg_per_tick
+            state["tick"] = (state["tick"] + delta_tick) % 36000.0
+            canvas_obj._spin_tick = state["tick"]
+
+            dt_drag = max(0.004, now_t - scratch["last_time"])
+            scratch["last_time"] = now_t
+            inst_vel = max(-450.0, min(450.0, delta_tick / dt_drag))
+            scratch["velocity"] = scratch["velocity"] * 0.45 + inst_vel * 0.55
+
+            # Cap synchronous drag redraws to ~60fps so high-polling mice stay buttery smooth.
+            if (now_t - scratch["last_render"]) >= 0.014:
+                scratch["last_render"] = now_t
+                render_frame_at(state["tick"], force_all_angles=True)
+
+        def _on_vinyl_release(evt):
+            if not scratch["active"]:
+                return
+            now_t = monotonic()
+            scratch["active"] = False
+            # If the user held the vinyl still before releasing, spin back up smoothly from rest.
+            if (now_t - scratch["last_time"]) > 0.08:
+                state["velocity"] = 0.0
+            else:
+                state["velocity"] = max(-450.0, min(450.0, scratch["velocity"]))
+            state["last_t"] = now_t
+            render_frame_at(state["tick"], force_all_angles=True)
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            try:
+                canvas_obj.configure(cursor="hand2" if hypot(dx, dy) <= grab_r else "")
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_hover(evt):
+            if scratch["active"] or getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            want = "hand2" if hypot(dx, dy) <= grab_r else ""
+            try:
+                if canvas_obj.cget("cursor") != want:
+                    canvas_obj.configure(cursor=want)
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_leave(_evt):
+            if scratch["active"]:
+                return
+            try:
+                if canvas_obj.cget("cursor"):
+                    canvas_obj.configure(cursor="")
+            except tk.TclError:
+                pass
+
+        canvas_obj.bind("<ButtonPress-1>", _on_vinyl_press)
+        canvas_obj.bind("<B1-Motion>", _on_vinyl_drag)
+        canvas_obj.bind("<ButtonRelease-1>", _on_vinyl_release)
+        canvas_obj.bind("<Motion>", _on_vinyl_hover)
+        canvas_obj.bind("<Leave>", _on_vinyl_leave)
+
         def animate_spin():
             canvas_obj._spin_job = None
             if not canvas_obj.winfo_exists():
                 return
             if getattr(self, "_signing_out", False):
+                scratch["active"] = False
                 state["last_t"] = None
                 return
             now = monotonic()
@@ -1364,50 +1516,24 @@ class LoginViewMixin:
                 canvas_obj._spin_job = self.after(50, animate_spin)
                 return
 
-            # Advance in real elapsed time (30 ticks/sec matches the original speed).
+            if scratch["active"]:
+                # While the user holds/scratches the record, keep the loop alive without auto-spinning.
+                state["last_t"] = now
+                if (now - scratch["last_render"]) >= 0.014:
+                    scratch["last_render"] = now
+                    render_frame_at(state["tick"], force_all_angles=True)
+                canvas_obj._spin_job = self.after(spin_base_ms, animate_spin)
+                return
+
+            # Advance in real elapsed time and smoothly recover motor speed after a DJ scratch release.
             dt = (spin_base_ms / 1000.0) if state["last_t"] is None else max(0.004, min(0.060, now - state["last_t"]))
             state["last_t"] = now
-            state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
+            state["velocity"] += (normal_tick_speed - state["velocity"]) * min(1.0, dt * 4.5)
+            state["tick"] = (state["tick"] + dt * state["velocity"]) % 36000.0
             canvas_obj._spin_tick = state["tick"]
-            t = state["tick"]
-            bucket = state["frame_n"] % 6
-            state["frame_n"] += 1
 
-            if gdi_rings is not None:
-                gdi_rings(t)
-            else:
-                cmds = []
-                append = cmds.append
-                # Lightweight Canvas fallback: stagger expensive FreeType -angle updates across 6 buckets.
-                for item_id, base_deg, radius, speed, slot in ring_items:
-                    deg = (base_deg + t * speed) % 360.0
-                    rad = (deg - 90.0) * deg2rad
-                    append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.1f} {center_y + radius * sin(rad):.1f}")
-                    if (slot == bucket % 3) and (bucket < 3):
-                        append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.1f}")
-
-                # Rotate the vinyl highlights and specular glints clockwise.
-                vinyl_deg = (t * 2.2) % 360.0
-                append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.1f}")
-
-                # Orbit the centre label dot and "BBC / SOUNDS" text.
-                v_rad = (vinyl_deg - 90.0) * deg2rad
-                cv, sv = cos(v_rad), sin(v_rad)
-                mx = center_x + label_dot_r * cv
-                my = center_y + label_dot_r * sv
-                append(f"{canvas_path} coords {label_marker} {mx - 3:.1f} {my - 3:.1f} {mx + 3:.1f} {my + 3:.1f}")
-                append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.1f} {center_y + top_r * sv:.1f}")
-                append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.1f} {center_y - bot_r * sv:.1f}")
-                append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.1f}")
-
-                try:
-                    tk_eval("\n".join(cmds))
-                except tk.TclError:
-                    return
+            if not render_frame_at(state["tick"]):
+                return
 
             # Adapt frame delay so typing/clicks stay responsive even on lower-end CPUs.
             spent_ms = (monotonic() - now) * 1000.0
