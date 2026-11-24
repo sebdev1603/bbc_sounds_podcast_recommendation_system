@@ -253,12 +253,12 @@ class PagesMixin:
                 search_cache_key = ("search", self.current_user, search_term)
                 matching_rows = order_cache.get(search_cache_key)
                 if matching_rows is None:
-                    matching_rows = self.query_podcasts(search_term, item_limit=80, shuffle=True)
+                    matching_rows = self.query_podcasts(search_term, item_limit=PODCASTS_PER_PAGE, shuffle=True)
                     order_cache[search_cache_key] = matching_rows
                 self.create_label(results_pane, f"{len(matching_rows)} programmes", 10, TEXT_GRAY).pack(anchor="w", pady=(8, 6))
                 self.render_podcast_grid(
                     results_pane, matching_rows, columns_count=6,
-                    show_play=True, max_count=80,
+                    show_play=True, max_count=PODCASTS_PER_PAGE,
                 )
                 last_search = search_term
             except sqlite3.Error as err:
