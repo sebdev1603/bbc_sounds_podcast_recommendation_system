@@ -45,6 +45,7 @@ from gui_parts.theme import (
     TITLEBAR_DARK_MODE,
     blend_colour,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
@@ -216,9 +217,10 @@ class WidgetsMixin:
         lift = max(0, min(3, round(2.2 * raw_eased)))
         y_shift = getattr(button, "_hover_y_shift", 0)
         border_colour = getattr(button, "_rounded_border", None)
+        icon_spec = getattr(button, "_rounded_icon", None)
         image = self.rounded_button_image(
             width, height, colour, inset=inset, y_shift=y_shift, lift=lift,
-            border_colour=border_colour,
+            border_colour=border_colour, icon_spec=icon_spec,
         )
         button._current_image = image
         config = {"image": image}
@@ -275,8 +277,12 @@ class WidgetsMixin:
         else:
             border_colour = None
         button._rounded_border = border_colour
+        icon_kind = getattr(button, "_icon_kind", None)
+        icon_spec = (icon_kind, button.cget("fg"), metrics.measure(text)) if icon_kind else None
+        button._rounded_icon = icon_spec
         button._normal_image = self.rounded_button_image(
-            width, height, face, inset=5, y_shift=y_shift, lift=0, border_colour=border_colour,
+            width, height, face, inset=5, y_shift=y_shift, lift=0,
+            border_colour=border_colour, icon_spec=icon_spec,
         )
         button.configure(image=button._normal_image)
 
@@ -364,9 +370,9 @@ class WidgetsMixin:
         ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
         return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 1)) + _chunk(b"IEND", b"")
 
-    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None):
+    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None, icon_spec=None):
         """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
-        key = (width, height, colour, inset, y_shift, lift, border_colour)
+        key = (width, height, colour, inset, y_shift, lift, border_colour, icon_spec)
         if key not in self.button_images:
             # Reserve 6px transparent margin per side so elastic hover overshoot & shadow never shift layout,
             # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
@@ -416,6 +422,29 @@ class WidgetsMixin:
                     outline=(*border_rgb, 255) if border_rgb is not None else None,
                     width=ss if border_rgb is not None else 0,
                 )
+                if icon_spec and icon_spec[0] == "cloud":
+                    ic_hex = str(icon_spec[1]).lstrip("#")
+                    ic_rgba = (
+                        (int(ic_hex[0:2], 16), int(ic_hex[2:4], 16), int(ic_hex[4:6], 16), 255)
+                        if len(ic_hex) == 6 else (255, 255, 255, 255)
+                    )
+                    txt_w = icon_spec[2]
+                    iw = max(14.0, pill_h * 0.54) * ss
+                    ih = iw * 0.64
+                    ix0 = max((left + 8) * ss, ((canvas_w - txt_w) / 2.0 - 2.0) * ss)
+                    iy0 = ((top + bottom) / 2.0) * ss - ih * 0.52
+                    # Classic iCloud-style fluffy cloud: flat rounded base + 3 smooth overlapping domes.
+                    draw.rounded_rectangle(
+                        (ix0 + iw * 0.04, iy0 + ih * 0.46, ix0 + iw * 0.96, iy0 + ih),
+                        radius=ih * 0.27, fill=ic_rgba,
+                    )
+                    for cx_f, cy_f, r_f in (
+                        (0.27, 0.62, 0.27),
+                        (0.50, 0.40, 0.36),
+                        (0.75, 0.64, 0.24),
+                    ):
+                        cx_p, cy_p, rp = ix0 + iw * cx_f, iy0 + ih * cy_f, iw * r_f
+                        draw.ellipse((cx_p - rp, cy_p - rp, cx_p + rp, cy_p + rp), fill=ic_rgba)
                 aa = hi.resize((canvas_w, canvas_h), resample)
                 buf = io.BytesIO()
                 aa.save(buf, format="PNG", compress_level=1)
@@ -1195,40 +1224,119 @@ class WidgetsMixin:
         circle_canvas.create_text(size / 2, size / 2, text=genre_name[:1].upper(), fill="#ffffff", font=(DEFAULT_FONT, 14, "bold"))
         return circle_canvas
 
-    def create_default_profile_avatar(self, container, size=112):
-        """Draw a clean, neutral white-and-grey default profile avatar."""
+    PREMADE_AVATARS = (
+        ("default", "Classic"),
+        ("vinyl", "Vinyl"),
+        ("headphones", "Studio"),
+        ("mic", "Host"),
+        ("waves", "Waves"),
+        ("owl", "Night Owl"),
+        ("bot", "Bot"),
+        ("sunset", "Sunset"),
+    )
+
+    def draw_profile_avatar(self, avatar, size, avatar_key="default", *, selected=False):
+        """Paint one of the premade BBC Sounds circular profile pictures onto an existing Canvas."""
+        avatar.delete("all")
+        c = size / 2.0
+        m = size * 0.06
+        r = c - m
+        ring_col = ORANGE_ACCENT if selected else "#e7e8ea"
+        ring_w = max(2, round(size * (0.045 if selected else 0.026)))
+        key = avatar_key if any(k == avatar_key for k, _ in self.PREMADE_AVATARS) else "default"
+
+        bg_map = {
+            "default": "#55585e",
+            "vinyl": "#181a20",
+            "headphones": "#1e2a4a",
+            "mic": "#4f1d2e",
+            "waves": ORANGE_ACCENT,
+            "owl": "#262147",
+            "bot": "#173c47",
+            "sunset": "#2a2042",
+        }
+        bg = bg_map[key]
+        avatar.create_oval(m, m, size - m, size - m, fill=bg, outline=ring_col, width=ring_w)
+
+        if key == "default":
+            hr = size * 0.16
+            avatar.create_oval(c - hr, size * 0.38 - hr, c + hr, size * 0.38 + hr, fill="#f4f4f5", outline="")
+            avatar.create_oval(size * 0.23, size * 0.57, size * 0.77, size * 0.88, fill="#f4f4f5", outline="")
+            avatar.create_rectangle(size * 0.18, size * 0.79, size * 0.82, size * 0.92, fill=bg, outline="")
+            avatar.create_oval(m, m, size - m, size - m, fill="", outline=ring_col, width=ring_w)
+        elif key == "vinyl":
+            for frac, stroke in ((0.76, "#2c303a"), (0.60, "#252832"), (0.46, "#313540")):
+                gr = r * frac
+                avatar.create_oval(c - gr, c - gr, c + gr, c + gr, fill="", outline=stroke, width=1)
+            lr = r * 0.38
+            avatar.create_oval(c - lr, c - lr, c + lr, c + lr, fill=ORANGE_ACCENT, outline="#ffffff", width=max(1, round(size * 0.02)))
+            sp = max(2.5, r * 0.11)
+            avatar.create_oval(c - sp, c - sp, c + sp, c + sp, fill="#111215", outline="#ffffff", width=1)
+        elif key == "headphones":
+            arc_r = r * 0.56
+            avatar.create_arc(
+                c - arc_r, c - arc_r * 1.05, c + arc_r, c + arc_r * 0.95,
+                start=0, extent=180, style="arc", outline="#f4f4f5", width=max(2, round(size * 0.065)),
+            )
+            ew, eh = size * 0.13, size * 0.24
+            avatar.create_rectangle(c - arc_r - ew * 0.45, c - eh * 0.1, c - arc_r + ew * 0.55, c + eh * 0.9, fill=ORANGE_ACCENT, outline="")
+            avatar.create_rectangle(c + arc_r - ew * 0.55, c - eh * 0.1, c + arc_r + ew * 0.45, c + eh * 0.9, fill=ORANGE_ACCENT, outline="")
+        elif key == "mic":
+            mw, mh = size * 0.16, size * 0.27
+            avatar.create_oval(c - mw, c - mh * 1.1, c + mw, c + mh * 0.55, fill="#f4f4f5", outline="")
+            for dy in (-0.55, -0.25, 0.05):
+                avatar.create_line(c - mw * 0.65, c + mh * dy, c + mw * 0.65, c + mh * dy, fill="#4f1d2e", width=max(1, round(size * 0.02)))
+            sr = size * 0.24
+            avatar.create_arc(c - sr, c - sr * 0.65, c + sr, c + sr * 0.95, start=195, extent=150, style="arc", outline=ORANGE_ACCENT, width=max(2, round(size * 0.045)))
+            avatar.create_line(c, c + sr * 0.95, c, c + sr * 1.32, fill="#f4f4f5", width=max(2, round(size * 0.04)))
+            avatar.create_line(c - sr * 0.5, c + sr * 1.32, c + sr * 0.5, c + sr * 1.32, fill="#f4f4f5", width=max(2, round(size * 0.04)), capstyle="round")
+        elif key == "waves":
+            heights = (0.22, 0.46, 0.64, 0.42, 0.24)
+            bw = max(2, round(size * 0.07))
+            gap = size * 0.12
+            start_x = c - gap * 2
+            for idx, hf in enumerate(heights):
+                bx = start_x + idx * gap
+                hh = r * hf * 0.85
+                avatar.create_line(bx, c - hh, bx, c + hh, fill="#ffffff", width=bw, capstyle="round")
+        elif key == "owl":
+            # Minimalist geometric night owl.
+            avatar.create_polygon(c - r * 0.42, c - r * 0.56, c - r * 0.15, c - r * 0.34, c - r * 0.44, c - r * 0.16, fill="#d8dcf0", outline="")
+            avatar.create_polygon(c + r * 0.42, c - r * 0.56, c + r * 0.15, c - r * 0.34, c + r * 0.44, c - r * 0.16, fill="#d8dcf0", outline="")
+            avatar.create_oval(c - r * 0.48, c - r * 0.44, c + r * 0.48, c + r * 0.56, fill="#d8dcf0", outline="")
+            er, pr = r * 0.19, r * 0.09
+            for sx in (-1, 1):
+                ex = c + sx * r * 0.20
+                ey = c - r * 0.04
+                avatar.create_oval(ex - er, ey - er, ex + er, ey + er, fill="#ffffff", outline="#262147", width=max(1, round(size * 0.02)))
+                avatar.create_oval(ex - pr, ey - pr, ex + pr, ey + pr, fill="#1a1830", outline="")
+            avatar.create_polygon(c - r * 0.09, c + r * 0.10, c + r * 0.09, c + r * 0.10, c, c + r * 0.27, fill=ORANGE_ACCENT, outline="")
+        elif key == "bot":
+            avatar.create_line(c, c - r * 0.62, c, c - r * 0.36, fill="#a8e4f0", width=max(2, round(size * 0.04)))
+            ar = max(2.5, r * 0.10)
+            avatar.create_oval(c - ar, c - r * 0.72, c + ar, c - r * 0.72 + ar * 2, fill=ORANGE_ACCENT, outline="")
+            avatar.create_rectangle(c - r * 0.48, c - r * 0.36, c + r * 0.48, c + r * 0.40, fill="#e6f4f7", outline="")
+            er = max(2.5, r * 0.12)
+            for sx in (-1, 1):
+                ex = c + sx * r * 0.20
+                avatar.create_oval(ex - er, c - r * 0.14 - er, ex + er, c - r * 0.14 + er, fill=ORANGE_ACCENT, outline="")
+            avatar.create_line(c - r * 0.22, c + r * 0.16, c + r * 0.22, c + r * 0.16, fill="#173c47", width=max(2, round(size * 0.045)), capstyle="round")
+        elif key == "sunset":
+            sr = r * 0.36
+            avatar.create_oval(c - sr, c - r * 0.44, c + sr, c - r * 0.44 + sr * 2, fill="#ffba42", outline="")
+            avatar.create_arc(m + 2, m + 2, size - m - 2, size - m - 2, start=185, extent=170, fill="#d94e34", outline="")
+            avatar.create_arc(m + 2, m + 2, size - m - 2, size - m - 2, start=205, extent=130, fill="#1b2642", outline="")
+            avatar.create_line(c - r * 0.42, c + r * 0.26, c + r * 0.42, c + r * 0.26, fill="#ffcf70", width=max(1, round(size * 0.03)), capstyle="round")
+            avatar.create_line(c - r * 0.26, c + r * 0.42, c + r * 0.26, c + r * 0.42, fill="#ffcf70", width=max(1, round(size * 0.025)), capstyle="round")
+            avatar.create_oval(m, m, size - m, size - m, fill="", outline=ring_col, width=ring_w)
+
+    def create_default_profile_avatar(self, container, size=112, avatar_key="default", *, selected=False):
+        """Create a Canvas showing the listener's chosen premade circular profile avatar."""
         avatar = tk.Canvas(
             container, width=size, height=size, bg=container.cget("bg"),
             highlightthickness=0,
         )
-        # Outer grey circular badge with a crisp light border ring.
-        centre = size / 2
-        outer_margin = size * 0.06
-        avatar.create_oval(
-            outer_margin, outer_margin,
-            size - outer_margin, size - outer_margin,
-            fill="#55585e", outline="#e7e8ea", width=3,
-        )
-
-        # Draw a minimal white head-and-shoulders silhouette and mask the bottom edge.
-        head_radius = size * 0.16
-        head_y = size * 0.38
-        shoulder_top = size * 0.57
-        silhouette = "#f4f4f5"
-        avatar.create_oval(
-            centre - head_radius, head_y - head_radius,
-            centre + head_radius, head_y + head_radius,
-            fill=silhouette, outline="",
-        )
-        avatar.create_oval(
-            size * 0.23, shoulder_top,
-            size * 0.77, size * 0.88,
-            fill=silhouette, outline="",
-        )
-        avatar.create_rectangle(
-            size * 0.18, size * 0.79, size * 0.82, size * 0.92,
-            fill="#55585e", outline="",
-        )
+        self.draw_profile_avatar(avatar, size, avatar_key=avatar_key, selected=selected)
         return avatar
 
     def build_genre_tile(self, parent_widget, genre_name, idx, selected=False):
@@ -1565,13 +1673,7 @@ class WidgetsMixin:
             def winfo_height(self):
                 return self._h
 
-        def rounded_pts(x0, y0, x1, y1, r):
-            r = max(2, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
-            return (
-                x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
-                x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
-                x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
-            )
+        rounded_pts = rounded_rect_points
 
         scale = getattr(self, "_ui_scale_factor", 1.0)
         text_scale = getattr(self, "_text_scale", 1.0)
@@ -2225,6 +2327,12 @@ class WidgetsMixin:
                 grid_canvas.configure(cursor="")
             state["hovered"] = card_idx
             state["hovered_btn"] = (card_idx, btn_idx) if (card_idx is not None and btn_idx is not None) else None
+            if card_idx is not None and card_idx != prev_c and self._is_screen_reader_enabled():
+                c_info = state["cards"][card_idx]
+                c_title = c_info.get("title") or ""
+                c_cat = c_info.get("category") or ""
+                if c_title:
+                    self.speak_text(f"{c_title}, {c_cat}" if c_cat else c_title)
             if not self._is_reduced_motion() and hover_loop["job"] is None:
                 tick_grid_hover()
 

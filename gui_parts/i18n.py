@@ -16,6 +16,7 @@ TRANSLATIONS_CY = {
     "PROFILE": "PROFFIL",
     "Sign out": "Allgofnodi",
     "Search programmes...": "Chwilio rhaglenni...",
+    "Search...": "Chwilio...",
     "‹ Previous": "‹ Blaenorol",
     "Next ›": "Nesaf ›",
     "Details": "Manylion",

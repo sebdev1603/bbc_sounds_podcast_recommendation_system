@@ -31,6 +31,7 @@ from gui_parts.theme import (
     TEXT_WHITE,
     blend_colour,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
@@ -850,6 +851,47 @@ class PagesMixin:
             evaporate_anim=evap_spec,
         )
 
+    def show_downloads(self):
+        """Render the Downloads tab listing programmes downloaded by the active listener."""
+        page = self.build_shell("Downloads")
+        self.render_page_title(page, "Your downloads", "Programmes saved to your simulated downloads.")
+        dl_rows = list(self.fetch_user_downloads())
+        pending_ins = getattr(self, "_pending_card_insert", None)
+        insert_spec = pending_ins if (pending_ins and pending_ins.get("mode") == "downloads") else None
+        if insert_spec is not None:
+            self._pending_card_insert = None
+            target_pid = str(insert_spec["podcast_id"])
+            for idx_d, row_d in enumerate(dl_rows):
+                if str(row_d[0]) == target_pid:
+                    if idx_d != 0:
+                        dl_rows.insert(0, dl_rows.pop(idx_d))
+                    break
+
+        pending_evap = getattr(self, "_pending_card_evaporate", None)
+        evap_spec = pending_evap if (pending_evap and pending_evap.get("mode") == "downloads") else None
+        if evap_spec is not None:
+            self._pending_card_evaporate = None
+            target_pid = evap_spec["podcast_id"]
+            if not any(str(r[0]) == str(target_pid) for r in dl_rows):
+                rec = self.get_single_podcast(target_pid)
+                if rec:
+                    dl_rows.insert(0, rec)
+
+        if not dl_rows:
+            self.render_empty_message(page, "No downloads yet", "Open any programme and click Download to keep it here.")
+            self.create_button(
+                page, "Find a programme",
+                lambda: self.transition_to(self.show_search, "Genres"), primary=True, compact=True,
+            ).pack(anchor="w", pady=6)
+            return
+
+        self.render_podcast_grid(
+            page, dl_rows, columns_count=6,
+            show_play=True, max_count=len(dl_rows),
+            insert_anim=insert_spec,
+            evaporate_anim=evap_spec,
+        )
+
     def show_history(self):
         """Render the Listening History tab with per-item removal and Clear History controls."""
         page = self.build_shell("History")
@@ -1091,9 +1133,13 @@ class PagesMixin:
         self.render_page_title(page, "Profile & survey", "Update your preferences whenever your listening changes.")
         info_card = self.create_card_frame(page)
         info_card.pack(fill="x", pady=(4, 12))
-        avatar = self.create_default_profile_avatar(info_card, 112)
+        profile_top = tk.Frame(info_card, bg=CARD_BG)
+        profile_top.pack(fill="x")
+        saved_avatar = str(self.get_row_field(listener_info, "Avatar", "default") or "default").strip()
+        active_avatar = [saved_avatar]
+        avatar = self.create_default_profile_avatar(profile_top, 112, avatar_key=saved_avatar)
         avatar.pack(side="left", padx=(20, 18), pady=18)
-        profile_details = tk.Frame(info_card, bg=CARD_BG)
+        profile_details = tk.Frame(profile_top, bg=CARD_BG)
         profile_details.pack(side="left", fill="both", expand=True, pady=18, padx=(0, 20))
         saved_name = str(
             self.get_row_field(listener_info, "Name", None)
@@ -1153,11 +1199,7 @@ class PagesMixin:
 
         def on_clear_name():
             name_var.set("")
-            if self.save_listener_name(self.current_user, ""):
-                name_heading_lbl.configure(text=translate("BBC Sounds listener"))
-                name_status_lbl.configure(text=translate("Name cleared."))
-                refresh_clear_btn()
-                update_name_placeholder()
+            on_save_name()
 
         name_placeholder.bind("<Button-1>", lambda _e: name_entry.focus_set())
         name_entry.bind("<FocusIn>", lambda _e: name_placeholder.place_forget())
@@ -1172,6 +1214,40 @@ class PagesMixin:
         clear_name_btn.pack(side="left")
         refresh_clear_btn()
         update_name_placeholder()
+
+        # Premade profile picture selector row inside the profile card.
+        tk.Frame(info_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=20)
+        avatar_picker = tk.Frame(info_card, bg=CARD_BG)
+        avatar_picker.pack(fill="x", padx=20, pady=(12, 16))
+        self.create_label(avatar_picker, "CHOOSE PROFILE PICTURE", 8, TEXT_GRAY, "bold").pack(anchor="w", pady=(0, 8))
+        avatar_row = tk.Frame(avatar_picker, bg=CARD_BG)
+        avatar_row.pack(anchor="w")
+        avatar_choices = []
+
+        def select_avatar(chosen_key):
+            if chosen_key == active_avatar[0]:
+                return
+            if self.save_listener_avatar(self.current_user, chosen_key):
+                active_avatar[0] = chosen_key
+                self.draw_profile_avatar(avatar, 112, avatar_key=chosen_key)
+                for item_key, item_cvs, item_lbl in avatar_choices:
+                    is_sel = item_key == chosen_key
+                    self.draw_profile_avatar(item_cvs, 50, avatar_key=item_key, selected=is_sel)
+                    item_lbl.configure(fg=ORANGE_HL if is_sel else TEXT_GRAY)
+
+        for av_key, av_label in self.PREMADE_AVATARS:
+            slot = tk.Frame(avatar_row, bg=CARD_BG, cursor="hand2")
+            slot.pack(side="left", padx=(0, 12))
+            is_sel = av_key == active_avatar[0]
+            thumb = self.create_default_profile_avatar(slot, 50, avatar_key=av_key, selected=is_sel)
+            thumb.configure(cursor="hand2")
+            thumb.pack()
+            lbl = self.create_label(slot, av_label, 8, ORANGE_HL if is_sel else TEXT_GRAY, "bold")
+            lbl.configure(cursor="hand2")
+            lbl.pack(pady=(3, 0))
+            for w_click in (slot, thumb, lbl):
+                w_click.bind("<Button-1>", lambda _e, k=av_key: select_avatar(k))
+            avatar_choices.append((av_key, thumb, lbl))
 
         genres_str = str(self.get_row_field(listener_info, "FavoriteGenres", "") or "")
         length_str = self.get_row_field(listener_info, "LengthPreference", "") or "Not selected"
@@ -1221,92 +1297,50 @@ class PagesMixin:
         size_controls = tk.Frame(access_row, bg=CARD_BG)
         size_controls.pack(side="right")
 
-        # Divider and Theme selector row inside the same Accessibility settings card.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        theme_row = tk.Frame(access_card, bg=CARD_BG)
-        theme_row.pack(fill="x", padx=18, pady=16)
+        def add_setting_row(heading, status_text, options, active_val, on_select):
+            tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+            row = tk.Frame(access_card, bg=CARD_BG)
+            row.pack(fill="x", padx=18, pady=16)
+            info = tk.Frame(row, bg=CARD_BG)
+            info.pack(side="left", fill="x", expand=True)
+            self.create_label(info, heading, 9, TEXT_GRAY, "bold").pack(anchor="w")
+            self.create_label(info, status_text, 13, TEXT_WHITE, "bold").pack(anchor="w", pady=(4, 0))
+            controls = tk.Frame(row, bg=CARD_BG)
+            controls.pack(side="right")
+            for idx, (opt_val, caption) in enumerate(options):
+                self.create_button(
+                    controls, caption, lambda v=opt_val, fn=on_select: fn(v),
+                    primary=(active_val == opt_val), compact=True,
+                ).pack(side="left", padx=(0 if idx == 0 else 8, 0))
 
-        theme_labels = {
-            "dark": "Dark  ·  Default",
-            "light": "Light",
-            "high_contrast": "High contrast",
-        }
         active_theme = getattr(self, "_theme_name", "dark")
-
-        theme_info = tk.Frame(theme_row, bg=CARD_BG)
-        theme_info.pack(side="left", fill="x", expand=True)
-        self.create_label(theme_info, "APPEARANCE THEME", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            theme_info, theme_labels.get(active_theme, "Dark  ·  Default"), 13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        theme_controls = tk.Frame(theme_row, bg=CARD_BG)
-        theme_controls.pack(side="right")
-        for theme_key, theme_caption in (("dark", "Dark"), ("light", "Light"), ("high_contrast", "High contrast")):
-            is_selected = active_theme == theme_key
-            self.create_button(
-                theme_controls,
-                theme_caption,
-                lambda key=theme_key: self.set_theme(key),
-                primary=is_selected,
-                compact=True,
-            ).pack(side="left", padx=(0 if theme_key == "dark" else 8, 0))
-
-        # Divider and Language selector row (English / Cymraeg) inside the Accessibility settings card.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        lang_row = tk.Frame(access_card, bg=CARD_BG)
-        lang_row.pack(fill="x", padx=18, pady=16)
-
-        lang_labels = {
-            "en": "English  ·  Default",
-            "cy": "Cymraeg  ·  Welsh",
-        }
+        add_setting_row(
+            "APPEARANCE THEME",
+            {"dark": "Dark  ·  Default", "light": "Light", "high_contrast": "High contrast"}.get(active_theme, "Dark  ·  Default"),
+            (("dark", "Dark"), ("light", "Light"), ("high_contrast", "High contrast")),
+            active_theme, self.set_theme,
+        )
         active_lang = getattr(self, "_language", "en")
-
-        lang_info = tk.Frame(lang_row, bg=CARD_BG)
-        lang_info.pack(side="left", fill="x", expand=True)
-        self.create_label(lang_info, "LANGUAGE", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            lang_info, lang_labels.get(active_lang, "English  ·  Default"), 13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        lang_controls = tk.Frame(lang_row, bg=CARD_BG)
-        lang_controls.pack(side="right")
-        for lang_key, lang_caption in (("en", "English"), ("cy", "Cymraeg (Welsh)")):
-            is_selected = active_lang == lang_key
-            self.create_button(
-                lang_controls,
-                lang_caption,
-                lambda code=lang_key: self.set_language(code),
-                primary=is_selected,
-                compact=True,
-            ).pack(side="left", padx=(0 if lang_key == "en" else 8, 0))
-
-        # Divider and Motion / Animations selector row (Smooth / Reduced) for low-end devices & comfort.
-        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
-        motion_row = tk.Frame(access_card, bg=CARD_BG)
-        motion_row.pack(fill="x", padx=18, pady=16)
-
+        add_setting_row(
+            "LANGUAGE",
+            {"en": "English  ·  Default", "cy": "Cymraeg  ·  Welsh"}.get(active_lang, "English  ·  Default"),
+            (("en", "English"), ("cy", "Cymraeg (Welsh)")),
+            active_lang, self.set_language,
+        )
         active_reduced = self._is_reduced_motion()
-        motion_info = tk.Frame(motion_row, bg=CARD_BG)
-        motion_info.pack(side="left", fill="x", expand=True)
-        self.create_label(motion_info, "ANIMATIONS", 9, TEXT_GRAY, "bold").pack(anchor="w")
-        self.create_label(
-            motion_info,
+        add_setting_row(
+            "ANIMATIONS",
             "Reduced motion  ·  Faster on older devices" if active_reduced else "Smooth  ·  Default",
-            13, TEXT_WHITE, "bold",
-        ).pack(anchor="w", pady=(4, 0))
-
-        motion_controls = tk.Frame(motion_row, bg=CARD_BG)
-        motion_controls.pack(side="right")
-        for is_red, caption in ((False, "Smooth"), (True, "Reduced motion")):
-            self.create_button(
-                motion_controls,
-                caption,
-                lambda flag=is_red: self.set_reduced_motion(flag),
-                primary=(active_reduced == is_red),
-                compact=True,
-            ).pack(side="left", padx=(0 if not is_red else 8, 0))
+            ((False, "Smooth"), (True, "Reduced motion")),
+            active_reduced, self.set_reduced_motion,
+        )
+        active_sr = self._is_screen_reader_enabled()
+        add_setting_row(
+            "SCREEN READER",
+            "On  ·  Reads buttons, pages, and cards aloud" if active_sr else "Off  ·  Default",
+            ((False, "Off"), (True, "On")),
+            active_sr, self.set_screen_reader,
+        )
 
         def format_text_scale_label(scale_val):
             pct = round(scale_val * 100)
@@ -1319,10 +1353,17 @@ class PagesMixin:
             cur_theme = getattr(self, "_theme_name", "dark")
             cur_lang = getattr(self, "_language", "en")
             cur_reduced = self._is_reduced_motion()
+            cur_sr = self._is_screen_reader_enabled()
             size_status_label.configure(text=format_text_scale_label(scale_val))
             smaller_btn.configure(state="disabled" if scale_val <= 0.805 else "normal")
             larger_btn.configure(state="disabled" if scale_val >= 1.395 else "normal")
-            at_defaults = abs(scale_val - 1.0) < 0.005 and cur_theme == "dark" and cur_lang == "en" and not cur_reduced
+            at_defaults = (
+                abs(scale_val - 1.0) < 0.005
+                and cur_theme == "dark"
+                and cur_lang == "en"
+                and not cur_reduced
+                and not cur_sr
+            )
             reset_access_btn.configure(state="disabled" if at_defaults else "normal")
 
         def on_adjust_text(delta):
@@ -1341,11 +1382,15 @@ class PagesMixin:
         larger_btn = self.create_button(
             size_controls, "A+  Larger", lambda: on_adjust_text(0.10), primary=True, compact=True,
         )
-        larger_btn.pack(side="left", padx=(0, 8))
+        larger_btn.pack(side="left")
+
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        reset_row = tk.Frame(access_card, bg=CARD_BG)
+        reset_row.pack(fill="x", padx=18, pady=14)
         reset_access_btn = self.create_button(
-            size_controls, "Reset accessibility settings", on_reset_accessibility, compact=True,
+            reset_row, "Reset accessibility settings", on_reset_accessibility, compact=True,
         )
-        reset_access_btn.pack(side="left")
+        reset_access_btn.pack(side="right")
         refresh_accessibility_controls()
 
         # Interactive Q&A accordion section answering common questions about the app.
@@ -1395,14 +1440,7 @@ class PagesMixin:
         a_font = (DEFAULT_FONT, max(8, round(10 * scale)), "normal")
 
         def rounded_poly_coords(w, h, r=12):
-            m = 1
-            x1 = max(m + 2, w - 1)
-            y1 = max(m + 2, h - 1)
-            rad = min(r, (x1 - m) / 2, (y1 - m) / 2)
-            return (
-                rad + m, m, x1 - rad, m, x1, m, x1, rad + m, x1, y1 - rad, x1, y1,
-                x1 - rad, y1, rad + m, y1, m, y1, m, y1 - rad, m, rad + m, m, m,
-            )
+            return rounded_rect_points(1, 1, max(3, w - 1), max(3, h - 1), r)
 
         card_fill = qa_canvas.create_polygon(0, 0, 0, 0, smooth=True, fill=CARD_BG, outline="")
 

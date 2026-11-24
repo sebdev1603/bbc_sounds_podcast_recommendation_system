@@ -78,6 +78,7 @@ class BBCSoundsGUI(
         self._theme_name = "dark"
         self._language = "en"
         self._reduced_motion = False
+        self._screen_reader = False
         self._anim_ema_ms = 6.0
         self._resize_after_id = None
 
@@ -116,7 +117,8 @@ class BBCSoundsGUI(
         self.show_login()
 
     def _on_close(self):
-        """Close the persistent database connection before destroying the app window."""
+        """Close the persistent database connection and speech worker before destroying the app window."""
+        self.close_screen_reader()
         self.close_db_connection()
         self.destroy()
 

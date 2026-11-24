@@ -45,10 +45,11 @@ class LoginViewMixin:
                 except tk.TclError:
                     pass
             setattr(self, attr, None)
-        # Reset the login screen visually to default dark theme, English, and 100% text size without changing DB rows.
+        # Reset the login screen visually to default dark theme, English, 100% text size, and screen reader off without changing DB rows.
         self._text_scale = 1.0
         self.set_language("en", refresh=False, persist=False)
         self.set_theme("dark", refresh=False, persist=False)
+        self.set_screen_reader(False, refresh=False, persist=False)
         self._shell_box = None
         self._shell_bottom_bar = None
         self._shell_bottom_bar_key = None
@@ -68,8 +69,10 @@ class LoginViewMixin:
         # Header row with the BBC Sounds logo on the left and tagline on the right.
         top_header = tk.Frame(main_box, bg=DARK_BG)
         top_header.pack(fill="x")
-        self.draw_app_logo(top_header, 1.25).pack(side="left")
-        self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold").pack(side="right")
+        logo_widget = self.draw_app_logo(top_header, 1.25)
+        logo_widget.pack(side="left")
+        tagline_label = self.create_label(top_header, "PODCASTS · RADIO · MUSIC", 9, TEXT_GRAY, "bold")
+        tagline_label.pack(side="right")
 
         # Two-column split: hero copy + sign-in card on the left, animated vinyl turntable on the right.
         content_split = tk.Frame(main_box, bg=DARK_BG)
@@ -77,20 +80,22 @@ class LoginViewMixin:
 
         left_side = tk.Frame(content_split, bg=DARK_BG)
         left_side.pack(side="left", fill="both", expand=True, padx=(0, 30))
-        self.create_label(left_side, "YOUR NEXT LISTEN\nIS WAITING", 37, TEXT_WHITE, "bold", justify="left").pack(
-            anchor="w", pady=(46, 13)
-        )
-        self.create_label(
+        hero_label = self.create_label(left_side, "YOUR NEXT LISTEN\nIS WAITING", 37, TEXT_WHITE, "bold", justify="left")
+        hero_label.pack(anchor="w", pady=(46, 13))
+        subtitle_label = self.create_label(
             left_side,
             "Find programmes that fit your mood.\nDiscover new voices, stories and ideas.",
             14, TEXT_GRAY, justify="left",
-        ).pack(anchor="w", pady=(0, 30))
+        )
+        subtitle_label.pack(anchor="w", pady=(0, 30))
 
         # Rounded sign-in card containing the listener ID input field, error label, and Continue button.
         login_panel = self.create_card_frame(left_side)
         login_panel.pack(anchor="w", fill="x", padx=(0, 8), pady=(2, 0))
-        self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold").pack(anchor="w", padx=20, pady=(19, 4))
-        self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY).pack(anchor="w", padx=20)
+        welcome_label = self.create_label(login_panel, "Welcome back", 18, TEXT_WHITE, "bold")
+        welcome_label.pack(anchor="w", padx=20, pady=(19, 4))
+        prompt_label = self.create_label(login_panel, "Enter your listener ID to continue.", 10, TEXT_GRAY)
+        prompt_label.pack(anchor="w", padx=20)
 
         id_var = tk.StringVar()
         input_panel = self.create_card_frame(login_panel, bg=INPUT_BG)
@@ -141,6 +146,20 @@ class LoginViewMixin:
         login_button.configure(highlightthickness=0, takefocus=0)
         login_button.pack(anchor="w", padx=20, pady=(5, 20))
         self._login_button = login_button
+        self._login_ui_refs = {
+            "logo": logo_widget,
+            "tagline": tagline_label,
+            "hero": hero_label,
+            "subtitle": subtitle_label,
+            "login_panel": login_panel,
+            "welcome": welcome_label,
+            "prompt": prompt_label,
+            "input_panel": input_panel,
+            "entry": text_entry,
+            "id_var": id_var,
+            "status": status_label,
+            "button": login_button,
+        }
         text_entry.bind("<Return>", handle_login)
         text_entry.focus_set()
 
@@ -249,15 +268,79 @@ class LoginViewMixin:
                 gdi32.DeleteDC(mdc)
                 user32.ReleaseDC(None, sdc)
 
-            raw = buf.raw
-            rgb = bytearray(win_w * win_h * 3)
-            rgb[0::3] = raw[2::4]
-            rgb[1::3] = raw[1::4]
-            rgb[2::3] = raw[0::4]
+            # Use Pillow's C-level BGRX->RGB conversion when available (~3ms vs ~120ms pure-Python slicing).
+            try:
+                from PIL import Image
+                rgb_bytes = Image.frombuffer("RGB", (win_w, win_h), buf, "raw", "BGRX", 0, 1).tobytes()
+            except Exception:
+                raw = buf.raw
+                rgb = bytearray(win_w * win_h * 3)
+                rgb[0::3] = raw[2::4]
+                rgb[1::3] = raw[1::4]
+                rgb[2::3] = raw[0::4]
+                rgb_bytes = bytes(rgb)
             header = f"P6\n{win_w} {win_h}\n255\n".encode("ascii")
-            return tk.PhotoImage(master=self, data=header + bytes(rgb), format="PPM")
+            return tk.PhotoImage(master=self, data=header + rgb_bytes, format="PPM")
         except Exception:
             return None
+
+    @staticmethod
+    def _make_rounded_shapes(canvas, fill_col, tag):
+        """Create 2 rectangles + 4 corner ovals forming a crisp pixel-aligned rounded pill."""
+        return (
+            canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
+            *(canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag) for _ in range(4)),
+        )
+
+    @staticmethod
+    def _set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
+        """Update the 6-primitive rounded pill geometry and optional fill colour in one Tcl batch."""
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        r = max(0, min(radius, w // 2, h // 2))
+        cp = str(canvas)
+        if r <= 1:
+            cmds = [f"{cp} coords {items[0]} {x0} {y0} {x1} {y1}"]
+            cmds.extend(f"{cp} coords {extra} 0 0 0 0" for extra in items[1:])
+        else:
+            d = r * 2
+            ox1, oy1 = max(x0, x1 - 1), max(y0, y1 - 1)
+            cmds = [
+                f"{cp} coords {items[0]} {x0 + r} {y0} {x1 - r} {y1}",
+                f"{cp} coords {items[1]} {x0} {y0 + r} {x1} {y1 - r}",
+                f"{cp} coords {items[2]} {x0} {y0} {x0 + d} {y0 + d}",
+                f"{cp} coords {items[3]} {ox1 - d} {y0} {ox1} {y0 + d}",
+                f"{cp} coords {items[4]} {x0} {oy1 - d} {x0 + d} {oy1}",
+                f"{cp} coords {items[5]} {ox1 - d} {oy1 - d} {ox1} {oy1}",
+            ]
+        if fill_col is not None:
+            cmds.append(f"{cp} itemconfigure {tag} -fill {fill_col}")
+        canvas.tk.eval("\n".join(cmds))
+
+    def _create_overlay_pair(self, win_x, win_y, win_w, win_h, key_colour, pill_alpha):
+        """Create two withdrawn borderless chroma-key Toplevels aligned over the main window."""
+        wins = []
+        try:
+            for bg_col, alpha in ((DARK_BG, None), (key_colour, pill_alpha)):
+                top = tk.Toplevel(self)
+                top.withdraw()
+                top._preserve_during_shell_build = True
+                top.overrideredirect(True)
+                top.configure(bg=bg_col)
+                top.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+                top.attributes("-transparentcolor", key_colour)
+                if alpha is not None:
+                    top.attributes("-alpha", alpha)
+                top.transient(self)
+                wins.append(top)
+            return wins[0], wins[1]
+        except tk.TclError:
+            for w in wins:
+                try:
+                    w.destroy()
+                except tk.TclError:
+                    pass
+            return None, None
 
     @staticmethod
     def _strip_dwm_border(top_win):
@@ -300,9 +383,9 @@ class LoginViewMixin:
         coil_y = start_y + (start_h - coil_h) / 2.0
         charged_col = blend_colour(start_colour, ORANGE_HL, 0.85)
 
-        total_dur = 0.600  # 0..0.18 coil -> 0.18..0.60 expand -> subtle loading pulse + build Home -> 0.60..1.00 lift curtain.
+        total_dur = 0.520  # 0..0.18 coil -> 0.18..0.56 expand -> subtle loading pulse + build Home -> 0.56..1.00 lift curtain.
         windup_end = 0.18
-        expand_end = 0.60
+        expand_end = 0.56
         anim_st = {"progress": 0.0, "last_t": None}
         last_bg = [start_colour]
         last_rect = [None]
@@ -412,14 +495,15 @@ class LoginViewMixin:
                         if not self.winfo_exists() or not overlay.winfo_exists():
                             finish()
                             return
+                        stop_spinner()
                         tk.Misc.lift(overlay)
                         self.update_idletasks()
                         tk.Misc.lift(overlay)
                         anim_st["last_t"] = monotonic()
-                        self.after(16, draw_frame)
+                        self.after(14, draw_frame)
 
                     # Yield briefly so the loading spinner visibly paints before Home builds.
-                    self.after(24, _build_and_reveal)
+                    self.after(16, _build_and_reveal)
                     return
 
                 u = (p - expand_end) / (1.0 - expand_end)
@@ -432,7 +516,7 @@ class LoginViewMixin:
 
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
-                self.after(self._next_frame_delay(spent, 16), draw_frame)
+                self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
@@ -463,8 +547,17 @@ class LoginViewMixin:
                 overlay.destroy()
             return
         self.apply_interface_scaling(force=True)
-        tk.Misc.lift(overlay)
         self.update_idletasks()
+        # Pre-paint one static frame of the vinyl graphic behind the curtain so it is already
+        # visible as the overlay shrinks (its spin loop stays paused until finish()).
+        disc_static = getattr(self, "_login_disc_canvas", None)
+        if disc_static is not None and disc_static.winfo_exists():
+            class _StaticPaintEvt:
+                widget = disc_static
+                width = max(240, disc_static.winfo_width())
+                height = max(240, disc_static.winfo_height())
+            self.paint_vinyl_record(_StaticPaintEvt())
+            self.update_idletasks()
         tk.Misc.lift(overlay)
 
         target_btn = getattr(self, "_login_button", None)
@@ -554,11 +647,12 @@ class LoginViewMixin:
 
             if p < 1.0:
                 spent = (monotonic() - t0) * 1000.0
-                self.after(self._next_frame_delay(spent, 16), draw_frame)
+                self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
-        self.after(1, draw_frame)
+        # Yield one frame so Tk flushes login layout before frame 1 of the shrink starts.
+        self.after(16, draw_frame)
 
     def expand_login_button_to_home(self, login_button):
         """Coil and launch the rounded Continue button while smoothly revealing and fading in Home."""
@@ -597,8 +691,8 @@ class LoginViewMixin:
             self.show_home()
             return
 
-        # On Linux (Wayland/X11) and macOS, -transparentcolor Toplevels are unsupported; use the fast in-window overlay.
-        if sys.platform != "win32":
+        # On Linux (Wayland/X11), macOS, or lower-end devices, use the fast single-frame in-window overlay.
+        if sys.platform != "win32" or getattr(self, "_anim_ema_ms", 6.0) > 18.0:
             self._expand_login_in_window(start_x, start_y, start_w, start_h, start_colour)
             return
 
@@ -609,71 +703,13 @@ class LoginViewMixin:
         # Use a dark unique chroma key (#010203) instead of bright magenta so any 1px edge never looks bright/white.
         key_colour = "#010203"
 
-        # Two fixed-size full-window Toplevels kept withdrawn until fully painted so Windows
-        # never flashes a default white/grey window frame before the dark canvas appears.
-        backdrop_win = None
-        pill_win = None
-        try:
-            backdrop_win = tk.Toplevel(self)
-            backdrop_win.withdraw()
-            backdrop_win._preserve_during_shell_build = True
-            backdrop_win.overrideredirect(True)
-            backdrop_win.configure(bg=DARK_BG)
-            backdrop_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            backdrop_win.attributes("-transparentcolor", key_colour)
-            backdrop_win.transient(self)
-
-            pill_win = tk.Toplevel(self)
-            pill_win.withdraw()
-            pill_win._preserve_during_shell_build = True
-            pill_win.overrideredirect(True)
-            pill_win.configure(bg=key_colour)
-            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            pill_win.attributes("-transparentcolor", key_colour)
-            pill_win.attributes("-alpha", 1.0)
-            pill_win.transient(self)
-        except tk.TclError:
-            for w in (pill_win, backdrop_win):
-                if w is not None:
-                    try:
-                        w.destroy()
-                    except tk.TclError:
-                        pass
+        backdrop_win, pill_win = self._create_overlay_pair(win_x, win_y, win_w, win_h, key_colour, 1.0)
+        if backdrop_win is None:
             self.show_home()
             return
 
-        def make_rounded_shapes(canvas, fill_col, tag):
-            return (
-                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_rectangle(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-                canvas.create_oval(0, 0, 0, 0, fill=fill_col, outline="", tags=tag),
-            )
-
-        def set_rounded_shapes(canvas, items, tag, x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                canvas.coords(items[0], x0, y0, x1, y1)
-                for extra in items[1:]:
-                    canvas.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                # Keep corner ovals strictly inside [x0, x1-1] x [y0, y1-1] so Tk's inclusive oval
-                # bounds align pixel-for-pixel with the rectangles and leave zero 1px seams.
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                canvas.coords(items[0], x0 + r, y0, x1 - r, y1)
-                canvas.coords(items[1], x0, y0 + r, x1, y1 - r)
-                canvas.coords(items[2], x0, y0, x0 + d, y0 + d)
-                canvas.coords(items[3], ox1 - d, y0, ox1, y0 + d)
-                canvas.coords(items[4], x0, oy1 - d, x0 + d, oy1)
-                canvas.coords(items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                canvas.itemconfigure(tag, fill=fill_col)
+        make_rounded_shapes = self._make_rounded_shapes
+        set_rounded_shapes = self._set_rounded_shapes
 
         backdrop_canvas = tk.Canvas(backdrop_win, bg=DARK_BG, bd=0, highlightthickness=0)
         backdrop_canvas.pack(fill="both", expand=True)
@@ -736,13 +772,15 @@ class LoginViewMixin:
         coil_y = start_y + (start_h - coil_h) // 2
         charged_colour = blend_colour(start_colour, ORANGE_HL, 0.85)
 
-        total_duration = 0.720  # ~0.19s elastic wind-up coil + ~0.53s rounded launch and Home fade-in.
-        max_step = 1.0 / 24.0  # Cap per-frame progress so slow frames never cause visible jumps.
-        windup_end = 0.26  # First 26%: button visibly compresses & brightens, getting ready to launch.
-        fade_start = 0.34  # Begin fading Home in right as the rounded button rockets outward.
+        total_duration = 0.540  # ~0.12s elastic wind-up coil + ~0.42s rounded launch and Home fade-in.
+        max_step = 1.0 / 16.0
+        windup_end = 0.22
+        fade_start = 0.30
         state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_bg = [start_colour]
+        last_alpha = [1.0]
+        backdrop_hidden = [False]
 
         def finish():
             for w in (pill_win, backdrop_win):
@@ -760,7 +798,7 @@ class LoginViewMixin:
 
             now = monotonic()
             if state["last_t"] is None:
-                delta = max_step * 0.5
+                delta = 0.015 / total_duration
             else:
                 delta = min(max_step, (now - state["last_t"]) / total_duration)
             state["last_t"] = now
@@ -768,7 +806,6 @@ class LoginViewMixin:
             progress = state["progress"]
 
             if progress < windup_end:
-                # Phase 1: Elastic anticipation — rounded button compresses inward and brightens.
                 u = progress / windup_end
                 coil_t = 1.0 - (1.0 - u) ** 2
                 cur_x = round(start_x + (coil_x - start_x) * coil_t)
@@ -778,21 +815,19 @@ class LoginViewMixin:
                 cur_r = start_r
                 cur_bg = blend_colour(start_colour, charged_colour, coil_t)
             else:
-                # Phase 2: Rounded elastic launch — expands smoothly while keeping rounded corners
-                # until the final 12% where corners gently settle flush with the window edges.
                 t = (progress - windup_end) / (1.0 - windup_end)
-                launch_eased = 1.0 - (1.0 - t) ** 3
+                launch_eased = 1.0 - (1.0 - t) ** 3.2
                 cur_x = round(coil_x * (1.0 - launch_eased))
                 cur_y = round(coil_y * (1.0 - launch_eased))
                 cur_w = max(1, min(win_w, round(coil_w + (win_w - coil_w) * launch_eased)))
                 cur_h = max(1, min(win_h, round(coil_h + (win_h - coil_h) * launch_eased)))
-                if t < 0.88:
-                    cur_r = round(start_r + 8 * min(1.0, t / 0.30))
+                if t < 0.86:
+                    cur_r = round(start_r + 8 * min(1.0, t / 0.28))
                 else:
-                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.12))
+                    cur_r = round((start_r + 8) * max(0.0, (1.0 - t) / 0.14))
 
                 if t <= 0.65:
-                    cp = min(1.0, t / 0.60)
+                    cp = min(1.0, t / 0.58)
                     cur_bg = blend_colour(charged_colour, DARK_BG, cp * cp * (3.0 - 2.0 * cp))
                 else:
                     cur_bg = last_bg[0]
@@ -806,8 +841,12 @@ class LoginViewMixin:
             fill_update = cur_bg if cur_bg != last_bg[0] else None
             if rect_key != last_rect[0] or fill_update is not None:
                 set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, cur_r, fill_update)
-                if cutout_visible[0] and rect_key != last_rect[0]:
-                    set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
+                if cutout_visible[0] and not backdrop_hidden[0] and rect_key != last_rect[0]:
+                    if x0 <= 0 and y0 <= 0 and x1 >= win_w and y1 >= win_h and cur_r <= 1:
+                        backdrop_win.withdraw()
+                        backdrop_hidden[0] = True
+                    else:
+                        set_rounded_shapes(backdrop_canvas, cutout_items, "cutout", x0, y0, x1, y1, cur_r)
                 last_rect[0] = rect_key
                 if fill_update is not None:
                     last_bg[0] = fill_update
@@ -815,26 +854,30 @@ class LoginViewMixin:
             if progress >= fade_start:
                 fade_p = min(1.0, (progress - fade_start) / (1.0 - fade_start))
                 fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
-                try:
-                    pill_win.attributes("-alpha", max(0.0, 1.0 - fade_eased))
-                except tk.TclError:
-                    finish()
-                    return
+                alpha = max(0.0, 1.0 - fade_eased)
+                if abs(alpha - last_alpha[0]) >= 0.015 or (alpha == 0.0 and last_alpha[0] != 0.0):
+                    try:
+                        pill_win.attributes("-alpha", alpha)
+                        last_alpha[0] = alpha
+                    except tk.TclError:
+                        finish()
+                        return
 
             if progress < 1.0:
                 spent_ms = (monotonic() - now) * 1000.0
-                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
+                self.after(self._next_frame_delay(spent_ms, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
         # Start after queued idle layout/scaling callbacks finish so the animation runs uninterrupted.
-        self.after(16, draw_frame)
+        self.after(14, draw_frame)
 
     def sign_out_to_login(self):
         """Shrink the current page smoothly back into the rounded Continue button on the login screen."""
         if getattr(self, "_signing_out", False) or getattr(self, "_transition_active", False):
             return
         self._signing_out = True
+        self.close_screen_reader()
         self.focus_set()
 
         win_x = self.winfo_rootx()
@@ -847,7 +890,7 @@ class LoginViewMixin:
             self.show_login()
             return
 
-        if sys.platform != "win32":
+        if sys.platform != "win32" or getattr(self, "_anim_ema_ms", 6.0) > 18.0:
             self._sign_out_in_window()
             return
 
@@ -855,37 +898,8 @@ class LoginViewMixin:
         page_snap = self._capture_window_snapshot(win_x, win_y, win_w, win_h)
         key_colour = "#010203"
 
-        # Two fixed-size full-window Toplevels kept withdrawn until painted (zero white flash):
-        # 1) page_win shows the captured page clipped inside a shrinking rounded rectangle.
-        # 2) pill_win draws the matching rounded pill fading in toward ORANGE_ACCENT as it lands.
-        page_win = None
-        pill_win = None
-        try:
-            page_win = tk.Toplevel(self)
-            page_win.withdraw()
-            page_win._preserve_during_shell_build = True
-            page_win.overrideredirect(True)
-            page_win.configure(bg=DARK_BG)
-            page_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            page_win.attributes("-transparentcolor", key_colour)
-            page_win.transient(self)
-
-            pill_win = tk.Toplevel(self)
-            pill_win.withdraw()
-            pill_win._preserve_during_shell_build = True
-            pill_win.overrideredirect(True)
-            pill_win.configure(bg=key_colour)
-            pill_win.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-            pill_win.attributes("-transparentcolor", key_colour)
-            pill_win.attributes("-alpha", 0.0)
-            pill_win.transient(self)
-        except tk.TclError:
-            for w in (pill_win, page_win):
-                if w is not None:
-                    try:
-                        w.destroy()
-                    except tk.TclError:
-                        pass
+        page_win, pill_win = self._create_overlay_pair(win_x, win_y, win_w, win_h, key_colour, 0.0)
+        if page_win is None:
             self._signing_out = False
             self.show_login()
             return
@@ -906,79 +920,41 @@ class LoginViewMixin:
             for _ in range(4)
         )
 
-        # Pre-compute smooth quarter-circle steps (5 segments per corner) for fast, seamless rounded clipping.
+        # Pre-compute smooth quarter-circle steps (3 segments per corner) and batch all clip updates in one Tcl eval.
         arc_steps = tuple(
             (math.cos(math.radians(a)), math.sin(math.radians(a)))
-            for a in (0, 18, 36, 54, 72, 90)
+            for a in (0, 30, 60, 90)
         )
+        page_cp = str(page_canvas)
+        page_eval = page_canvas.tk.eval
 
         def update_page_clip(x0, y0, x1, y1, radius):
-            # Inset the clipped page snapshot 1-2px strictly inside pill_win's rounded boundary so
-            # bright pixels from page_snap can never poke past the pill's rounded corners.
-            lx = max(0, x0 + 1)
-            ly = max(0, y0 + 1)
-            rx = min(win_w, max(lx, x1 - 2))
-            by = min(win_h, max(ly, y1 - 2))
-            page_canvas.coords(outer_masks[0], 0, 0, win_w, ly)
-            page_canvas.coords(outer_masks[1], 0, by, win_w, win_h)
-            page_canvas.coords(outer_masks[2], 0, ly, lx, by)
-            page_canvas.coords(outer_masks[3], rx, ly, win_w, by)
-
+            lx, ly = max(0, x0 + 1), max(0, y0 + 1)
+            rx, by = min(win_w, max(lx, x1 - 2)), min(win_h, max(ly, y1 - 2))
+            cmds = [
+                f"{page_cp} coords {outer_masks[0]} 0 0 {win_w} {ly}",
+                f"{page_cp} coords {outer_masks[1]} 0 {by} {win_w} {win_h}",
+                f"{page_cp} coords {outer_masks[2]} 0 {ly} {lx} {by}",
+                f"{page_cp} coords {outer_masks[3]} {rx} {ly} {win_w} {by}",
+            ]
             r = max(0, min(radius + 1, (rx - lx) // 2, (by - ly) // 2))
             if r <= 1:
-                for cm in corner_masks:
-                    page_canvas.coords(cm, 0, 0, 0, 0, 0, 0)
-                return
-
-            # Top-left, top-right, bottom-left, bottom-right inverse rounded corner masks with 2px outer overlap.
-            tl = [lx - 2, ly - 2]
-            for c, s in arc_steps:
-                tl.extend((lx + r - r * s, ly + r - r * c))
-            tr = [rx + 2, ly - 2]
-            for c, s in arc_steps:
-                tr.extend((rx - r + r * c, ly + r - r * s))
-            bl = [lx - 2, by + 2]
-            for c, s in arc_steps:
-                bl.extend((lx + r - r * c, by - r + r * s))
-            br = [rx + 2, by + 2]
-            for c, s in arc_steps:
-                br.extend((rx - r + r * s, by - r + r * c))
-            page_canvas.coords(corner_masks[0], *tl)
-            page_canvas.coords(corner_masks[1], *tr)
-            page_canvas.coords(corner_masks[2], *bl)
-            page_canvas.coords(corner_masks[3], *br)
+                cmds.extend(f"{page_cp} coords {cm} 0 0 0 0 0 0" for cm in corner_masks)
+            else:
+                tl = [f"{lx - 2} {ly - 2}"] + [f"{lx + r - r * s:.1f} {ly + r - r * c:.1f}" for c, s in arc_steps]
+                tr = [f"{rx + 2} {ly - 2}"] + [f"{rx - r + r * c:.1f} {ly + r - r * s:.1f}" for c, s in arc_steps]
+                bl = [f"{lx - 2} {by + 2}"] + [f"{lx + r - r * c:.1f} {by - r + r * s:.1f}" for c, s in arc_steps]
+                br = [f"{rx + 2} {by + 2}"] + [f"{rx - r + r * s:.1f} {by - r + r * c:.1f}" for c, s in arc_steps]
+                for cm, pts in zip(corner_masks, (tl, tr, bl, br)):
+                    cmds.append(f"{page_cp} coords {cm} {' '.join(pts)}")
+            page_eval("\n".join(cmds))
 
         pill_canvas = tk.Canvas(pill_win, bg=key_colour, bd=0, highlightthickness=0)
         pill_canvas.pack(fill="both", expand=True)
-        pill_items = (
-            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_rectangle(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-            pill_canvas.create_oval(0, 0, 0, 0, fill=DARK_BG, outline="", tags="pill"),
-        )
+        pill_items = self._make_rounded_shapes(pill_canvas, DARK_BG, "pill")
 
         def set_pill_shapes(x0, y0, x1, y1, radius, fill_col=None):
-            w = max(1, x1 - x0)
-            h = max(1, y1 - y0)
-            r = max(0, min(radius, w // 2, h // 2))
-            if r <= 1:
-                pill_canvas.coords(pill_items[0], x0, y0, x1, y1)
-                for extra in pill_items[1:]:
-                    pill_canvas.coords(extra, 0, 0, 0, 0)
-            else:
-                d = r * 2
-                ox1 = max(x0, x1 - 1)
-                oy1 = max(y0, y1 - 1)
-                pill_canvas.coords(pill_items[0], x0 + r, y0, x1 - r, y1)
-                pill_canvas.coords(pill_items[1], x0, y0 + r, x1, y1 - r)
-                pill_canvas.coords(pill_items[2], x0, y0, x0 + d, y0 + d)
-                pill_canvas.coords(pill_items[3], ox1 - d, y0, ox1, y0 + d)
-                pill_canvas.coords(pill_items[4], x0, oy1 - d, x0 + d, oy1)
-                pill_canvas.coords(pill_items[5], ox1 - d, oy1 - d, ox1, oy1)
-            if fill_col is not None:
-                pill_canvas.itemconfigure("pill", fill=fill_col)
+            self._set_rounded_shapes(pill_canvas, pill_items, "pill", x0, y0, x1, y1, radius, fill_col)
 
         # Reveal the full-window page snapshot BEFORE switching to the login screen underneath.
         page_win.update_idletasks()
@@ -1059,9 +1035,9 @@ class LoginViewMixin:
         squash_y = end_y + (end_h - squash_h) // 2
         impact_colour = blend_colour(ORANGE_ACCENT, ORANGE_HL, 0.85)
 
-        total_duration = 0.680  # ~0.39s snappy shrink into button + ~0.29s lively elastic spring bounce.
-        max_step = 1.0 / 20.0
-        shrink_end = 0.58
+        total_duration = 0.520  # ~0.29s snappy shrink into button + ~0.23s lively elastic spring bounce.
+        max_step = 1.0 / 16.0
+        shrink_end = 0.56
         state = {"progress": 0.0, "last_t": None}
         last_rect = [None]
         last_bg = [DARK_BG]
@@ -1128,8 +1104,8 @@ class LoginViewMixin:
                 fade_eased = fade_p * fade_p * (3.0 - 2.0 * fade_p)
                 cur_bg = blend_colour(DARK_BG, impact_colour, fade_eased)
                 alpha = fade_eased
-                # Hide page_win the instant pill_win is fully opaque so no snapshot edges can ever show.
-                if alpha >= 0.99 and not page_hidden[0]:
+                # Hide page_win the instant pill_win is virtually opaque so DWM stops compositing the snapshot.
+                if alpha >= 0.96 and not page_hidden[0]:
                     page_win.withdraw()
                     page_hidden[0] = True
             else:
@@ -1165,7 +1141,7 @@ class LoginViewMixin:
                 if fill_update is not None:
                     last_bg[0] = fill_update
 
-            if abs(alpha - last_alpha[0]) >= 0.008 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
+            if abs(alpha - last_alpha[0]) >= 0.015 or (alpha in (0.0, 1.0) and alpha != last_alpha[0]):
                 try:
                     pill_win.attributes("-alpha", alpha)
                     last_alpha[0] = alpha
@@ -1175,11 +1151,200 @@ class LoginViewMixin:
 
             if progress < 1.0:
                 spent_ms = (monotonic() - now) * 1000.0
-                self.after(self._next_frame_delay(spent_ms, 16), draw_frame)
+                self.after(self._next_frame_delay(spent_ms, 14, min_yield_ms=4), draw_frame)
             else:
                 finish()
 
-        self.after(16, draw_frame)
+        self.after(14, draw_frame)
+
+    def _create_in_window_fx_canvas(
+        self, disc_canvas, center_x, center_y, vinyl_r, tonearm_spec, empty_caption, on_dismiss=None,
+    ):
+        """Create a single double-buffered full-window Canvas mirroring the login UI so vinyl FX float flicker-free."""
+        win_x, win_y = self.winfo_rootx(), self.winfo_rooty()
+        win_w, win_h = max(1, self.winfo_width()), max(1, self.winfo_height())
+        if win_w <= 1 or win_h <= 1:
+            return None
+
+        fx_cvs = tk.Canvas(self, bg=DARK_BG, bd=0, highlightthickness=0)
+        refs = getattr(self, "_login_ui_refs", None) or {}
+
+        def _rect(w):
+            if w is None or not w.winfo_exists() or w.winfo_width() <= 1:
+                return None
+            return (w.winfo_rootx() - win_x, w.winfo_rooty() - win_y, w.winfo_width(), w.winfo_height())
+
+        def _draw_rounded(x0, y0, x1, y1, rad, fill_col):
+            r = max(0, min(rad, (x1 - x0) // 2, (y1 - y0) // 2))
+            if r <= 1:
+                fx_cvs.create_rectangle(x0, y0, x1, y1, fill=fill_col, outline="")
+                return
+            d = r * 2
+            fx_cvs.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill_col, outline="")
+            fx_cvs.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill_col, outline="")
+            fx_cvs.create_oval(x0, y0, x0 + d, y0 + d, fill=fill_col, outline="")
+            fx_cvs.create_oval(x1 - d, y0, x1, y0 + d, fill=fill_col, outline="")
+            fx_cvs.create_oval(x0, y1 - d, x0 + d, y1, fill=fill_col, outline="")
+            fx_cvs.create_oval(x1 - d, y1 - d, x1, y1, fill=fill_col, outline="")
+
+        # 1) Paint the top-left BBC Sounds logo by cloning its canvas items at the exact window offset.
+        logo_w = refs.get("logo")
+        lr = _rect(logo_w)
+        if lr is not None:
+            lx, ly, _lw, _lh = lr
+            try:
+                for iid in logo_w.find_all():
+                    itype = logo_w.type(iid)
+                    coords = logo_w.coords(iid)
+                    shifted = [c + (lx if i % 2 == 0 else ly) for i, c in enumerate(coords)]
+                    if itype == "rectangle":
+                        fx_cvs.create_rectangle(
+                            *shifted,
+                            fill=logo_w.itemcget(iid, "fill"),
+                            outline=logo_w.itemcget(iid, "outline"),
+                        )
+                    elif itype == "text":
+                        fx_cvs.create_text(
+                            *shifted,
+                            text=logo_w.itemcget(iid, "text"),
+                            fill=logo_w.itemcget(iid, "fill"),
+                            font=logo_w.itemcget(iid, "font"),
+                            anchor=logo_w.itemcget(iid, "anchor"),
+                        )
+            except tk.TclError:
+                pass
+
+        # 2) Paint the rounded login card and input card backgrounds.
+        for key, rad in (("login_panel", 14), ("input_panel", 10)):
+            panel = refs.get(key)
+            pr = _rect(panel)
+            if pr is not None:
+                px, py, pw, ph = pr
+                inset = getattr(panel, "_inset", 0)
+                col = getattr(panel, "surface", None) or panel.cget("bg")
+                _draw_rounded(px + inset, py + inset, px + pw - inset, py + ph - inset, rad, col)
+
+        # 3) Paint all text labels (tagline, hero heading, subtitle, card headings, status, and entry text).
+        for key, align in (
+            ("tagline", "e"),
+            ("hero", "w"),
+            ("subtitle", "w"),
+            ("welcome", "w"),
+            ("prompt", "w"),
+            ("status", "w"),
+        ):
+            lbl = refs.get(key)
+            r = _rect(lbl)
+            if r is None:
+                continue
+            txt = lbl.cget("text")
+            if not txt:
+                continue
+            lx, ly, lw, lh = r
+            tx = lx + lw if align == "e" else lx
+            ty = ly + lh / 2.0
+            wrap = int(lbl.cget("wraplength") or 0)
+            kwargs = {
+                "text": txt,
+                "fill": lbl.cget("fg"),
+                "font": lbl.cget("font"),
+                "anchor": align,
+                "justify": lbl.cget("justify") or "left",
+            }
+            if wrap > 0:
+                kwargs["width"] = wrap
+            fx_cvs.create_text(tx, ty, **kwargs)
+
+        entry = refs.get("entry")
+        id_var = refs.get("id_var")
+        er = _rect(entry)
+        if er is not None and id_var is not None:
+            val = id_var.get()
+            if val:
+                ex, ey, _ew, eh = er
+                fx_cvs.create_text(
+                    ex + 2, ey + eh / 2.0, text=val, fill=entry.cget("fg"),
+                    font=entry.cget("font"), anchor="w",
+                )
+
+        # 4) Paint the Continue button using its exact pre-rendered anti-aliased pill image when available.
+        btn = refs.get("button")
+        br = _rect(btn)
+        if br is not None:
+            bx, by, bw, bh = br
+            norm_img = getattr(btn, "_normal_image", None)
+            if norm_img is not None:
+                fx_cvs._btn_img_ref = norm_img
+                fx_cvs.create_image(bx + bw / 2.0, by + bh / 2.0, image=norm_img, anchor="center")
+            else:
+                _draw_rounded(bx + 4, by + 4, bx + bw - 4, by + bh - 4, 10, ORANGE_ACCENT)
+            y_sh = getattr(btn, "_hover_y_shift", 0)
+            fx_cvs.create_text(
+                bx + bw / 2.0, by + bh / 2.0 + y_sh,
+                text=btn.cget("text"), fill=btn.cget("fg"),
+                font=btn.cget("font"), anchor="center",
+            )
+
+        # 5) Paint the right-hand empty turntable (reusing the live spinning _ring_photo so rings keep rotating!).
+        fx_cx = (disc_canvas.winfo_rootx() - win_x) + center_x
+        fx_cy = (disc_canvas.winfo_rooty() - win_y) + center_y
+        ring_photo = getattr(disc_canvas, "_ring_photo", None)
+        if ring_photo is not None:
+            fx_cvs._ring_photo_ref = ring_photo
+            fx_cvs.create_image(fx_cx, fx_cy, image=ring_photo, anchor="center")
+
+        pad_r = vinyl_r + 3.0
+        fx_cvs.create_oval(
+            fx_cx - pad_r, fx_cy - pad_r, fx_cx + pad_r, fx_cy + pad_r,
+            fill=DARK_BG, outline="",
+        )
+        sp_r = max(5.0, vinyl_r * 0.08)
+        fx_cvs.create_oval(
+            fx_cx - sp_r, fx_cy - sp_r, fx_cx + sp_r, fx_cy + sp_r,
+            fill="#1b1d22", outline="#6e7380", width=1.5,
+        )
+        fx_cvs.create_text(
+            fx_cx, fx_cy + vinyl_r * 0.52, text=empty_caption,
+            fill=TEXT_GRAY, font=(DEFAULT_FONT, max(8, round(vinyl_r * 0.11))),
+        )
+        if tonearm_spec is not None:
+            ox = fx_cx - center_x
+            oy = fx_cy - center_y
+            pivot_x, pivot_y, base_r, cw_x, cw_y, elbow_x, elbow_y, tip_x, tip_y, head_x, head_y = tonearm_spec
+            fx_cvs.create_oval(
+                pivot_x + ox - base_r, pivot_y + oy - base_r,
+                pivot_x + ox + base_r, pivot_y + oy + base_r,
+                fill="#2b2e35", outline="#7c808b", width=2,
+            )
+            fx_cvs.create_oval(
+                pivot_x + ox - base_r * 0.55, pivot_y + oy - base_r * 0.55,
+                pivot_x + ox + base_r * 0.55, pivot_y + oy + base_r * 0.55,
+                fill="#565b66", outline="#c7cbd4", width=1,
+            )
+            fx_cvs.create_line(
+                pivot_x + ox, pivot_y + oy, cw_x + ox, cw_y + oy,
+                fill="#aeb3bd", width=max(5, round(vinyl_r * 0.06)), capstyle="round",
+            )
+            fx_cvs.create_line(
+                pivot_x + ox, pivot_y + oy, elbow_x + ox, elbow_y + oy, tip_x + ox, tip_y + oy,
+                fill="#c6cad2", width=max(4, round(vinyl_r * 0.045)), smooth=True, capstyle="round",
+            )
+            fx_cvs.create_line(
+                tip_x + ox, tip_y + oy, head_x + ox, head_y + oy,
+                fill="#1f2126", width=max(8, round(vinyl_r * 0.09)), capstyle="butt",
+            )
+            fx_cvs.create_oval(
+                head_x + ox - 3, head_y + oy - 3, head_x + ox + 3, head_y + oy + 3,
+                fill=ORANGE_ACCENT, outline="",
+            )
+
+        if on_dismiss is not None:
+            fx_cvs.bind("<Button-1>", lambda _e: on_dismiss())
+
+        fx_cvs.place(x=0, y=0, width=win_w, height=win_h)
+        tk.Misc.lift(fx_cvs)
+        fx_cvs.update_idletasks()
+        return fx_cvs, fx_cx, fx_cy, win_w, win_h
 
     def paint_vinyl_record(self, event):
         """Draw and continuously rotate the 3 concentric text circles, vinyl disc, and tonearm."""
@@ -1302,7 +1467,7 @@ class LoginViewMixin:
         pivot_x = center_x + vinyl_r * 1.06
         pivot_y = center_y - vinyl_r * 0.92
         base_r = max(14, vinyl_r * 0.20)
-        canvas_obj.create_oval(
+        tonearm_first_id = canvas_obj.create_oval(
             pivot_x - base_r, pivot_y - base_r,
             pivot_x + base_r, pivot_y + base_r,
             fill="#2b2e35", outline="#7c808b", width=2,
@@ -1336,26 +1501,801 @@ class LoginViewMixin:
 
         # Continuous time-based rotation loop that adapts its frame rate on lower-end devices
         # and pauses automatically while dragging/resizing or when Reduced Motion is enabled.
+        normal_tick_speed = 30.0
         state = {
             "tick": getattr(canvas_obj, "_spin_tick", 0.0),
             "last_t": None,
             "frame_n": 0,
+            "velocity": normal_tick_speed,
         }
+        scratch = {
+            "active": False,
+            "last_angle": 0.0,
+            "last_time": 0.0,
+            "last_render": 0.0,
+            "velocity": 0.0,
+        }
+        grab_r = outer_r * 1.08
+        vinyl_deg_per_tick = 2.2
         canvas_path = str(canvas_obj)
         tk_eval = canvas_obj.tk.eval
         cos = math.cos
         sin = math.sin
+        atan2 = math.atan2
+        hypot = math.hypot
+        degrees = math.degrees
         deg2rad = math.pi / 180.0
         top_r = label_r * 0.45
         bot_r = label_r * 0.48
+        # Cartridge stylus contact point on the vinyl (used to carve realistic scratches when over-scratched).
+        stylus_r_frac = hypot(head_x - center_x, head_y - center_y) / max(1.0, vinyl_r)
+        stylus_tk_deg = (-degrees(atan2(head_y - center_y, head_x - center_x))) % 360.0
+        wear = getattr(canvas_obj, "_vinyl_wear", None)
+        if wear is None:
+            wear = {
+                "total_deg": 0.0, "next_mark_deg": 320.0, "marks": [],
+                "one_way_deg": 0.0, "one_way_dir": 0, "shattered": False, "flew_off": False,
+            }
+            canvas_obj._vinyl_wear = wear
+        scratch_items = []  # ("arc", item_id, base_tk_deg) or ("line", item_id, base_a1, r1, base_a2, r2)
+        spark_ids = []
+        spark_job = [None]
+        shatter_job = [None]
+        shatter_mask_ids = []
+        shatter_overlay = [None]
+
+        def _apply_empty_turntable_mask(caption="Vinyl shattered! Click to replace"):
+            """Hide the vinyl disc behind DARK_BG while keeping the bare spindle pin and orbiting text rings."""
+            for mid in shatter_mask_ids:
+                try:
+                    canvas_obj.delete(mid)
+                except tk.TclError:
+                    pass
+            shatter_mask_ids.clear()
+            pad_r = vinyl_r + 3.0
+            mask_id = canvas_obj.create_oval(
+                center_x - pad_r, center_y - pad_r, center_x + pad_r, center_y + pad_r,
+                fill=canvas_obj.cget("bg"), outline="",
+            )
+            sp_r = max(5.0, vinyl_r * 0.08)
+            sp_id = canvas_obj.create_oval(
+                center_x - sp_r, center_y - sp_r, center_x + sp_r, center_y + sp_r,
+                fill="#1b1d22", outline="#6e7380", width=1.5,
+            )
+            hint_id = canvas_obj.create_text(
+                center_x, center_y + vinyl_r * 0.52,
+                text=caption,
+                fill=TEXT_GRAY, font=(DEFAULT_FONT, max(8, round(vinyl_r * 0.11))),
+            )
+            for mid in (mask_id, sp_id, hint_id):
+                canvas_obj.tag_lower(mid, tonearm_first_id)
+                shatter_mask_ids.append(mid)
+
+        tonearm_spec = (pivot_x, pivot_y, base_r, cw_x, cw_y, elbow_x, elbow_y, tip_x, tip_y, head_x, head_y)
+
+        def _make_full_window_fx_canvas(empty_caption="Vinyl shattered! Click to replace"):
+            """Create a full-window transparent overlay on Windows or a double-buffered full-window Canvas on Linux/macOS."""
+            _cancel_shatter()
+            if sys.platform == "win32":
+                try:
+                    win_x, win_y = self.winfo_rootx(), self.winfo_rooty()
+                    win_w, win_h = max(1, self.winfo_width()), max(1, self.winfo_height())
+                    key_col = "#010203"
+                    ov = tk.Toplevel(self)
+                    ov.withdraw()
+                    ov.overrideredirect(True)
+                    ov.configure(bg=key_col)
+                    ov.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+                    ov.attributes("-transparentcolor", key_col)
+                    ov.transient(self)
+                    ov_cvs = tk.Canvas(ov, bg=key_col, bd=0, highlightthickness=0)
+                    ov_cvs.pack(fill="both", expand=True)
+                    ov.update_idletasks()
+                    self._strip_dwm_border(ov)
+                    ov.deiconify()
+                    self._strip_dwm_border(ov)
+                    ov.lift()
+                    shatter_overlay[0] = ov
+                    fx_cx = (canvas_obj.winfo_rootx() - win_x) + center_x
+                    fx_cy = (canvas_obj.winfo_rooty() - win_y) + center_y
+                    return ov_cvs, fx_cx, fx_cy, win_w, win_h
+                except tk.TclError:
+                    _cancel_shatter()
+            else:
+                built = self._create_in_window_fx_canvas(
+                    canvas_obj, center_x, center_y, vinyl_r, tonearm_spec, empty_caption,
+                    on_dismiss=_cancel_shatter,
+                )
+                if built is not None:
+                    fx_cvs, fx_cx, fx_cy, win_w, win_h = built
+                    shatter_overlay[0] = fx_cvs
+                    return fx_cvs, fx_cx, fx_cy, win_w, win_h
+            cw_f = max(w, canvas_obj.winfo_width())
+            ch_f = max(h, canvas_obj.winfo_height())
+            return canvas_obj, center_x, center_y, cw_f, ch_f
+
+        def _cancel_shatter(_event=None):
+            if shatter_job[0] is not None:
+                try:
+                    self.after_cancel(shatter_job[0])
+                except tk.TclError:
+                    pass
+                shatter_job[0] = None
+            if shatter_overlay[0] is not None:
+                ov_ref = shatter_overlay[0]
+                shatter_overlay[0] = None
+                try:
+                    if ov_ref.winfo_exists():
+                        if not isinstance(ov_ref, tk.Toplevel):
+                            tk.Misc.lower(ov_ref)
+                            self.update_idletasks()
+                        ov_ref.destroy()
+                except tk.TclError:
+                    pass
+
+        canvas_obj.bind("<Destroy>", _cancel_shatter, add="+")
+
+        def _spawn_scratch_item(mark, cur_vinyl_deg):
+            kind = mark[0]
+            if kind == "arc":
+                _, r_frac, base_tk, ext_deg, col, w_px = mark
+                sr = vinyl_r * r_frac
+                item_id = canvas_obj.create_arc(
+                    center_x - sr, center_y - sr, center_x + sr, center_y + sr,
+                    start=(base_tk - cur_vinyl_deg) % 360.0, extent=ext_deg,
+                    outline=col, width=w_px, style="arc",
+                )
+                scratch_items.append(("arc", item_id, base_tk))
+            else:
+                _, r1_f, a1_deg, r2_f, a2_deg, col, w_px = mark
+                r1, r2 = vinyl_r * r1_f, vinyl_r * r2_f
+                rad1 = (cur_vinyl_deg - a1_deg) * deg2rad
+                rad2 = (cur_vinyl_deg - a2_deg) * deg2rad
+                item_id = canvas_obj.create_line(
+                    center_x + r1 * cos(rad1), center_y + r1 * sin(rad1),
+                    center_x + r2 * cos(rad2), center_y + r2 * sin(rad2),
+                    fill=col, width=w_px, capstyle="round",
+                )
+                scratch_items.append(("line", item_id, a1_deg, r1, a2_deg, r2))
+            canvas_obj.tag_lower(item_id, tonearm_first_id)
+
+        # Rehydrate any existing scratches (or empty spindle) after a window resize.
+        init_vdeg = (state["tick"] * vinyl_deg_per_tick) % 360.0
+        if wear.get("flew_off"):
+            _apply_empty_turntable_mask("Vinyl flew off! Click to replace")
+        elif wear.get("shattered"):
+            _apply_empty_turntable_mask("Vinyl shattered! Click to replace")
+        else:
+            for existing_mark in wear["marks"]:
+                _spawn_scratch_item(existing_mark, init_vdeg)
+
+        def _flash_stylus_spark():
+            if not canvas_obj.winfo_exists():
+                return
+            if spark_job[0] is not None:
+                try:
+                    self.after_cancel(spark_job[0])
+                except tk.TclError:
+                    pass
+                spark_job[0] = None
+            for sid in spark_ids:
+                try:
+                    canvas_obj.delete(sid)
+                except tk.TclError:
+                    pass
+            spark_ids.clear()
+            for ang_deg, seg_len, col in ((20, 7, "#fff2cc"), (115, 6, "#ffb347"), (-55, 6, "#ffffff")):
+                ar = ang_deg * deg2rad
+                spark_ids.append(canvas_obj.create_line(
+                    head_x, head_y, head_x + seg_len * cos(ar), head_y + seg_len * sin(ar),
+                    fill=col, width=1.5, capstyle="round",
+                ))
+
+            def _clear_spark():
+                spark_job[0] = None
+                if not canvas_obj.winfo_exists():
+                    return
+                for sid in spark_ids:
+                    try:
+                        canvas_obj.delete(sid)
+                    except tk.TclError:
+                        pass
+                spark_ids.clear()
+
+            spark_job[0] = self.after(110, _clear_spark)
+
+        def _carve_cartridge_scratch(delta_deg, cur_vinyl_deg):
+            n = len(wear["marks"])
+            if n >= 34:
+                return
+            # Deterministic pseudo-random jitter so scratches look organic without importing random.
+            seed = (n * 1103515245 + int(abs(cur_vinyl_deg) * 17) + 12345) & 0xFFFF
+            u1 = ((seed % 997) / 997.0) - 0.5          # -0.5 .. +0.5
+            u2 = (((seed // 7) % 991) / 991.0)         #  0.0 ..  1.0
+            severity = min(1.0, n / 20.0)
+
+            # Every 4th scratch at higher abuse is a diagonal needle-skip gouge across grooves.
+            if n >= 8 and (n % 4 == 0):
+                r1_f = max(0.41, min(0.94, stylus_r_frac + u1 * (0.08 + 0.16 * severity)))
+                r2_f = max(0.41, min(0.94, r1_f + (0.09 + 0.12 * u2) * (1 if u1 >= 0 else -1)))
+                a1_deg = (stylus_tk_deg + cur_vinyl_deg) % 360.0
+                a2_deg = (a1_deg + (8.0 + 14.0 * u2) * (1 if delta_deg >= 0 else -1)) % 360.0
+                col = "#dce2ed" if severity > 0.55 else "#aab2c2"
+                mark = ("line", r1_f, a1_deg, r2_f, a2_deg, col, 1.5 if severity > 0.55 else 1.2)
+            else:
+                spread = 0.05 + 0.19 * severity
+                r_frac = max(0.41, min(0.95, stylus_r_frac + u1 * spread))
+                ext_mag = 12.0 + 24.0 * u2 + 12.0 * severity
+                ext_deg = ext_mag if delta_deg >= 0 else -ext_mag
+                base_tk = (stylus_tk_deg + cur_vinyl_deg) % 360.0
+                if severity < 0.30:
+                    col, w_px = ("#747b8a" if u2 < 0.5 else "#8d95a6"), 1.0
+                elif severity < 0.65:
+                    col, w_px = ("#a6aebf" if u2 < 0.5 else "#c2c9d6"), 1.3
+                else:
+                    col, w_px = ("#d7dde8" if u2 < 0.5 else "#eef2f8"), 1.7
+                mark = ("arc", r_frac, base_tk, ext_deg, col, w_px)
+            wear["marks"].append(mark)
+            _spawn_scratch_item(mark, cur_vinyl_deg)
+            _flash_stylus_spark()
+            if len(wear["marks"]) >= 24 and not wear.get("shattered") and not wear.get("flew_off"):
+                _shatter_vinyl(delta_deg)
+
+        def _fly_off_vinyl(spin_dir, cur_vinyl_deg, spin_vel_ticks=0.0):
+            """Pop the intact vinyl off the spindle and fling it in the spin direction, scaled by spin speed."""
+            wear["flew_off"] = True
+            scratch["active"] = False
+            for entry in scratch_items:
+                try:
+                    canvas_obj.delete(entry[1])
+                except tk.TclError:
+                    pass
+            scratch_items.clear()
+            _apply_empty_turntable_mask("Vinyl flew off! Click to replace")
+            try:
+                canvas_obj.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+
+            fly_canvas, fx_cx, fx_cy, fx_w, fx_h = _make_full_window_fx_canvas("Vinyl flew off! Click to replace")
+            fly_path = str(fly_canvas)
+            fly_eval = fly_canvas.tk.eval
+
+            # Draw the intact spinning vinyl disc on the overlay so it sails right over the sign-in box.
+            disc_id = fly_canvas.create_oval(
+                fx_cx - vinyl_r, fx_cy - vinyl_r, fx_cx + vinyl_r, fx_cy + vinyl_r,
+                fill="#111215", outline="#383c46", width=2,
+            )
+            sh1_id = fly_canvas.create_arc(
+                fx_cx - vinyl_r + 3, fx_cy - vinyl_r + 3, fx_cx + vinyl_r - 3, fx_cy + vinyl_r - 3,
+                start=(25.0 - cur_vinyl_deg) % 360.0, extent=38, fill="#24272e", outline="", style="pieslice",
+            )
+            sh2_id = fly_canvas.create_arc(
+                fx_cx - vinyl_r + 3, fx_cy - vinyl_r + 3, fx_cx + vinyl_r - 3, fx_cy + vinyl_r - 3,
+                start=(205.0 - cur_vinyl_deg) % 360.0, extent=38, fill="#24272e", outline="", style="pieslice",
+            )
+            grooves = [
+                (fly_canvas.create_oval(
+                    fx_cx - vinyl_r * f, fx_cy - vinyl_r * f, fx_cx + vinyl_r * f, fx_cy + vinyl_r * f,
+                    outline=col, width=1,
+                ), vinyl_r * f)
+                for f, col in ((0.90, "#292c33"), (0.76, "#2c2f36"), (0.60, "#20232a"), (0.47, "#2a2d34"))
+            ]
+            lbl_id = fly_canvas.create_oval(
+                fx_cx - label_r, fx_cy - label_r, fx_cx + label_r, fx_cy + label_r,
+                fill=ORANGE_ACCENT, outline=TEXT_WHITE, width=2,
+            )
+            bbc_id = fly_canvas.create_text(
+                fx_cx, fx_cy - top_r, text="BBC", fill=TEXT_WHITE,
+                font=(DEFAULT_FONT, max(7, round(label_r * 0.28)), "bold"),
+            )
+            snd_id = fly_canvas.create_text(
+                fx_cx, fx_cy + bot_r, text="SOUNDS", fill="#111111",
+                font=(DEFAULT_FONT, max(6, round(label_r * 0.20)), "bold"),
+            )
+            sp_r = max(5.0, vinyl_r * 0.08)
+            hole_id = fly_canvas.create_oval(
+                fx_cx - sp_r, fx_cy - sp_r, fx_cx + sp_r, fx_cy + sp_r,
+                fill="#010203" if isinstance(shatter_overlay[0], tk.Toplevel) else DARK_BG,
+                outline=TEXT_WHITE, width=2,
+            )
+            all_fly_ids = [disc_id, sh1_id, sh2_id, *(gid for gid, _ in grooves), lbl_id, bbc_id, snd_id, hole_id]
+
+            dir_sign = 1.0 if spin_dir >= 0 else -1.0
+            # Scale launch distance, arc height, and spin rate smoothly by how fast the user spun the record.
+            spin_deg_s = abs(spin_vel_ticks) * vinyl_deg_per_tick
+            speed_t = max(0.0, min(1.0, (spin_deg_s - 100.0) / 1000.0))
+            launch_vx = dir_sign * (150.0 + 980.0 * speed_t)
+            launch_vy = -(85.0 + 365.0 * speed_t)
+            launch_omega = dir_sign * (240.0 + 960.0 * speed_t)
+            fly_st = {
+                "x": fx_cx, "y": fx_cy,
+                "vx": launch_vx,
+                "vy": launch_vy,
+                "ang": cur_vinyl_deg, "omega": launch_omega,
+                "last_t": monotonic(), "start_t": monotonic(),
+            }
+            gravity = 1040.0
+
+            def _step_fly():
+                shatter_job[0] = None
+                if not canvas_obj.winfo_exists() or not fly_canvas.winfo_exists():
+                    _cancel_shatter()
+                    return
+                now_f = monotonic()
+                dt_f = max(0.006, min(0.036, now_f - fly_st["last_t"]))
+                fly_st["last_t"] = now_f
+                fly_st["vy"] += gravity * dt_f
+                fly_st["x"] += fly_st["vx"] * dt_f
+                fly_st["y"] += fly_st["vy"] * dt_f
+                fly_st["ang"] = (fly_st["ang"] + fly_st["omega"] * dt_f) % 360.0
+
+                sx, sy, ang = fly_st["x"], fly_st["y"], fly_st["ang"]
+                # Subtle aerodynamic wobble as the disc flies through the air.
+                wob = 1.0 - 0.14 * abs(sin((now_f - fly_st["start_t"]) * 14.0))
+                ry_d = vinyl_r * wob
+                ry_l = label_r * wob
+                ry_s = sp_r * wob
+                v_rad = (ang - 90.0) * deg2rad
+                cv, sv = cos(v_rad), sin(v_rad)
+                cmds = [
+                    f"{fly_path} coords {disc_id} {sx - vinyl_r:.1f} {sy - ry_d:.1f} {sx + vinyl_r:.1f} {sy + ry_d:.1f}",
+                    f"{fly_path} coords {sh1_id} {sx - vinyl_r + 3:.1f} {sy - ry_d + 3:.1f} {sx + vinyl_r - 3:.1f} {sy + ry_d - 3:.1f}",
+                    f"{fly_path} coords {sh2_id} {sx - vinyl_r + 3:.1f} {sy - ry_d + 3:.1f} {sx + vinyl_r - 3:.1f} {sy + ry_d - 3:.1f}",
+                    f"{fly_path} itemconfigure {sh1_id} -start {(25.0 - ang) % 360.0:.1f}",
+                    f"{fly_path} itemconfigure {sh2_id} -start {(205.0 - ang) % 360.0:.1f}",
+                    f"{fly_path} coords {lbl_id} {sx - label_r:.1f} {sy - ry_l:.1f} {sx + label_r:.1f} {sy + ry_l:.1f}",
+                    f"{fly_path} coords {bbc_id} {sx + top_r * cv:.1f} {sy + top_r * wob * sv:.1f}",
+                    f"{fly_path} coords {snd_id} {sx - bot_r * cv:.1f} {sy - bot_r * wob * sv:.1f}",
+                    f"{fly_path} itemconfigure {bbc_id} -angle {(-ang) % 360.0:.1f}",
+                    f"{fly_path} itemconfigure {snd_id} -angle {(180.0 - ang) % 360.0:.1f}",
+                    f"{fly_path} coords {hole_id} {sx - sp_r:.1f} {sy - ry_s:.1f} {sx + sp_r:.1f} {sy + ry_s:.1f}",
+                ]
+                for gid, gr in grooves:
+                    cmds.append(f"{fly_path} coords {gid} {sx - gr:.1f} {sy - gr * wob:.1f} {sx + gr:.1f} {sy + gr * wob:.1f}")
+                try:
+                    fly_eval("\n".join(cmds))
+                except tk.TclError:
+                    _cancel_shatter()
+                    return
+
+                on_screen = (-vinyl_r - 60 < sx < fx_w + vinyl_r + 60) and (-vinyl_r - 220 < sy < fx_h + vinyl_r + 80)
+                if on_screen:
+                    spent_f = (monotonic() - now_f) * 1000.0
+                    shatter_job[0] = self.after(self._next_frame_delay(spent_f, 14, min_yield_ms=4), _step_fly)
+                else:
+                    if shatter_overlay[0] is not None:
+                        _cancel_shatter()
+                    else:
+                        for fid in all_fly_ids:
+                            try:
+                                fly_canvas.delete(fid)
+                            except tk.TclError:
+                                pass
+
+            _step_fly()
+
+        def _shatter_vinyl(spin_dir):
+            """Explode the over-scratched vinyl into jagged shards that tumble and fall off-screen."""
+            wear["shattered"] = True
+            scratch["active"] = False
+            for entry in scratch_items:
+                try:
+                    canvas_obj.delete(entry[1])
+                except tk.TclError:
+                    pass
+            scratch_items.clear()
+            _apply_empty_turntable_mask("Vinyl shattered! Click to replace")
+            try:
+                canvas_obj.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+
+            shard_canvas, sh_cx, sh_cy, _fx_w, fx_h = _make_full_window_fx_canvas("Vinyl shattered! Click to replace")
+            fall_limit = fx_h + vinyl_r + 100.0
+
+            shard_path = str(shard_canvas)
+            shard_eval = shard_canvas.tk.eval
+
+            # Build ~72 smaller irregular shards (chunks, slivers, label fragments, splinters) spread wide.
+            shards = []
+            dir_sign = 1.0 if spin_dir >= 0 else -1.0
+            rng = [int(abs(state["tick"]) * 97 + len(wear["marks"]) * 313 + 7919) & 0xFFFFFFFF]
+
+            def _rand():
+                rng[0] = (rng[0] * 1664525 + 1013904223) & 0xFFFFFFFF
+                return (rng[0] >> 8) / float(1 << 24)
+
+            def _add_shard(local_pts, fill_c, out_c, out_w, rad_m, burst_v, pop_v, omega_v, shrink=0.72):
+                cx_s = sum(px for px, _ in local_pts) / len(local_pts)
+                cy_s = sum(py for _, py in local_pts) / len(local_pts)
+                rel_pts = [((px - cx_s) * shrink, (py - cy_s) * shrink) for px, py in local_pts]
+                # Slight initial radial scatter so smaller pieces don't clump at the crack seam.
+                kick = (6.0 + _rand() * 14.0)
+                sx0 = sh_cx + cx_s + cos(rad_m) * kick
+                sy0 = sh_cy + cy_s + sin(rad_m) * kick
+                poly_id = shard_canvas.create_polygon(
+                    *[coord for px, py in rel_pts for coord in (sx0 + px, sy0 + py)],
+                    fill=fill_c, outline=out_c, width=out_w,
+                )
+                spread_ang = rad_m + (_rand() - 0.5) * 0.65
+                vx = cos(spread_ang) * burst_v - sin(rad_m) * (80.0 + _rand() * 110.0) * dir_sign
+                vy = sin(spread_ang) * burst_v - pop_v
+                shards.append([poly_id, rel_pts, sx0, sy0, vx, vy, 0.0, omega_v])
+
+            def _make_irregular_angles(count, offset_deg=0.0):
+                weights = [0.40 + _rand() * 1.40 for _ in range(count)]
+                total_w = sum(weights)
+                cur = offset_deg
+                spans = []
+                for w_val in weights:
+                    nxt = cur + 360.0 * (w_val / total_w)
+                    spans.append((cur, nxt))
+                    cur = nxt
+                return spans
+
+            # 1) 24 smaller irregular outer-ring vinyl chunks & slivers.
+            for i, (a0, a1) in enumerate(_make_irregular_angles(24, offset_deg=_rand() * 20.0)):
+                span = a1 - a0
+                am = a0 + span * (0.35 + _rand() * 0.30)
+                r_in_a = vinyl_r * (0.64 + _rand() * 0.18)
+                r_in_b = vinyl_r * (0.64 + _rand() * 0.18)
+                r_mid_a = (r_in_a + vinyl_r) * (0.46 + _rand() * 0.12)
+                r_mid_b = (r_in_b + vinyl_r) * (0.46 + _rand() * 0.12)
+                r_out = vinyl_r * (0.94 + _rand() * 0.06)
+                jag = (1 if i % 2 == 0 else -1) * (1.5 + _rand() * 3.5)
+                pts = [
+                    (r * cos(a * deg2rad), r * sin(a * deg2rad))
+                    for r, a in (
+                        (r_in_a, a0), (r_mid_a, a0 + jag), (r_out, a0 + span * 0.12),
+                        (r_out, am), (r_out, a1 - span * 0.12), (r_mid_b, a1 - jag), (r_in_b, a1),
+                    )
+                ]
+                size_fac = max(0.65, min(1.5, 16.0 / max(6.0, span)))
+                _add_shard(
+                    pts, "#111216" if i % 2 == 0 else "#1b1d24", "#727b8c", 1.1,
+                    am * deg2rad, (260.0 + _rand() * 260.0) * size_fac, 150.0 + _rand() * 240.0,
+                    (1 if _rand() > 0.5 else -1) * (200.0 + _rand() * 380.0),
+                    shrink=0.66 + _rand() * 0.18,
+                )
+
+            # 2) 18 smaller asymmetric mid-ring vinyl shards.
+            for i, (a0, a1) in enumerate(_make_irregular_angles(18, offset_deg=11.0 + _rand() * 18.0)):
+                span = a1 - a0
+                am = (a0 + a1) * 0.5
+                r_in = vinyl_r * (0.35 + _rand() * 0.14)
+                r_out_a = vinyl_r * (0.58 + _rand() * 0.18)
+                r_out_b = vinyl_r * (0.58 + _rand() * 0.18)
+                if i % 3 == 0:
+                    polar = ((r_in, am), (r_out_a, a0), (r_out_b, a1))
+                else:
+                    polar = (
+                        (r_in, a0 + span * 0.08), (r_out_a, a0 - 1.5),
+                        (max(r_out_a, r_out_b) * (0.95 + _rand() * 0.08), am),
+                        (r_out_b, a1 + 1.5), (r_in, a1 - span * 0.08),
+                    )
+                pts = [(r * cos(a * deg2rad), r * sin(a * deg2rad)) for r, a in polar]
+                _add_shard(
+                    pts, "#16181e" if i % 2 == 0 else "#21242d", "#666f80", 1.0,
+                    am * deg2rad, 200.0 + _rand() * 250.0, 180.0 + _rand() * 220.0,
+                    (1 if _rand() > 0.5 else -1) * (220.0 + _rand() * 360.0),
+                    shrink=0.64 + _rand() * 0.18,
+                )
+
+            # 3) 8 smaller unevenly cracked orange centre-label shards.
+            for i, (a0, a1) in enumerate(_make_irregular_angles(8, offset_deg=_rand() * 30.0)):
+                am = (a0 + a1) * 0.5
+                r_in = max(5.0, vinyl_r * (0.09 + _rand() * 0.05))
+                r_out = vinyl_r * (0.31 + _rand() * 0.06)
+                pts = [
+                    (r * cos(a * deg2rad), r * sin(a * deg2rad))
+                    for r, a in ((r_in, a0), (r_out, a0 + 2.0), (r_out * 1.03, am), (r_out, a1 - 2.0), (r_in, a1))
+                ]
+                _add_shard(
+                    pts, ORANGE_ACCENT, TEXT_WHITE, 1.1,
+                    am * deg2rad, 175.0 + _rand() * 220.0, 200.0 + _rand() * 200.0,
+                    (1 if _rand() > 0.5 else -1) * (250.0 + _rand() * 340.0),
+                    shrink=0.68 + _rand() * 0.16,
+                )
+
+            # 4) 22 tiny flying splinters, needles, and chips scattering wide across the canvas.
+            for i in range(22):
+                a_chip = _rand() * 360.0 * deg2rad
+                r_chip = vinyl_r * (0.25 + _rand() * 0.72)
+                bx, by = r_chip * cos(a_chip), r_chip * sin(a_chip)
+                sz = max(2.5, vinyl_r * (0.022 + _rand() * 0.042))
+                if i % 3 == 0:
+                    pts = [(bx - sz * 1.5, by - sz * 0.25), (bx + sz * 1.5, by), (bx - sz * 0.8, by + sz * 0.4)]
+                elif i % 3 == 1:
+                    pts = [(bx - sz, by - sz * 0.4), (bx + sz * 0.5, by - sz * 0.85), (bx + sz * 0.85, by + sz * 0.55), (bx - sz * 0.5, by + sz * 0.65)]
+                else:
+                    pts = [(bx, by - sz), (bx + sz * 0.9, by + sz * 0.65), (bx - sz * 0.7, by + sz * 0.45)]
+                chip_fill = "#23262f" if i % 4 else ("#d0d6e3" if i % 8 else ORANGE_ACCENT)
+                _add_shard(
+                    pts, chip_fill, "#8d95a6", 0.8,
+                    a_chip, 340.0 + _rand() * 340.0, 180.0 + _rand() * 290.0,
+                    (1 if _rand() > 0.5 else -1) * (380.0 + _rand() * 520.0),
+                    shrink=1.0,
+                )
+
+            now_init = monotonic()
+            shatter_state = {"start_t": now_init, "last_t": now_init}
+            gravity = 1400.0
+
+            def _step_shatter():
+                shatter_job[0] = None
+                if not canvas_obj.winfo_exists() or not shard_canvas.winfo_exists():
+                    _cancel_shatter()
+                    return
+                now_s = monotonic()
+                raw_dt = max(0.006, min(0.036, now_s - shatter_state["last_t"]))
+                shatter_state["last_t"] = now_s
+                elapsed = now_s - shatter_state["start_t"]
+
+                # Speed-ramp: fast explosive crack (0..0.09s) -> brake into slow-mo hang (0.16..0.56s) -> fast fall!
+                if elapsed < 0.09:
+                    t_scale, g_mult = 1.45, 0.45
+                elif elapsed < 0.16:
+                    u = (elapsed - 0.09) / 0.07
+                    ease_u = 1.0 - (1.0 - u) ** 2
+                    t_scale = 1.45 - 1.34 * ease_u
+                    g_mult = 0.45 - 0.30 * ease_u
+                elif elapsed < 0.56:
+                    t_scale, g_mult = 0.11, 0.15
+                elif elapsed < 0.76:
+                    u = (elapsed - 0.56) / 0.20
+                    ease_u = u * u
+                    t_scale = 0.11 + 1.04 * ease_u
+                    g_mult = 0.15 + 0.85 * ease_u
+                else:
+                    t_scale, g_mult = 1.15, 1.0
+
+                dt_s = raw_dt * t_scale
+                cmds = []
+                any_visible = False
+                for sh in shards:
+                    poly_id, rel_pts, sx, sy, vx, vy, ang, omega = sh
+                    vy += gravity * g_mult * dt_s
+                    sx += vx * dt_s
+                    sy += vy * dt_s
+                    ang = (ang + omega * dt_s) % 360.0
+                    sh[2], sh[3], sh[5], sh[6] = sx, sy, vy, ang
+                    if sy < fall_limit:
+                        any_visible = True
+                        ca, sa = cos(ang * deg2rad), sin(ang * deg2rad)
+                        pts_str = " ".join(
+                            f"{sx + px * ca - py * sa:.1f} {sy + px * sa + py * ca:.1f}"
+                            for px, py in rel_pts
+                        )
+                        cmds.append(f"{shard_path} coords {poly_id} {pts_str}")
+                if cmds:
+                    try:
+                        shard_eval("\n".join(cmds))
+                    except tk.TclError:
+                        _cancel_shatter()
+                        return
+                if any_visible:
+                    spent_s = (monotonic() - now_s) * 1000.0
+                    shatter_job[0] = self.after(self._next_frame_delay(spent_s, 14, min_yield_ms=4), _step_shatter)
+                else:
+                    if shatter_overlay[0] is not None:
+                        _cancel_shatter()
+                    else:
+                        for sh in shards:
+                            try:
+                                shard_canvas.delete(sh[0])
+                            except tk.TclError:
+                                pass
+
+            _step_shatter()
+
         # Use ~30fps on Linux/macOS or Canvas fallback so the turntable looks smooth while staying light on CPU.
         spin_base_ms = 22 if sys.platform == "win32" else 33
+
+        def _update_scratch_cmds(append_fn, vinyl_deg):
+            for entry in scratch_items:
+                if entry[0] == "arc":
+                    _, item_id, base_tk = entry
+                    append_fn(f"{canvas_path} itemconfigure {item_id} -start {(base_tk - vinyl_deg) % 360.0:.1f}")
+                else:
+                    _, item_id, a1_deg, r1, a2_deg, r2 = entry
+                    rad1 = (vinyl_deg - a1_deg) * deg2rad
+                    rad2 = (vinyl_deg - a2_deg) * deg2rad
+                    append_fn(
+                        f"{canvas_path} coords {item_id} "
+                        f"{center_x + r1 * cos(rad1):.1f} {center_y + r1 * sin(rad1):.1f} "
+                        f"{center_x + r2 * cos(rad2):.1f} {center_y + r2 * sin(rad2):.1f}"
+                    )
+
+        def render_frame_at(t, force_all_angles=False):
+            if not canvas_obj.winfo_exists():
+                return False
+            bucket = state["frame_n"] % 6
+            state["frame_n"] += 1
+            vinyl_deg = (t * vinyl_deg_per_tick) % 360.0
+
+            if gdi_rings is not None:
+                gdi_rings(t)
+                if scratch_items:
+                    s_cmds = []
+                    _update_scratch_cmds(s_cmds.append, vinyl_deg)
+                    try:
+                        tk_eval("\n".join(s_cmds))
+                    except tk.TclError:
+                        return False
+                return True
+
+            cmds = []
+            append = cmds.append
+            # Lightweight Canvas fallback: stagger expensive FreeType -angle updates across 6 buckets
+            # unless actively scratching.
+            for item_id, base_deg, radius, speed, slot in ring_items:
+                deg = (base_deg + t * speed) % 360.0
+                rad = (deg - 90.0) * deg2rad
+                append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.1f} {center_y + radius * sin(rad):.1f}")
+                if force_all_angles or ((slot == bucket % 3) and (bucket < 3)):
+                    append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.1f}")
+
+            # Rotate the vinyl highlights and specular glints clockwise.
+            append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.1f}")
+
+            # Orbit the centre label dot and "BBC / SOUNDS" text.
+            v_rad = (vinyl_deg - 90.0) * deg2rad
+            cv, sv = cos(v_rad), sin(v_rad)
+            mx = center_x + label_dot_r * cv
+            my = center_y + label_dot_r * sv
+            append(f"{canvas_path} coords {label_marker} {mx - 3:.1f} {my - 3:.1f} {mx + 3:.1f} {my + 3:.1f}")
+            append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.1f} {center_y + top_r * sv:.1f}")
+            append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.1f} {center_y - bot_r * sv:.1f}")
+            append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.1f}")
+            append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.1f}")
+            if scratch_items:
+                _update_scratch_cmds(append, vinyl_deg)
+
+            try:
+                tk_eval("\n".join(cmds))
+            except tk.TclError:
+                return False
+            return True
+
+        def _on_vinyl_press(evt):
+            if getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            if hypot(dx, dy) > grab_r:
+                return
+            if wear.get("shattered") or wear.get("flew_off"):
+                # Clicking the empty turntable drops a fresh pristine vinyl back onto the spindle.
+                if hypot(dx, dy) <= vinyl_r * 1.15:
+                    _cancel_shatter()
+                    wear["total_deg"] = 0.0
+                    wear["next_mark_deg"] = 320.0
+                    wear["one_way_deg"] = 0.0
+                    wear["one_way_dir"] = 0
+                    wear["marks"].clear()
+                    wear["shattered"] = False
+                    wear["flew_off"] = False
+                    class _RepaintEvt:
+                        widget = canvas_obj
+                        width = max(240, canvas_obj.winfo_width())
+                        height = max(240, canvas_obj.winfo_height())
+                    self.paint_vinyl_record(_RepaintEvt())
+                return
+            now_t = monotonic()
+            scratch["active"] = True
+            scratch["last_angle"] = degrees(atan2(dy, dx))
+            scratch["last_time"] = now_t
+            scratch["velocity"] = 0.0
+            state["velocity"] = 0.0
+            try:
+                canvas_obj.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_drag(evt):
+            if not scratch["active"] or getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            now_t = monotonic()
+            # Ignore tiny jitter right over the spindle centre so atan2 never flips 180 degrees.
+            if hypot(dx, dy) < 4.0:
+                scratch["last_time"] = now_t
+                return
+            angle = degrees(atan2(dy, dx))
+            delta_deg = (angle - scratch["last_angle"] + 180.0) % 360.0 - 180.0
+            scratch["last_angle"] = angle
+
+            delta_tick = delta_deg / vinyl_deg_per_tick
+            state["tick"] = (state["tick"] + delta_tick) % 36000.0
+            canvas_obj._spin_tick = state["tick"]
+
+            dt_drag = max(0.004, now_t - scratch["last_time"])
+            scratch["last_time"] = now_t
+            inst_vel = max(-450.0, min(450.0, delta_tick / dt_drag))
+            scratch["velocity"] = scratch["velocity"] * 0.45 + inst_vel * 0.55
+
+            # 1) Track continuous one-way spinning: 3 full rotations (1080°) in either direction flings it off!
+            cur_vdeg = (state["tick"] * vinyl_deg_per_tick) % 360.0
+            if abs(delta_deg) > 0.5:
+                step_dir = 1 if delta_deg > 0 else -1
+                if wear["one_way_dir"] == 0 or step_dir == wear["one_way_dir"]:
+                    wear["one_way_dir"] = step_dir
+                    wear["one_way_deg"] += abs(delta_deg)
+                elif abs(delta_deg) >= 4.0:
+                    wear["one_way_dir"] = step_dir
+                    wear["one_way_deg"] = abs(delta_deg)
+            if wear["one_way_deg"] >= 1080.0 and not wear.get("flew_off") and not wear.get("shattered"):
+                _fly_off_vinyl(delta_deg, cur_vdeg, scratch["velocity"])
+                return
+
+            # 2) Otherwise, accumulate rough scratching wear; once over-scratched, the cartridge carves marks & shatters!
+            wear["total_deg"] += abs(delta_deg)
+            if wear["total_deg"] >= wear["next_mark_deg"]:
+                _carve_cartridge_scratch(delta_deg, cur_vdeg)
+                wear["next_mark_deg"] = wear["total_deg"] + 34.0
+
+            # Cap synchronous drag redraws to ~60fps so high-polling mice stay buttery smooth.
+            if (now_t - scratch["last_render"]) >= 0.014:
+                scratch["last_render"] = now_t
+                render_frame_at(state["tick"], force_all_angles=True)
+
+        def _on_vinyl_release(evt):
+            if not scratch["active"]:
+                return
+            now_t = monotonic()
+            scratch["active"] = False
+            # If the user held the vinyl still before releasing, spin back up smoothly from rest.
+            if (now_t - scratch["last_time"]) > 0.08:
+                state["velocity"] = 0.0
+            else:
+                state["velocity"] = max(-450.0, min(450.0, scratch["velocity"]))
+            state["last_t"] = now_t
+            render_frame_at(state["tick"], force_all_angles=True)
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            try:
+                canvas_obj.configure(cursor="hand2" if hypot(dx, dy) <= grab_r else "")
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_hover(evt):
+            if scratch["active"] or getattr(self, "_signing_out", False):
+                return
+            dx = evt.x - center_x
+            dy = evt.y - center_y
+            want = "hand2" if hypot(dx, dy) <= grab_r else ""
+            try:
+                if canvas_obj.cget("cursor") != want:
+                    canvas_obj.configure(cursor=want)
+            except tk.TclError:
+                pass
+
+        def _on_vinyl_leave(_evt):
+            if scratch["active"]:
+                return
+            try:
+                if canvas_obj.cget("cursor"):
+                    canvas_obj.configure(cursor="")
+            except tk.TclError:
+                pass
+
+        canvas_obj.bind("<ButtonPress-1>", _on_vinyl_press)
+        canvas_obj.bind("<B1-Motion>", _on_vinyl_drag)
+        canvas_obj.bind("<ButtonRelease-1>", _on_vinyl_release)
+        canvas_obj.bind("<Motion>", _on_vinyl_hover)
+        canvas_obj.bind("<Leave>", _on_vinyl_leave)
 
         def animate_spin():
             canvas_obj._spin_job = None
             if not canvas_obj.winfo_exists():
                 return
             if getattr(self, "_signing_out", False):
+                scratch["active"] = False
                 state["last_t"] = None
                 return
             now = monotonic()
@@ -1364,50 +2304,24 @@ class LoginViewMixin:
                 canvas_obj._spin_job = self.after(50, animate_spin)
                 return
 
-            # Advance in real elapsed time (30 ticks/sec matches the original speed).
+            if scratch["active"]:
+                # While the user holds/scratches the record, keep the loop alive without auto-spinning.
+                state["last_t"] = now
+                if (now - scratch["last_render"]) >= 0.014:
+                    scratch["last_render"] = now
+                    render_frame_at(state["tick"], force_all_angles=True)
+                canvas_obj._spin_job = self.after(spin_base_ms, animate_spin)
+                return
+
+            # Advance in real elapsed time and smoothly recover motor speed after a DJ scratch release.
             dt = (spin_base_ms / 1000.0) if state["last_t"] is None else max(0.004, min(0.060, now - state["last_t"]))
             state["last_t"] = now
-            state["tick"] = (state["tick"] + dt * 30.0) % 36000.0
+            state["velocity"] += (normal_tick_speed - state["velocity"]) * min(1.0, dt * 4.5)
+            state["tick"] = (state["tick"] + dt * state["velocity"]) % 36000.0
             canvas_obj._spin_tick = state["tick"]
-            t = state["tick"]
-            bucket = state["frame_n"] % 6
-            state["frame_n"] += 1
 
-            if gdi_rings is not None:
-                gdi_rings(t)
-            else:
-                cmds = []
-                append = cmds.append
-                # Lightweight Canvas fallback: stagger expensive FreeType -angle updates across 6 buckets.
-                for item_id, base_deg, radius, speed, slot in ring_items:
-                    deg = (base_deg + t * speed) % 360.0
-                    rad = (deg - 90.0) * deg2rad
-                    append(f"{canvas_path} coords {item_id} {center_x + radius * cos(rad):.1f} {center_y + radius * sin(rad):.1f}")
-                    if (slot == bucket % 3) and (bucket < 3):
-                        append(f"{canvas_path} itemconfigure {item_id} -angle {(-deg) % 360.0:.1f}")
-
-                # Rotate the vinyl highlights and specular glints clockwise.
-                vinyl_deg = (t * 2.2) % 360.0
-                append(f"{canvas_path} itemconfigure {sheen_1} -start {(25.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {sheen_2} -start {(205.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {glint_1} -start {(35.0 - vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {glint_2} -start {(215.0 - vinyl_deg) % 360.0:.1f}")
-
-                # Orbit the centre label dot and "BBC / SOUNDS" text.
-                v_rad = (vinyl_deg - 90.0) * deg2rad
-                cv, sv = cos(v_rad), sin(v_rad)
-                mx = center_x + label_dot_r * cv
-                my = center_y + label_dot_r * sv
-                append(f"{canvas_path} coords {label_marker} {mx - 3:.1f} {my - 3:.1f} {mx + 3:.1f} {my + 3:.1f}")
-                append(f"{canvas_path} coords {label_top} {center_x + top_r * cv:.1f} {center_y + top_r * sv:.1f}")
-                append(f"{canvas_path} coords {label_bottom} {center_x - bot_r * cv:.1f} {center_y - bot_r * sv:.1f}")
-                append(f"{canvas_path} itemconfigure {label_top} -angle {(-vinyl_deg) % 360.0:.1f}")
-                append(f"{canvas_path} itemconfigure {label_bottom} -angle {(180.0 - vinyl_deg) % 360.0:.1f}")
-
-                try:
-                    tk_eval("\n".join(cmds))
-                except tk.TclError:
-                    return
+            if not render_frame_at(state["tick"]):
+                return
 
             # Adapt frame delay so typing/clicks stay responsive even on lower-end CPUs.
             spent_ms = (monotonic() - now) * 1000.0

@@ -31,8 +31,11 @@ from gui_parts.theme import (
     TITLEBAR_TEXT,
     TOPBAR_BG,
     apply_theme_palette,
+    apply_windows_titlebar_theme,
     blend_colour,
     ease_out_elastic,
+    pill_points,
+    rounded_rect_points,
 )
 
 # Embedded 64x64, 32x32, and 16x16 BBC Sounds logo PNGs (base64, area-averaged from
@@ -339,44 +342,15 @@ class EffectsMixin:
         """Apply Windows DWM light/dark mode and custom caption/text/border colours to the titlebar."""
         if sys.platform != "win32":
             return
-        if bg_hex is None:
-            bg_hex = DARK_BG
-        if text_hex is None:
-            text_hex = TITLEBAR_TEXT
-        dark_mode_flag = int(TITLEBAR_DARK_MODE)
-        if getattr(self, "_titlebar_colour", None) == (bg_hex, text_hex, dark_mode_flag):
+        bg_hex = DARK_BG if bg_hex is None else bg_hex
+        text_hex = TITLEBAR_TEXT if text_hex is None else text_hex
+        key = (bg_hex, text_hex, int(TITLEBAR_DARK_MODE))
+        if getattr(self, "_titlebar_colour", None) == key:
             return
-        try:
-            hwnd = getattr(self, "_win_hwnd", None)
-            if not hwnd:
-                self.update_idletasks()
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
-                self._win_hwnd = hwnd
-            dwmapi = ctypes.windll.dwmapi
-
-            def to_colorref(hex_colour):
-                r = int(hex_colour[1:3], 16)
-                g = int(hex_colour[3:5], 16)
-                b = int(hex_colour[5:7], 16)
-                return r | (g << 8) | (b << 16)
-
-            for attr, value in (
-                (20, dark_mode_flag),
-                (19, dark_mode_flag),
-                (35, to_colorref(bg_hex)),
-                (36, to_colorref(text_hex)),
-                (34, to_colorref(bg_hex)),
-            ):
-                val = ctypes.c_int(value)
-                dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd),
-                    ctypes.c_int(attr),
-                    ctypes.byref(val),
-                    ctypes.sizeof(val),
-                )
-            self._titlebar_colour = (bg_hex, text_hex, dark_mode_flag)
-        except Exception:
-            pass
+        self._win_hwnd = apply_windows_titlebar_theme(
+            self, bg_hex, text_hex, TITLEBAR_DARK_MODE, hwnd=getattr(self, "_win_hwnd", None),
+        )
+        self._titlebar_colour = key
 
     def schedule_interface_scaling(self, event):
         """Track window drags to pause heavy animations and debounce resize-only scaling."""
@@ -500,6 +474,197 @@ class EffectsMixin:
         clamped_spent = max(0.0, min(60.0, float(spent_ms)))
         return max(min_yield_ms, round(float(base_ms) - clamped_spent))
 
+    def _is_screen_reader_enabled(self):
+        """Screen reader is active only for a signed-in user who enabled it (never on the login screen)."""
+        return (
+            bool(getattr(self, "_screen_reader", False))
+            and self.current_user is not None
+            and not getattr(self, "_signing_out", False)
+        )
+
+    def _ensure_speech_worker(self):
+        """Lazily start a non-blocking Windows SAPI speech pipe (or detect Linux/macOS CLI speaker)."""
+        if sys.platform == "win32":
+            proc = getattr(self, "_sr_proc", None)
+            if proc is not None and proc.poll() is None:
+                return proc
+            try:
+                import subprocess
+                ps_script = (
+                    "$v = New-Object -ComObject SAPI.SpVoice; "
+                    "while ($null -ne ($line = [Console]::In.ReadLine())) { "
+                    "if ($line -eq '__STOP__') { $v.Speak('', 3) | Out-Null } "
+                    "elseif ($line.Length -gt 0) { $v.Speak($line, 3) | Out-Null } }"
+                )
+                proc = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    text=True, encoding="utf-8", errors="ignore",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                self._sr_proc = proc
+                return proc
+            except Exception:
+                return None
+        return None
+
+    def stop_screen_reader_speech(self):
+        """Immediately silence any in-progress screen reader utterance."""
+        job = getattr(self, "_sr_hover_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+            self._sr_hover_job = None
+        if sys.platform == "win32":
+            proc = getattr(self, "_sr_proc", None)
+            if proc is not None and proc.poll() is None and proc.stdin:
+                try:
+                    proc.stdin.write("__STOP__\n")
+                    proc.stdin.flush()
+                except Exception:
+                    pass
+        else:
+            proc = getattr(self, "_sr_cli_proc", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                self._sr_cli_proc = None
+
+    def close_screen_reader(self):
+        """Terminate any background screen reader process cleanly on shutdown."""
+        self.stop_screen_reader_speech()
+        for attr in ("_sr_proc", "_sr_cli_proc"):
+            proc = getattr(self, attr, None)
+            if proc is not None:
+                setattr(self, attr, None)
+                try:
+                    if proc.stdin:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    def speak_text(self, text, *, force=False):
+        """Speak text non-blockingly when Screen Reader is enabled, interrupting prior speech."""
+        if not force and not self._is_screen_reader_enabled():
+            return
+        cleaned = str(text or "")
+        for sym, repl in (("★", " stars "), ("♥", ""), ("·", ", "), ("←", ""), ("→", ""), ("×", ""), ("▸", ""), ("▾", ""), ("A−", "Smaller text"), ("A+", "Larger text")):
+            cleaned = cleaned.replace(sym, repl)
+        cleaned = " ".join(cleaned.split()).strip()
+        if not cleaned:
+            return
+        now = monotonic()
+        last_txt, last_t = getattr(self, "_sr_last_spoken", ("", 0.0))
+        if not force and cleaned == last_txt and (now - last_t) < 1.2:
+            return
+        self._sr_last_spoken = (cleaned, now)
+
+        if sys.platform == "win32":
+            proc = self._ensure_speech_worker()
+            if proc is not None and proc.stdin:
+                try:
+                    proc.stdin.write(cleaned.replace("\n", " ") + "\n")
+                    proc.stdin.flush()
+                except Exception:
+                    self._sr_proc = None
+            return
+
+        import shutil
+        import subprocess
+        self.stop_screen_reader_speech()
+        cmd = None
+        if sys.platform == "darwin" and shutil.which("say"):
+            cmd = ["say", cleaned]
+        else:
+            for tool in ("spd-say", "espeak-ng", "espeak"):
+                if shutil.which(tool):
+                    cmd = [tool, cleaned]
+                    break
+        if cmd:
+            try:
+                self._sr_cli_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def _describe_widget_for_sr(self, widget):
+        """Build a concise screen-reader announcement for a hovered or focused Tk widget."""
+        if widget is None:
+            return ""
+        custom = getattr(widget, "_sr_label", None)
+        if custom:
+            return str(custom)
+        cls = widget.winfo_class()
+        try:
+            txt = str(widget.cget("text") or "").strip() if cls in ("Button", "Label", "Checkbutton", "Radiobutton") else ""
+        except tk.TclError:
+            txt = ""
+        if cls == "Button" and txt:
+            return f"Button: {txt}"
+        if cls == "Label" and txt:
+            return txt
+        if cls == "Entry":
+            try:
+                val = widget.get().strip()
+            except tk.TclError:
+                val = ""
+            return f"Text input: {val}" if val else "Text input"
+        return ""
+
+    def _install_screen_reader_hooks(self):
+        """Attach global hover (debounced) and keyboard-focus screen reader hooks once."""
+        if getattr(self, "_sr_hooks_installed", False):
+            return
+        self._sr_hooks_installed = True
+
+        def _on_sr_enter(evt):
+            if not self._is_screen_reader_enabled():
+                return
+            w = evt.widget
+            desc = self._describe_widget_for_sr(w)
+            if not desc:
+                return
+            prev = getattr(self, "_sr_hover_job", None)
+            if prev is not None:
+                try:
+                    self.after_cancel(prev)
+                except tk.TclError:
+                    pass
+            self._sr_hover_job = self.after(150, lambda d=desc: self.speak_text(d))
+
+        def _on_sr_focus(evt):
+            if not self._is_screen_reader_enabled():
+                return
+            desc = self._describe_widget_for_sr(evt.widget)
+            if desc:
+                self.speak_text(desc)
+
+        self.bind_all("<Enter>", _on_sr_enter, add="+")
+        self.bind_all("<FocusIn>", _on_sr_focus, add="+")
+
+    def set_screen_reader(self, enabled, refresh=True, persist=True):
+        """Toggle built-in Screen Reader mode, save per user, and refresh Settings if requested."""
+        flag = bool(enabled)
+        if bool(getattr(self, "_screen_reader", False)) == flag and not refresh:
+            return
+        self._screen_reader = flag
+        if flag:
+            self._install_screen_reader_hooks()
+            self.speak_text("Screen reader on", force=True)
+        else:
+            self.close_screen_reader()
+        if persist and self.current_user is not None:
+            self.save_user_screen_reader(self.current_user, flag)
+        if refresh and self.current_user is not None:
+            self.show_profile()
+
     def set_reduced_motion(self, enabled, refresh=True, persist=True):
         """Toggle Reduced Motion mode, save per user, and refresh the Settings view if requested."""
         flag = bool(enabled)
@@ -512,15 +677,21 @@ class EffectsMixin:
             self.show_profile()
 
     def apply_user_accessibility(self, listener_id):
-        """Load and apply the signed-in listener's saved text size, theme, language, and motion from database.db."""
+        """Load and apply the signed-in listener's saved text size, theme, language, motion, and screen reader."""
         saved_scale, saved_theme = self.load_user_accessibility(listener_id)
         saved_lang = self.load_user_language(listener_id)
         saved_reduced = self.load_user_reduced_motion(listener_id)
+        saved_sr = self.load_user_screen_reader(listener_id)
         theme_changed = saved_theme != getattr(self, "_theme_name", "dark")
         self._text_scale = saved_scale
         self._theme_name = saved_theme
         self._language = saved_lang
         self._reduced_motion = saved_reduced
+        self._screen_reader = saved_sr
+        if saved_sr:
+            self._install_screen_reader_hooks()
+        else:
+            self.close_screen_reader()
         set_active_language(saved_lang)
         if theme_changed:
             apply_theme_palette(saved_theme)
@@ -529,25 +700,29 @@ class EffectsMixin:
             self._titlebar_colour = None
 
     def reset_accessibility_settings(self):
-        """Restore all accessibility settings (text size, theme, language, motion) to defaults and save."""
+        """Restore all accessibility settings (text size, theme, language, motion, screen reader) to defaults."""
         theme_changed = getattr(self, "_theme_name", "dark") != "dark"
         lang_changed = getattr(self, "_language", "en") != "en"
         motion_changed = bool(getattr(self, "_reduced_motion", False))
+        sr_changed = bool(getattr(self, "_screen_reader", False))
         self._text_scale = 1.0
         self._language = "en"
         self._reduced_motion = False
+        self._screen_reader = False
+        self.close_screen_reader()
         set_active_language("en")
         if self.current_user is not None:
             self.save_user_accessibility(self.current_user, 1.0, "dark")
             self.save_user_language(self.current_user, "en")
             self.save_user_reduced_motion(self.current_user, False)
+            self.save_user_screen_reader(self.current_user, False)
         if theme_changed:
             self.set_theme("dark", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
         elif lang_changed:
             self.set_language("en", refresh=True, persist=False)
             self.apply_interface_scaling(force=True)
-        elif motion_changed and self.current_user is not None:
+        elif (motion_changed or sr_changed) and self.current_user is not None:
             self.show_profile()
             self.apply_interface_scaling(force=True)
         else:
@@ -639,8 +814,9 @@ class EffectsMixin:
         nav_links = [
             ("Home", self.show_home), ("Genres", self.show_search),
             ("For you", self.show_recommendations), ("Favourites", self.show_favourites),
-            ("History", self.show_history), ("Ratings", self.show_ratings),
-            ("Report", self.show_report), ("Settings", self.show_profile),
+            ("Downloads", self.show_downloads), ("History", self.show_history),
+            ("Ratings", self.show_ratings), ("Report", self.show_report),
+            ("Settings", self.show_profile),
         ]
         profile_tab_active = active_tab_title in ("Your genres", "Profile & survey")
         active_nav_tab = (
@@ -654,6 +830,8 @@ class EffectsMixin:
             if prev_non_detail != active_tab_title:
                 self._tab_podcast_order_cache = {}
                 self._last_visited_non_detail_tab = active_tab_title
+                if self._is_screen_reader_enabled():
+                    self.speak_text(f"{active_tab_title} page")
             nav_map = dict(nav_links)
             if active_tab_title == "Your genres":
                 self._last_non_detail_tab = ("Settings", self.show_genres, "your genres")
@@ -705,7 +883,11 @@ class EffectsMixin:
 
             outgoing_info = getattr(self, "_outgoing_page_info", None)
             self._outgoing_page_info = None
-            if outgoing_info is None:
+            if getattr(self, "_defer_old_page_destroy", False):
+                # Keep the live outgoing page visible while the destination builds off-screen so
+                # slower devices never flash a blank screen before the shrink transition starts.
+                self._deferred_old_page = (self.current_page, getattr(self, "_shell_canvas_window", None))
+            elif outgoing_info is None:
                 old_page = self.current_page
                 if old_page is not None and old_page.winfo_exists():
                     old_page.destroy()
@@ -744,11 +926,12 @@ class EffectsMixin:
             topbar.pack(fill="x")
             topbar.pack_propagate(False)
             logo_widget = self.draw_app_logo(topbar, 1.05)
-            logo_widget.pack(side="left", padx=(20, 12), pady=22)
+            logo_widget.pack(side="left", padx=(20, 12))
 
             nav_row = tk.Frame(topbar, bg=TOPBAR_BG)
-            nav_row.pack(side="left", padx=(4, 10), pady=18)
+            nav_row.pack(side="left", padx=(4, 10))
             self._shell_nav_buttons = {}
+            nav_y_shift = 0
             for label_text, handler in nav_links:
                 selected_flag = label_text == active_nav_tab
                 btn = self.create_button(
@@ -764,12 +947,18 @@ class EffectsMixin:
                     ORANGE_HL if selected_flag else SECONDARY_HOVER_BG,
                 )
                 btn._nav_selected = selected_flag
+                nav_y_shift = max(nav_y_shift, getattr(btn, "_hover_y_shift", 0))
                 btn.pack(side="left", padx=1)
                 self._shell_nav_buttons[label_text] = btn
+            # Compensate for Linux/macOS FreeType button bottom padding (2 * y_shift) so the visible
+            # nav pills and Sign out pill sit on the exact same vertical centerline as the BBC logo.
+            if nav_y_shift > 0:
+                nav_row.pack_configure(pady=(nav_y_shift * 2, 0))
             sign_out_btn = self.create_button(topbar, "Sign out", self.sign_out_to_login, compact=True)
-            sign_out_btn.pack(side="right", padx=(6, 14), pady=20)
+            so_y_shift = getattr(sign_out_btn, "_hover_y_shift", 0)
+            sign_out_btn.pack(side="right", padx=(6, 14), pady=(so_y_shift * 2, 0))
             search_container = self.create_card_frame(topbar, bg=INPUT_BG, width=210, height=38)
-            search_container.pack(side="right", padx=(6, 10), pady=23)
+            search_container.pack(side="right", padx=(6, 10))
             search_container.pack_propagate(False)
             self._search_container = search_container
 
@@ -795,9 +984,11 @@ class EffectsMixin:
                     last_search_size[0] = target_w
                     last_search_size[1] = target_h
                     search_container.configure(width=target_w, height=target_h)
+                self.update_search_prompt()
 
             topbar.bind("<Configure>", resize_search_bar)
             nav_row.bind("<Configure>", resize_search_bar)
+            search_container.bind("<Configure>", lambda _event: self.update_search_prompt())
             self._resize_search_bar = resize_search_bar
             self.after_idle(resize_search_bar)
             self._search_entry = tk.Entry(
@@ -805,10 +996,10 @@ class EffectsMixin:
                 bg=INPUT_BG, fg=TEXT_WHITE, insertbackground=TEXT_WHITE, relief="flat",
                 bd=0, highlightthickness=0,
             )
-            self._search_entry.pack(fill="both", expand=True, padx=10, pady=5)
+            self._search_entry.pack(fill="x", expand=True, padx=10)
             self._search_prompt = tk.Label(
                 search_container, text=translate("Search programmes..."), font=(DEFAULT_FONT, 10),
-                bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm",
+                bg=INPUT_BG, fg=TEXT_GRAY, cursor="xterm", bd=0, highlightthickness=0, padx=0, pady=0,
             )
             self._search_prompt.bind("<Button-1>", lambda _event: self._search_entry.focus_set())
             self._search_entry.bind("<FocusIn>", lambda _event: self._search_prompt.place_forget())
@@ -856,7 +1047,10 @@ class EffectsMixin:
         win_kwargs = {"window": content_pane, "anchor": "nw"}
         if canvas_w > 1:
             win_kwargs["width"] = canvas_w
-        if self._tab_transition_direction is not None and canvas_w > 1:
+        if getattr(self, "_defer_old_page_destroy", False):
+            # Build the destination page off-screen while the current detail page stays visible.
+            init_pos = (max(2000, canvas_w + 500), 0)
+        elif self._tab_transition_direction is not None and canvas_w > 1:
             # Start the incoming page off-screen so it never flashes at (0, 0) before sliding in.
             init_pos = (self._tab_transition_direction * canvas_w, 0)
         else:
@@ -1036,9 +1230,16 @@ class EffectsMixin:
                 self._tab_transition_distance = 1
 
         # On Linux/macOS, skip sliding the outgoing heavy widget tree (which triggers per-child X11 repaints)
-        # and go straight into a crisp, fast incoming slide.
+        # and keep the current page visible while the destination builds off-screen before sliding in.
         if sys.platform != "win32":
-            open_next_page()
+            self._outgoing_page_info = (self.current_page, window)
+            self._tab_transition_direction = direction
+            self._tab_transition_distance = tab_distance
+            try:
+                destination()
+            finally:
+                self._tab_transition_direction = None
+                self._tab_transition_distance = 1
             return
 
         self.slide_page(
@@ -1091,8 +1292,28 @@ class EffectsMixin:
                     pass
             self._finish_transition()
 
+        if outgoing_info is not None:
+            self._anim_old_page_info = outgoing_info
+
+        def _drop_outgoing():
+            info = getattr(self, "_anim_old_page_info", None)
+            self._anim_old_page_info = None
+            if info is not None:
+                o_page, o_win = info
+                if o_page is not None and o_page.winfo_exists():
+                    try:
+                        o_page.destroy()
+                    except tk.TclError:
+                        pass
+                if o_win is not None and canvas.winfo_exists():
+                    try:
+                        canvas.delete(o_win)
+                    except tk.TclError:
+                        pass
+
         def begin_slide():
             if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
+                _drop_outgoing()
                 self._finish_transition()
                 return
             try:
@@ -1100,6 +1321,7 @@ class EffectsMixin:
                     self._prerender_initial_batch(2)
                 if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
                     self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+                _drop_outgoing()
                 width = max(1, canvas.winfo_width())
                 canvas.itemconfigure(canvas_window, width=width)
                 # Reset vertical scroll and update scrollregion BEFORE frame 0 so the incoming page
@@ -1230,12 +1452,100 @@ class EffectsMixin:
         row = tk.Frame(footer, bg=footer.cget("bg"))
         row.pack(fill="x", padx=10, pady=7)
 
+        dismissing = [False]
+
         def dismiss():
+            if dismissing[0]:
+                return
+            dismissing[0] = True
             self._dismissed_last_listened = podcast_id
             self._bottom_bar_info = None
             self._shell_bottom_bar = None
             self._shell_bottom_bar_key = None
+
+            if (
+                self._is_reduced_motion()
+                or not footer.winfo_exists()
+                or not shell.winfo_exists()
+                or footer.winfo_width() <= 4
+                or footer.winfo_height() <= 4
+            ):
+                if footer.winfo_exists():
+                    footer.destroy()
+                return
+
+            # Capture exact mini-bar bounds inside shell before replacing it with the CRT turn-off beam.
+            fx = footer.winfo_rootx() - shell.winfo_rootx()
+            fy = footer.winfo_rooty() - shell.winfo_rooty()
+            fw = footer.winfo_width()
+            fh = footer.winfo_height()
+            mid_x = fx + fw / 2.0
+            mid_y = fy + fh / 2.0
             footer.destroy()
+
+            tv_beam = tk.Frame(shell, bg=MINI_BAR_BG, bd=0, highlightthickness=1, highlightbackground="#ffffff")
+            tv_beam.place(x=fx, y=fy, width=fw, height=fh)
+            tk.Misc.lift(tv_beam)
+
+            total_dur = 0.340  # 0..0.42 vertical squash to scanline -> 0.42..0.82 horizontal shrink to dot -> 0.82..1.00 vanish.
+            st = {"progress": 0.0, "last_t": None}
+            last_rect = [None]
+            last_col = [MINI_BAR_BG]
+
+            def _step_tv_off():
+                if not tv_beam.winfo_exists() or not shell.winfo_exists():
+                    return
+                now = monotonic()
+                dt = 0.015 if st["last_t"] is None else max(0.004, min(0.036, now - st["last_t"]))
+                st["last_t"] = now
+                st["progress"] = min(1.0, st["progress"] + dt / total_dur)
+                p = st["progress"]
+
+                if p < 0.42:
+                    # Phase 1: Vertical collapse into a bright glowing horizontal CRT scanline.
+                    u = p / 0.42
+                    e = 1.0 - (1.0 - u) ** 3.0
+                    cur_w = max(4, round(fw * (1.0 + 0.018 * (1.0 - abs(2.0 * u - 1.0)))))
+                    cur_h = max(3, round(fh + (3.0 - fh) * e))
+                    cur_col = blend_colour(MINI_BAR_BG, "#fff5eb", min(1.0, u * 1.15))
+                    cur_border = blend_colour(ORANGE_ACCENT, "#ffffff", min(1.0, u * 1.3))
+                elif p < 0.82:
+                    # Phase 2: Horizontal scanline snaps inward into a bright phosphor dot.
+                    u = (p - 0.42) / 0.40
+                    e = u * u * (3.0 - 2.0 * u)
+                    cur_w = max(6, round(fw + (6.0 - fw) * e))
+                    cur_h = 3 if u < 0.72 else max(4, round(3.0 + 3.0 * ((u - 0.72) / 0.28)))
+                    cur_col = "#ffffff"
+                    cur_border = "#ffd7b0"
+                else:
+                    # Phase 3: Tiny centre phosphor dot blinks warm and vanishes.
+                    u = (p - 0.82) / 0.18
+                    dot_sz = max(1, round(6.0 * (1.0 - u)))
+                    cur_w = dot_sz
+                    cur_h = dot_sz
+                    cur_col = blend_colour("#ffffff", ORANGE_ACCENT, min(1.0, u * 1.1))
+                    cur_border = cur_col
+
+                cx = round(mid_x - cur_w / 2.0)
+                cy = round(mid_y - cur_h / 2.0)
+                rect = (cx, cy, cur_w, cur_h)
+                if rect != last_rect[0]:
+                    tv_beam.place(x=cx, y=cy, width=cur_w, height=cur_h)
+                    last_rect[0] = rect
+                if cur_col != last_col[0]:
+                    tv_beam.configure(bg=cur_col, highlightbackground=cur_border)
+                    last_col[0] = cur_col
+
+                if p < 1.0:
+                    spent = (monotonic() - now) * 1000.0
+                    self.after(self._next_frame_delay(spent, 14, min_yield_ms=4), _step_tv_off)
+                else:
+                    try:
+                        tv_beam.destroy()
+                    except tk.TclError:
+                        pass
+
+            _step_tv_off()
 
         bar_bg = row.cget("bg")
         sim_fade_job = [None]
@@ -1343,6 +1653,7 @@ class EffectsMixin:
             "Genres": self.show_search,
             "For you": self.show_recommendations,
             "Favourites": self.show_favourites,
+            "Downloads": self.show_downloads,
             "History": self.show_history,
             "Ratings": self.show_ratings,
             "Report": self.show_report,
@@ -1500,14 +1811,7 @@ class EffectsMixin:
             title_end = (cov_end_x + cov_end_sz + 11, end_y + 12, str(title or "Programme"), (DEFAULT_FONT, 13, "bold"))
             sub_end = play_end = dismiss_end = None
 
-        def _mig_pill_pts(cx, cy, w, h, rad):
-            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
-            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
-            return (
-                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-            )
+        _mig_pill_pts = pill_points
 
         migrator = tk.Canvas(shell, bg=CARD_BG, bd=0, highlightthickness=0)
         left_accent_item = migrator.create_rectangle(0, 6, 3, max(10, start_h - 6), fill=CARD_BG, outline="")
@@ -1773,9 +2077,9 @@ class EffectsMixin:
             )
             return
         if self._is_reduced_motion():
-            self.show_detail(podcast_id)
+            self.show_detail_with_skeleton(podcast_id)
             return
-        self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
+        self.transition_to(lambda: self.show_detail_with_skeleton(podcast_id), "Programme details", direction=1)
 
     def expand_card_to_detail(
         self, shell, source_card, source_cover, podcast_id, title, category, title_widget=None,
@@ -2053,14 +2357,7 @@ class EffectsMixin:
             approx_title_x = approx_cat_x
             approx_title_y = approx_cat_y + cat_line_h
 
-        def _exp_pill_pts(cx, cy, w, h, rad):
-            rad = max(1.0, min(rad, w / 2.0, h / 2.0))
-            rx0, ry0, rx1, ry1 = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
-            return (
-                rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-            )
+        _exp_pill_pts = pill_points
 
         # When opening from the mini-bar, split its subtitle ("Last played · Genre · ★ reviews") into
         # separate live items at their exact pixel offsets so the genre name and reviews glide directly
@@ -2392,18 +2689,65 @@ class EffectsMixin:
                     expander.itemconfigure(cat_item, fill=ORANGE_HL)
                     expander.itemconfigure(title_item, fill=TEXT_WHITE)
 
-                    self.show_detail(podcast_id)
-                    if not expander.winfo_exists() or not shell.winfo_exists():
-                        cleanup()
-                        return
-                    # Apply responsive UI scaling synchronously now (while covered by expander) so an
-                    # after_idle rescale can never shift back_row/detail_column after the overlay drops.
-                    if self.current_page is not None and self.current_page.winfo_exists():
-                        self.apply_interface_scaling(force=True, target_widget=self.current_page)
-                    # Lift expander BEFORE update_idletasks so the newly built detail page never flashes on top.
-                    tk.Misc.lift(expander)
-                    self.update_idletasks()
-                    tk.Misc.lift(expander)
+                    # Only show the subtle wireframe outlines if loading takes > 0.75s (glare sweep after 1.0s).
+                    load_t0 = monotonic()
+                    done_flag = [False]
+                    if "matplotlib.backends.backend_tkagg" in sys.modules:
+                        done_flag[0] = True
+                    else:
+                        import threading as _th
+                        _th.Thread(target=self._preload_detail_backend, args=(done_flag,), daemon=True).start()
+
+                    skel_st = {"items": [], "shown": False, "cancel_glare": None}
+
+                    def _poll_handoff():
+                        if not expander.winfo_exists() or not shell.winfo_exists():
+                            if skel_st["cancel_glare"] is not None:
+                                skel_st["cancel_glare"]()
+                            cleanup()
+                            return
+                        if done_flag[0]:
+                            if skel_st["cancel_glare"] is not None:
+                                skel_st["cancel_glare"]()
+                            self.show_detail(podcast_id)
+                            if not expander.winfo_exists() or not shell.winfo_exists():
+                                cleanup()
+                                return
+                            if self.current_page is not None and self.current_page.winfo_exists():
+                                self.apply_interface_scaling(force=True, target_widget=self.current_page)
+                            for sk_it in skel_st["items"]:
+                                try:
+                                    expander.delete(sk_it[0])
+                                except tk.TclError:
+                                    pass
+                            tk.Misc.lift(expander)
+                            self.update_idletasks()
+                            tk.Misc.lift(expander)
+                            _build_bloom()
+                            return
+
+                        elapsed = monotonic() - load_t0
+                        if elapsed >= 0.75 and not skel_st["shown"]:
+                            skel_st["shown"] = True
+                            skel_st["items"] = self._draw_detail_skeleton_outlines(
+                                expander, target_w, target_h, skip_hero_cover_title=True,
+                            )
+                            for hero_it in (cover_item, icon_item, cat_item, title_item):
+                                if hero_it is not None:
+                                    try:
+                                        expander.tag_raise(hero_it)
+                                    except tk.TclError:
+                                        pass
+                            expander.update_idletasks()
+                            rem_glare_ms = max(0, round((1.0 - elapsed) * 1000.0))
+                            skel_st["cancel_glare"] = self._start_skeleton_glare(
+                                expander, skel_st["items"], target_w, target_h, delay_ms=rem_glare_ms,
+                            )
+                        self.after(25, _poll_handoff)
+
+                    _poll_handoff()
+
+                def _build_bloom():
 
                     holder = getattr(self, "_detail_cover_holder", None)
                     cover_art_w = getattr(self, "_detail_cover_art", None)
@@ -2472,13 +2816,7 @@ class EffectsMixin:
 
                     # Collect exact coordinates of the detail controls so they expand elastically from nowhere
                     # instead of popping in abruptly when expander is dropped.
-                    def _rounded_pts(rx0, ry0, rx1, ry1, rad):
-                        rad = max(1.0, min(rad, (rx1 - rx0) / 2.0, (ry1 - ry0) / 2.0))
-                        return (
-                            rx0 + rad, ry0, rx1 - rad, ry0, rx1, ry0, rx1, ry0 + rad,
-                            rx1, ry1 - rad, rx1, ry1, rx1 - rad, ry1, rx0 + rad, ry1,
-                            rx0, ry1, rx0, ry1 - rad, rx0, ry0 + rad, rx0, ry0,
-                        )
+                    _rounded_pts = rounded_rect_points
 
                     if mini_prefix_item is not None:
                         expander.delete(mini_prefix_item[0])
@@ -2652,6 +2990,118 @@ class EffectsMixin:
                                 star_id = expander.create_polygon(pts, fill=DARK_BG, outline="")
                                 fade_items.append((star_id, DARK_BG, GOLD_STAR if s_i <= s_active else STAR_EMPTY, None))
 
+                    # Expand the Listener Ratings card and grow its 5 star bars in sync with the rest of the UI.
+                    ratings_card_anim = None
+                    ratings_bar_anims = []
+                    rc_w = dw.get("ratings_card")
+                    if rc_w is not None and rc_w.winfo_exists() and rc_w.winfo_width() > 20:
+                        rcx0 = rc_w.winfo_rootx() - sh_rx + 1
+                        rcy0 = rc_w.winfo_rooty() - sh_ry - target_y + 1
+                        rcw = max(4, rc_w.winfo_width() - 2)
+                        rch = max(4, rc_w.winfo_height() - 2)
+                        rc_cx, rc_cy = rcx0 + rcw / 2.0, rcy0 + rch / 2.0
+                        rc_id = expander.create_polygon(
+                            *_rounded_pts(rc_cx - 2, rc_cy - 2, rc_cx + 2, rc_cy + 2, 2.0),
+                            smooth=True, fill=DARK_BG, outline=DARK_BG,
+                        )
+                        ratings_card_anim = (rc_id, rc_cx, rc_cy, rcw, rch)
+                        fade_items.append((rc_id, DARK_BG, SUBCARD_BG, BORDER_LINE))
+                        for r_key, r_fg in (
+                            ("ratings_heading", ORANGE_HL),
+                            ("ratings_sub", dw.get("ratings_sub_color", TEXT_WHITE)),
+                        ):
+                            rw_lbl = dw.get(r_key)
+                            if rw_lbl is not None and rw_lbl.winfo_exists() and rw_lbl.winfo_width() > 2:
+                                rlx = rw_lbl.winfo_rootx() - sh_rx + 1
+                                rly = rw_lbl.winfo_rooty() - sh_ry - target_y + 1
+                                rtid = expander.create_text(
+                                    rlx, rly, text=rw_lbl.cget("text"), fill=DARK_BG,
+                                    font=rw_lbl.cget("font"), anchor="nw",
+                                )
+                                fade_items.append((rtid, DARK_BG, r_fg, None))
+                        ch_w = dw.get("ratings_chart_widget")
+                        r_counts = dw.get("ratings_counts")
+                        if ch_w is not None and ch_w.winfo_exists() and ch_w.winfo_width() > 40 and r_counts:
+                            ch_x0 = ch_w.winfo_rootx() - sh_rx
+                            ch_y0 = ch_w.winfo_rooty() - sh_ry - target_y
+                            ch_wd = ch_w.winfo_width()
+                            ch_ht = ch_w.winfo_height()
+                            plot_x0 = ch_x0 + ch_wd * 0.14
+                            plot_x1 = ch_x0 + ch_wd * 0.88
+                            plot_w = max(10.0, plot_x1 - plot_x0)
+                            plot_y0 = ch_y0 + ch_ht * 0.05
+                            plot_h = max(10.0, ch_ht * 0.90)
+                            row_h = plot_h / 5.0
+                            bar_h = row_h * 0.52
+                            max_c = max(r_counts.values()) if r_counts else 0
+                            x_cap = max(1.0, max_c * 1.18)
+                            track_x1 = plot_x0 + plot_w * 0.90
+                            track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
+                            for idx_s, s_val in enumerate((5, 4, 3, 2, 1)):
+                                cnt = r_counts.get(s_val, 0)
+                                ym = plot_y0 + (idx_s + 0.5) * row_h
+                                by0, by1 = ym - bar_h / 2.0, ym + bar_h / 2.0
+                                lbl_id = expander.create_text(
+                                    plot_x0 - 6, ym, text=f"{s_val} ★", fill=DARK_BG,
+                                    font=(DEFAULT_FONT, 8, "bold"), anchor="e",
+                                )
+                                fade_items.append((lbl_id, DARK_BG, TEXT_WHITE, None))
+                                trk_id = expander.create_rectangle(
+                                    plot_x0, by0, plot_x0, by1, fill=track_col, outline="",
+                                )
+                                bar_id = expander.create_rectangle(
+                                    plot_x0, by0, plot_x0, by1, fill=ORANGE_ACCENT, outline="",
+                                )
+                                cnt_id = expander.create_text(
+                                    plot_x0 + plot_w * 0.93, ym, text=str(cnt), fill=DARK_BG,
+                                    font=(DEFAULT_FONT, 8, "bold" if cnt > 0 else "normal"), anchor="w",
+                                )
+                                fade_items.append((cnt_id, DARK_BG, TEXT_WHITE if cnt > 0 else TEXT_GRAY, None))
+                                target_bw = plot_w * (cnt / x_cap) if cnt > 0 else 0.0
+                                ratings_bar_anims.append((trk_id, bar_id, plot_x0, by0, by1, track_x1 - plot_x0, target_bw, idx_s * 0.05))
+
+                    # Fade/expand the bottom Programme Details card (Region, Downloads, Award, Download button).
+                    ic_w = dw.get("info_card")
+                    if ic_w is not None and ic_w.winfo_exists() and ic_w.winfo_width() > 20:
+                        ix0 = ic_w.winfo_rootx() - sh_rx + 1
+                        iy0 = ic_w.winfo_rooty() - sh_ry - target_y + 1
+                        ix1 = ix0 + ic_w.winfo_width() - 2
+                        iy1 = iy0 + ic_w.winfo_height() - 2
+                        icid = expander.create_polygon(
+                            *_rounded_pts(ix0, iy0, ix1, iy1, 12),
+                            smooth=True, fill=DARK_BG, outline=DARK_BG,
+                        )
+                        fade_items.append((icid, DARK_BG, SUBCARD_BG, BORDER_LINE))
+                        for iw_lbl, iw_fg in dw.get("info_texts", ()):
+                            if iw_lbl is not None and iw_lbl.winfo_exists() and iw_lbl.winfo_width() > 2:
+                                ilx = iw_lbl.winfo_rootx() - sh_rx + 1
+                                ily = iw_lbl.winfo_rooty() - sh_ry - target_y + 1
+                                itid = expander.create_text(
+                                    ilx, ily, text=iw_lbl.cget("text"), fill=DARK_BG,
+                                    font=iw_lbl.cget("font"), anchor="nw",
+                                )
+                                fade_items.append((itid, DARK_BG, iw_fg, None))
+                        dl_btn = dw.get("download_button")
+                        if dl_btn is not None and dl_btn.winfo_exists() and dl_btn.winfo_width() > 4:
+                            y_sh = getattr(dl_btn, "_hover_y_shift", 0)
+                            h_sz = getattr(dl_btn, "_hover_size", None)
+                            dbw = h_sz[0] if h_sz else max(10, dl_btn.winfo_width() - 10)
+                            dbh = h_sz[1] if h_sz else max(10, dl_btn.winfo_height() - 10 - y_sh * 2)
+                            dbcx = (dl_btn.winfo_rootx() - sh_rx) + dl_btn.winfo_width() / 2.0
+                            dbcy = (dl_btn.winfo_rooty() - sh_ry - target_y) + dl_btn.winfo_height() / 2.0 - y_sh
+                            dl_prim = bool(dw.get("download_primary", False))
+                            dl_face = ORANGE_ACCENT if dl_prim else ACTION_BTN_BG
+                            dl_fg = PRIMARY_BTN_FG if dl_prim else ACTION_BTN_FG
+                            d_poly = expander.create_polygon(
+                                *_rounded_pts(dbcx - 2, dbcy - 2, dbcx + 2, dbcy + 2, 2.0),
+                                smooth=True, fill=dl_face, outline="",
+                            )
+                            d_txt = expander.create_text(
+                                dbcx, dbcy + y_sh, text=dl_btn.cget("text"),
+                                fill=dl_face, font=dl_btn.cget("font"), anchor="center",
+                            )
+                            pill_specs.append([d_poly, None, d_txt, dbcx, dbcy, dbw, dbh, dl_face, dl_fg, 0.14, False])
+
                     from_x, from_y = last_cov_abs[0]
                     from_cat_x, from_cat_y = last_cat_abs[0]
                     from_tit_x, from_tit_y = last_title_abs[0]
@@ -2751,7 +3201,20 @@ class EffectsMixin:
                                 tf = max(0.0, min(1.0, (lp - 0.25) / 0.50))
                                 expander.itemconfigure(txt_id, fill=blend_colour(fill_c, fg_c, tf))
 
-                        # 4. Smoothly fade in metadata, divider rules, and bottom listening card (including border & text).
+                        # 4. Expand the Listener Ratings card and grow its 5 star bars smoothly in sync.
+                        if ratings_card_anim is not None:
+                            rc_id, rc_cx, rc_cy, rcw, rch = ratings_card_anim
+                            re = 1.0 if bp >= 0.88 else max(0.0, ease_out_elastic(min(1.0, bp / 0.88), damping=5.4, frequency=1.12))
+                            scale_r = 0.86 + 0.14 * re
+                            hw, hh = (rcw / 2.0) * scale_r, (rch / 2.0) * scale_r
+                            expander.coords(rc_id, *_rounded_pts(rc_cx - hw, rc_cy - hh, rc_cx + hw, rc_cy + hh, 12.0))
+                        for trk_id, bar_id, bx0, by0, by1, trk_w, tgt_bw, stag_b in ratings_bar_anims:
+                            bp_bar = max(0.0, min(1.0, (bp - stag_b) / max(0.25, 0.86 - stag_b)))
+                            be = 1.0 - (1.0 - bp_bar) ** 3
+                            expander.coords(trk_id, bx0, by0, bx0 + trk_w * be, by1)
+                            expander.coords(bar_id, bx0, by0, bx0 + tgt_bw * be, by1)
+
+                        # 5. Smoothly fade in metadata, divider rules, and bottom listening cards (including border & text).
                         fp = min(1.0, bp / 0.78)
                         for fid, c0, c1, out_c in fade_items:
                             if out_c is not None:
@@ -2917,15 +3380,7 @@ class EffectsMixin:
             anchor="nw", width=min(title_wrap, 360), justify="left",
         )
 
-        def _pill_pts(cx, cy, w, h, rad):
-            rx0, ry0 = cx - w / 2.0, cy - h / 2.0
-            rx1, ry1 = cx + w / 2.0, cy + h / 2.0
-            r = min(rad, w / 2.0, h / 2.0)
-            return (
-                rx0 + r, ry0, rx1 - r, ry0, rx1, ry0, rx1, ry0 + r,
-                rx1, ry1 - r, rx1, ry1, rx1 - r, ry1, rx0 + r, ry1,
-                rx0, ry1, rx0, ry1 - r, rx0, ry0 + r, rx0, ry0,
-            )
+        _pill_pts = pill_points
 
         photo0, icon0, _bg0 = self._get_cover_photo(
             shrinker, podcast_id, title, category, cov_start_sz, cov_start_sz,
@@ -2983,36 +3438,66 @@ class EffectsMixin:
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
-        shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
-        tk.Misc.lift(shrinker)
+        # Build the destination page & initial card batch off-screen while the live detail page stays
+        # fully visible so slower devices never show a blank screen before the shrink animation starts.
+        self._deferred_old_page = None
+        self._defer_old_page_destroy = True
+        try:
+            destination()
+        finally:
+            self._defer_old_page_destroy = False
 
-        # Build the destination page underneath while fully covered by shrinker.
-        destination()
+        deferred_old = getattr(self, "_deferred_old_page", None)
+        self._deferred_old_page = None
+
+        def _drop_deferred_old(target_canvas=None):
+            if deferred_old is None:
+                return
+            o_page, o_win = deferred_old
+            if o_page is not None and o_page.winfo_exists():
+                try:
+                    o_page.destroy()
+                except tk.TclError:
+                    pass
+            if o_win is not None and target_canvas is not None and target_canvas.winfo_exists():
+                try:
+                    target_canvas.delete(o_win)
+                except tk.TclError:
+                    pass
+
         if not shell.winfo_exists() or not shrinker.winfo_exists():
+            _drop_deferred_old()
             self._finish_transition()
             return
 
-        # Pre-render the visible batch of cards underneath shrinker BEFORE animation starts so grid pages
-        # (For you, Favourites, History, Ratings, Search) are already populated rather than blank during shrink.
+        # Pre-render the visible batch of cards off-screen BEFORE swapping to shrinker so grid pages
+        # (For you, Favourites, History, Ratings, Search) are already populated with zero blank pause.
         self._prerender_initial_batch(6)
         saved_scroll = float(origin.get("scroll_y") or 0.0)
         new_target = getattr(self, "_page_transition_target", None)
         if restore_scroll and saved_scroll > 0.0 and new_target:
             self._prerender_initial_batch(6)
+
+        # Now that the destination is ready, place shrinker on top, move the new page into (0, 0),
+        # and remove the old detail page underneath it.
+        shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
         if new_target:
-            new_canvas, _new_win = new_target
+            new_canvas, new_win = new_target
+            _drop_deferred_old(new_canvas)
             if new_canvas.winfo_exists():
                 try:
+                    new_canvas.coords(new_win, 0, 0)
                     new_canvas.update_idletasks()
                     if self.current_page is not None and self.current_page.winfo_exists():
                         new_canvas.configure(
                             scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
                         )
-                    if restore_scroll and saved_scroll > 0.0:
-                        new_canvas.yview_moveto(saved_scroll)
+                    new_canvas.yview_moveto(saved_scroll if (restore_scroll and saved_scroll > 0.0) else 0.0)
                 except tk.TclError:
                     pass
+        else:
+            _drop_deferred_old()
 
         shell.update_idletasks()
         tk.Misc.lift(shrinker)
@@ -3642,13 +4127,31 @@ class EffectsMixin:
         self._search_after_id = self.after(180, self.apply_live_search)
 
     def update_search_prompt(self):
-        """Show or hide the placeholder prompt inside the header search box."""
+        """Show or hide the placeholder prompt inside the header search box, shortening it when narrow."""
         if self._search_prompt is None or not self._search_prompt.winfo_exists():
             return
+        full_prompt = translate("Search programmes...")
+        short_prompt = translate("Search...")
+        container = getattr(self, "_search_container", None)
+        avail_w = 0
+        if container is not None and container.winfo_exists():
+            avail_w = container.winfo_width()
+            if avail_w <= 1:
+                avail_w = container.winfo_reqwidth()
+        use_short = False
+        if avail_w > 1:
+            try:
+                prompt_font = tkfont.Font(font=self._search_prompt.cget("font"))
+                use_short = prompt_font.measure(full_prompt) + 22 > avail_w
+            except tk.TclError:
+                use_short = avail_w < 175
+        desired_text = short_prompt if use_short else full_prompt
+        if self._search_prompt.cget("text") != desired_text:
+            self._search_prompt.configure(text=desired_text)
         if self.search_text.get() or self.focus_get() == self._search_entry:
             self._search_prompt.place_forget()
         else:
-            self._search_prompt.place(x=9, rely=0.5, anchor="w")
+            self._search_prompt.place(x=10, rely=0.5, anchor="w")
 
     def apply_live_search(self):
         """Invoke the active page's search callback, or open the Genres/Search tab."""

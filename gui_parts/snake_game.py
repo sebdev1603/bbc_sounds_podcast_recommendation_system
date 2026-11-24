@@ -1,7 +1,5 @@
 """Hidden BBC Sounds Snake easter-egg mini-game triggered from the BBC logo."""
-import ctypes
 import random
-import sys
 import tkinter as tk
 
 from gui_parts import theme as _theme
@@ -9,66 +7,15 @@ from gui_parts import theme as _theme
 
 def open_snake_game(parent):
     """Open (or focus) the BBC Sounds themed Snake easter-egg window."""
-    existing = getattr(parent, "_snake_window", None)
-    if existing is not None and existing.winfo_exists():
-        try:
-            existing.deiconify()
-            existing.lift()
-            existing.focus_force()
-        except tk.TclError:
-            pass
-        return existing
-
-    win = tk.Toplevel(parent)
-    parent._snake_window = win
-    win.title("BBC Sounds · Snake")
-    win.configure(bg=_theme.DARK_BG)
-    win.resizable(False, False)
-    win.transient(parent)
-
-    # Match the Windows titlebar colour to the active theme.
-    if sys.platform == "win32":
-        try:
-            win.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
-            bg_hex = _theme.DARK_BG
-            txt_hex = _theme.TITLEBAR_TEXT
-
-            def _to_colorref(h):
-                return int(h[1:3], 16) | (int(h[3:5], 16) << 8) | (int(h[5:7], 16) << 16)
-
-            for attr, val_int in (
-                (20, int(_theme.TITLEBAR_DARK_MODE)),
-                (19, int(_theme.TITLEBAR_DARK_MODE)),
-                (35, _to_colorref(bg_hex)),
-                (36, _to_colorref(txt_hex)),
-                (34, _to_colorref(bg_hex)),
-            ):
-                val = ctypes.c_int(val_int)
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                )
-        except Exception:
-            pass
+    win, wrapper, score_lbl = _theme.create_minigame_shell(
+        parent, "_snake_window", "BBC Sounds · Snake",
+        "BBC SOUNDS SNAKE", "Score: 0   ·   Best: 0",
+    )
+    if wrapper is None:
+        return win
 
     cols, rows, cell = 22, 18, 22
     board_w, board_h = cols * cell, rows * cell
-
-    wrapper = tk.Frame(win, bg=_theme.DARK_BG, padx=18, pady=14)
-    wrapper.pack(fill="both", expand=True)
-
-    header = tk.Frame(wrapper, bg=_theme.DARK_BG)
-    header.pack(fill="x", pady=(0, 10))
-    tk.Label(
-        header, text="BBC SOUNDS SNAKE", font=(_theme.DEFAULT_FONT, 13, "bold"),
-        fg=_theme.ORANGE_ACCENT, bg=_theme.DARK_BG,
-    ).pack(side="left")
-
-    score_lbl = tk.Label(
-        header, text="Score: 0   ·   Best: 0", font=(_theme.DEFAULT_FONT, 10, "bold"),
-        fg=_theme.TEXT_WHITE, bg=_theme.DARK_BG,
-    )
-    score_lbl.pack(side="right")
 
     board = tk.Canvas(
         wrapper, width=board_w, height=board_h,
@@ -76,11 +23,10 @@ def open_snake_game(parent):
     )
     board.pack()
 
-    hint_lbl = tk.Label(
+    tk.Label(
         wrapper, text="Arrow keys / WASD to move  ·  Space to pause or restart  ·  Esc to close",
         font=(_theme.DEFAULT_FONT, 9), fg=_theme.TEXT_GRAY, bg=_theme.DARK_BG,
-    )
-    hint_lbl.pack(pady=(10, 0))
+    ).pack(pady=(10, 0))
 
     state = {
         "snake": [],
@@ -254,12 +200,7 @@ def open_snake_game(parent):
     win.protocol("WM_DELETE_WINDOW", close_game)
     win.bind("<Destroy>", lambda _e: cancel_loop())
 
-    # Centre the game window over the main BBC Sounds window.
-    win.update_idletasks()
-    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-    px = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
-    py = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
-    win.geometry(f"+{max(0, px)}+{max(0, py)}")
+    _theme.center_toplevel(win, parent)
     win.focus_force()
     start_game()
     return win

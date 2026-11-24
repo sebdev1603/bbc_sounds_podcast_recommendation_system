@@ -1,8 +1,9 @@
 """Podcast detail view, playback simulation, star-picker rating dialog, and library actions."""
-import ctypes
 import math
 import sqlite3
 import sys
+import threading
+import time
 import tkinter as tk
 from tkinter import messagebox
 
@@ -24,17 +25,240 @@ from gui_parts.theme import (
     SUBCARD_BG,
     TEXT_GRAY,
     TEXT_WHITE,
-    TITLEBAR_DARK_MODE,
-    TITLEBAR_TEXT,
+    apply_windows_titlebar_theme,
     blend_colour,
+    center_toplevel,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
 
-    def show_detail(self, podcast_id, *, show_simulated_notice=False):
+    def _draw_detail_skeleton_outlines(self, canvas, width, height, *, skip_hero_cover_title=False):
+        """Draw subtle, pixel-aligned wireframe outlines matching the podcast details page layout."""
+        col = blend_colour(DARK_BG, BORDER_LINE, 0.72)
+        soft_col = blend_colour(DARK_BG, BORDER_LINE, 0.45)
+        items = []  # (item_id, center_x, center_y, is_line, base_stroke)
+
+        def add_box(x0, y0, x1, y1, r=8, stroke=None, w_px=1.0):
+            c = stroke or col
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            if r > 1 and (x1 - x0) > 6 and (y1 - y0) > 6:
+                iid = canvas.create_polygon(
+                    *rounded_rect_points(x0, y0, x1, y1, r),
+                    smooth=True, fill="", outline=c, width=w_px,
+                )
+            else:
+                iid = canvas.create_rectangle(x0, y0, x1, y1, fill="", outline=c, width=w_px)
+            items.append((iid, cx, cy, False, c))
+
+        def add_line(x0, y0, x1, y1, stroke=None, w_px=1.0):
+            c = stroke or soft_col
+            iid = canvas.create_line(x0, y0, x1, y1, fill=c, width=w_px)
+            items.append((iid, (x0 + x1) / 2.0, (y0 + y1) / 2.0, True, c))
+
+        win_w = max(1024, self.winfo_width() if self.winfo_exists() else width)
+        win_h = max(700, self.winfo_height() if self.winfo_exists() else height)
+        scale = max(0.92, min(1.75, min(win_w / 1180.0, win_h / 760.0)))
+        cover_sz = round(max(248, min(420, 285 * scale)))
+        play_sz = round(max(74, min(124, 82 * scale)))
+
+        # Exact build_shell (padx=46, pady=28) + detail_column (padx=56) alignment.
+        pad_x, pad_y = 46, 28
+        col_x0 = pad_x + 56
+        col_x1 = max(col_x0 + 480, width - pad_x - 56)
+
+        # 1. Back button pill + NOW PLAYING badge.
+        add_box(pad_x + 5, pad_y + 7, pad_x + 138, pad_y + 40, r=10)
+        add_box(width - pad_x - 89, pad_y + 13, width - pad_x, pad_y + 32, r=4, stroke=soft_col)
+
+        # 2. Top rule.
+        y = pad_y + 61
+        add_line(col_x0, y, col_x1, y, stroke=soft_col, w_px=1.5)
+        y += round(32 * scale)
+
+        # 3. Hero section (cover art + right pane metadata & controls).
+        hero_gap = round(38 * scale)
+        listen_w = round(101 * scale)
+        btn_gap = round(22 * scale)
+        right_w = play_sz + round(14 * scale) + listen_w + btn_gap * 2 + 215
+        hero_total_w = cover_sz + hero_gap + right_w
+        hero_x0 = max(col_x0, round((width - hero_total_w) / 2.0))
+        if not skip_hero_cover_title:
+            add_box(hero_x0, y, hero_x0 + cover_sz, y + cover_sz, r=8)
+
+        rx = hero_x0 + cover_sz + hero_gap
+        ry = y + 4
+        if not skip_hero_cover_title:
+            add_box(rx, ry, rx + 76, ry + 18, r=4, stroke=soft_col)
+            add_box(rx, ry + 32, rx + min(right_w, 290), ry + 78, r=6)
+        add_box(rx, ry + 104, rx + 218, ry + 124, r=4, stroke=soft_col)
+        add_box(rx, ry + 138, rx + 148, ry + 158, r=4, stroke=soft_col)
+
+        # Controls row: rounded-square Play button, Listen now, vertical divider, and 2 action pills.
+        cy = ry + 158 + round(28 * scale)
+        add_box(rx + 6, cy + 6, rx + play_sz - 6, cy + play_sz - 6, r=round(play_sz * 0.22))
+        lx = rx + play_sz + round(14 * scale)
+        add_box(lx, cy + play_sz // 2 - 12, lx + listen_w, cy + play_sz // 2 + 12, r=5, stroke=soft_col)
+        vx = lx + listen_w + btn_gap
+        add_line(vx, cy + 7, vx, cy + play_sz - 7, stroke=soft_col, w_px=1.5)
+        ax = vx + btn_gap
+        add_box(ax + 5, cy - 4, ax + 196, cy + 37, r=10)
+        add_box(ax + 5, cy + 56, ax + 224, cy + 97, r=10)
+
+        # 4. Bottom rule.
+        y = max(y + cover_sz, cy + play_sz) + round(34 * scale)
+        add_line(col_x0, y, col_x1, y, stroke=soft_col, w_px=1.5)
+        y += 20
+
+        # 5. Side-by-side cards: Your Listening (left) + Listener Ratings bar chart (right).
+        cards_x0 = col_x0 + 28
+        cards_x1 = col_x1 - 28
+        cards_gap = 20
+        half_w = max(200, (cards_x1 - cards_x0 - cards_gap) // 2)
+        card_h = 184
+
+        # Left card: Your Listening
+        add_box(cards_x0, y, cards_x0 + half_w, y + card_h, r=12)
+        add_box(cards_x0 + 18, y + 14, cards_x0 + 124, y + 27, r=4, stroke=soft_col)
+        add_box(cards_x0 + 18, y + 38, cards_x0 + min(half_w - 28, 210), y + 56, r=5, stroke=soft_col)
+        add_box(cards_x0 + 18, y + 72, cards_x0 + 102, y + 88, r=4, stroke=soft_col)
+        for s_i in range(5):
+            sx = cards_x0 + 114 + s_i * 26
+            add_box(sx, y + 70, sx + 20, y + 90, r=5, stroke=soft_col)
+
+        # Right card: Listener Ratings + 5 horizontal bar outlines matching Matplotlib plot area
+        rc_x0 = cards_x0 + half_w + cards_gap
+        add_box(rc_x0, y, rc_x0 + half_w, y + card_h, r=12)
+        add_box(rc_x0 + 16, y + 14, rc_x0 + 132, y + 27, r=4, stroke=soft_col)
+        add_box(rc_x0 + 16, y + 34, rc_x0 + min(half_w - 28, 220), y + 48, r=4, stroke=soft_col)
+        ch_x0, ch_w = rc_x0 + 10, half_w - 20
+        bar_x0 = ch_x0 + round(ch_w * 0.14)
+        bar_x1 = ch_x0 + round(ch_w * 0.88)
+        for b_i in range(5):
+            by = y + 72 + b_i * 20
+            add_box(ch_x0 + 8, by, bar_x0 - 8, by + 11, r=3, stroke=soft_col)
+            add_box(bar_x0, by, bar_x1, by + 11, r=3, stroke=soft_col)
+
+        # 6. Full-width bottom Programme Details card (Region, Downloads, Award, Download pill).
+        y += card_h + 14
+        info_h = 108
+        add_box(cards_x0, y, cards_x1, y + info_h, r=12)
+        add_box(cards_x0 + 18, y + 14, cards_x0 + 148, y + 26, r=4, stroke=soft_col)
+        meta_zone_w = max(240, (cards_x1 - cards_x0) - 200)
+        col_step = meta_zone_w // 3
+        for c_i in range(3):
+            mx = cards_x0 + 18 + c_i * col_step
+            add_box(mx, y + 40, mx + 84, y + 52, r=3, stroke=soft_col)
+            add_box(mx, y + 60, mx + 126, y + 78, r=5)
+        add_box(cards_x1 - 161, y + 47, cards_x1 - 23, y + 88, r=10)
+        return items
+
+    def _start_skeleton_glare(self, canvas, skeleton_items, width, height, *, delay_ms=250):
+        """Run a subtle periodic diagonal glare sweep across wireframe outlines once loading exceeds 1s."""
+        glare_col = blend_colour(BORDER_LINE, TEXT_WHITE, 0.55)
+        span = max(1.0, float(width) + float(height) * 0.45)
+        norm_items = [
+            (iid, (cx + cy * 0.45) / span, is_line, base_c)
+            for iid, cx, cy, is_line, base_c in skeleton_items
+        ]
+        state = {"job": None, "sweeping": False, "sweep_t0": 0.0, "active": True}
+        sweep_dur = 0.65
+        rest_ms = 1150
+
+        def cancel_glare(_event=None):
+            state["active"] = False
+            if state["job"] is not None:
+                try:
+                    self.after_cancel(state["job"])
+                except tk.TclError:
+                    pass
+                state["job"] = None
+
+        def step_sweep():
+            state["job"] = None
+            if not state["active"] or not canvas.winfo_exists():
+                return
+            now = time.monotonic()
+            if not state["sweeping"]:
+                state["sweeping"] = True
+                state["sweep_t0"] = now
+            p = (now - state["sweep_t0"]) / sweep_dur
+            if p >= 1.0:
+                state["sweeping"] = False
+                for iid, _pos, is_line, base_c in norm_items:
+                    try:
+                        canvas.itemconfigure(iid, fill=base_c) if is_line else canvas.itemconfigure(iid, outline=base_c)
+                    except tk.TclError:
+                        return
+                state["job"] = self.after(rest_ms, step_sweep)
+                return
+
+            # Glare band travels diagonally from -0.18 to 1.18 with a soft cosine falloff.
+            wave_x = -0.18 + 1.36 * p
+            band_w = 0.22
+            for iid, pos, is_line, base_c in norm_items:
+                dist = abs(pos - wave_x)
+                glow = (0.5 * (1.0 + math.cos(math.pi * dist / band_w))) if dist < band_w else 0.0
+                c = blend_colour(base_c, glare_col, glow * 0.85) if glow > 0.01 else base_c
+                try:
+                    canvas.itemconfigure(iid, fill=c) if is_line else canvas.itemconfigure(iid, outline=c)
+                except tk.TclError:
+                    return
+            state["job"] = self.after(22, step_sweep)
+
+        canvas.bind("<Destroy>", cancel_glare, add="+")
+        state["job"] = self.after(delay_ms, step_sweep)
+        return cancel_glare
+
+    def _preload_detail_backend(self, done_flag):
+        """Warm up Matplotlib in a background thread so slow first-loads never freeze the skeleton timer."""
+        try:
+            import matplotlib.backends.backend_tkagg  # noqa: F401
+            import matplotlib.figure  # noqa: F401
+        except Exception:
+            pass
+        finally:
+            done_flag[0] = True
+
+    def show_detail_with_skeleton(self, podcast_id):
+        """Load the details page; show subtle wireframe outlines only if loading exceeds 0.75s (glare after 1s)."""
+        if "matplotlib.backends.backend_tkagg" in sys.modules:
+            self.show_detail(podcast_id)
+            return
+
+        done_flag = [False]
+        threading.Thread(target=self._preload_detail_backend, args=(done_flag,), daemon=True).start()
+        t0 = time.monotonic()
+        skel_state = {"shown": False, "cancel_glare": None}
+
+        def poll_ready():
+            if not self.winfo_exists():
+                return
+            if done_flag[0]:
+                if skel_state["cancel_glare"] is not None:
+                    skel_state["cancel_glare"]()
+                self.show_detail(podcast_id)
+                return
+            elapsed = time.monotonic() - t0
+            if elapsed >= 0.75 and not skel_state["shown"]:
+                skel_state["shown"] = True
+                page = self.build_shell("Programme details")
+                sw = max(900, self.winfo_width() - 20)
+                sh = max(640, self.winfo_height() - 100)
+                sc = tk.Canvas(page, bg=DARK_BG, bd=0, highlightthickness=0, width=sw, height=sh)
+                sc.pack(fill="both", expand=True)
+                items = self._draw_detail_skeleton_outlines(sc, sw, sh, skip_hero_cover_title=False)
+                sc.update_idletasks()
+                rem_glare_ms = max(0, round((1.0 - elapsed) * 1000.0))
+                skel_state["cancel_glare"] = self._start_skeleton_glare(sc, items, sw, sh, delay_ms=rem_glare_ms)
+            self.after(25, poll_ready)
+
+        self.after(10, poll_ready)
+
+    def show_detail(self, podcast_id, *, show_simulated_notice=False, show_download_notice=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
         try:
             podcast_rec = self.get_single_podcast(podcast_id)
@@ -47,6 +271,24 @@ class DetailViewMixin:
                     "SELECT TimesListened, RatingGiven FROM listening_history WHERE ListenerID = ? AND PodcastID = ?",
                     (self.current_user, podcast_id),
                 ).fetchone()
+                rating_rows = conn.execute(
+                    "SELECT RatingGiven, COUNT(*) FROM listening_history "
+                    "WHERE PodcastID = ? AND RatingGiven BETWEEN 1 AND 5 GROUP BY RatingGiven",
+                    (podcast_id,),
+                ).fetchall()
+                extra_rec = conn.execute(
+                    "SELECT BBCRegion, DownloadCount, AwardWinner FROM podcasts WHERE PodcastID = ?",
+                    (podcast_id,),
+                ).fetchone()
+            rating_counts = {star: 0 for star in (5, 4, 3, 2, 1)}
+            for star_val, cnt in rating_rows:
+                s = int(round(float(star_val)))
+                if s in rating_counts:
+                    rating_counts[s] += int(cnt)
+            total_ratings = sum(rating_counts.values())
+            region_text = str(extra_rec[0]).strip() if (extra_rec and extra_rec[0]) else "UK-wide"
+            download_state = {"count": int(extra_rec[1]) if (extra_rec and extra_rec[1] is not None) else 0}
+            is_award_winner = bool(extra_rec and str(extra_rec[2] or "").strip().lower() in ("yes", "1", "true"))
 
             page = self.build_shell("Programme details")
             self._active_detail_podcast = (podcast_id, podcast_rec[1], podcast_rec[2])
@@ -261,12 +503,19 @@ class DetailViewMixin:
 
             if show_simulated_notice:
                 show_detail_notice("Playback is simulated")
+            elif show_download_notice:
+                show_detail_notice("Download is simulated")
 
             bottom_rule = tk.Frame(detail_column, bg=DIVIDER_LINE, height=2)
-            bottom_rule.pack(fill="x", pady=(0, 22))
+            bottom_rule.pack(fill="x", pady=(0, 18))
 
-            sub_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
-            sub_card.pack(fill="x", padx=28, pady=(0, 8))
+            bottom_cards = tk.Frame(detail_column, bg=DARK_BG)
+            bottom_cards.pack(fill="x", padx=28, pady=(0, 14))
+            bottom_cards.grid_columnconfigure(0, weight=1, uniform="detail-bottom")
+            bottom_cards.grid_columnconfigure(1, weight=1, uniform="detail-bottom")
+
+            sub_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
+            sub_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
             listening_heading = self.create_label(sub_card, "YOUR LISTENING", 8, ORANGE_HL, "bold")
             listening_heading.pack(anchor="w", padx=18, pady=(13, 5))
             play_count = (history_record[0] or 0) if history_record else 0
@@ -328,6 +577,70 @@ class DetailViewMixin:
 
             draw_inline_stars()
 
+            # Compact community rating breakdown card placed beside Your Listening.
+            ratings_card = self.create_card_frame(bottom_cards, bg=SUBCARD_BG)
+            ratings_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+            ratings_heading = self.create_label(ratings_card, "LISTENER RATINGS", 8, ORANGE_HL, "bold")
+            ratings_heading.pack(anchor="w", padx=16, pady=(12, 2))
+            ratings_sub_text = (
+                f"{total_ratings} {'rating' if total_ratings == 1 else 'ratings'}  ·  {self.podcast_average_text(podcast_id)}"
+                if total_ratings else "No listener ratings yet."
+            )
+            ratings_sub_color = TEXT_WHITE if total_ratings else TEXT_GRAY
+            ratings_sub = self.create_label(ratings_card, ratings_sub_text, 9, ratings_sub_color)
+            ratings_sub.pack(anchor="w", padx=16, pady=(0, 4))
+
+            ratings_chart_widget = self._render_ratings_bar_chart(ratings_card, rating_counts)
+
+            # Bottom programme metadata card: Region, Download count, Award status, and simulated Download toggle.
+            is_downloaded = self.check_if_downloaded(podcast_id)
+            info_card = self.create_card_frame(detail_column, bg=SUBCARD_BG)
+            info_card.pack(fill="x", padx=28, pady=(0, 22))
+            info_heading = self.create_label(info_card, "PROGRAMME DETAILS", 8, ORANGE_HL, "bold", bg=SUBCARD_BG)
+            info_heading.pack(anchor="w", padx=18, pady=(12, 6))
+
+            info_grid = tk.Frame(info_card, bg=SUBCARD_BG)
+            info_grid.pack(fill="x", padx=18, pady=(0, 14))
+            for col_i in range(3):
+                info_grid.grid_columnconfigure(col_i, weight=1, uniform="podcast-meta")
+            info_grid.grid_columnconfigure(3, weight=0)
+
+            meta_captions = []
+            meta_values = []
+            award_text = "★  Award Winner" if is_award_winner else "No"
+            award_color = GOLD_STAR if is_award_winner else TEXT_GRAY
+            for col_i, (cap_txt, val_txt, val_col) in enumerate((
+                ("BBC REGION", region_text, TEXT_WHITE),
+                ("DOWNLOADS", f"{download_state['count']:,}", TEXT_WHITE),
+                ("AWARD WINNER", award_text, award_color),
+            )):
+                cell = tk.Frame(info_grid, bg=SUBCARD_BG)
+                cell.grid(row=0, column=col_i, sticky="w", padx=(0, 12))
+                cap_lbl = self.create_label(cell, cap_txt, 8, TEXT_GRAY, "bold", bg=SUBCARD_BG)
+                cap_lbl.pack(anchor="w")
+                val_lbl = self.create_label(cell, val_txt, 12, val_col, "bold", bg=SUBCARD_BG)
+                val_lbl.pack(anchor="w", pady=(3, 0))
+                meta_captions.append(cap_lbl)
+                meta_values.append((val_lbl, val_col))
+
+            download_button = self.create_button(
+                info_grid,
+                "×  Remove download" if is_downloaded else "      Download",
+                lambda: self.toggle_download(podcast_id),
+                primary=not is_downloaded,
+                compact=True,
+                face=ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
+                fg=ACTION_BTN_FG if is_downloaded else PRIMARY_BTN_FG,
+            )
+            if not is_downloaded:
+                download_button._icon_kind = "cloud"
+            download_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
+            action_buttons.append((
+                download_button,
+                ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
+                SECONDARY_HOVER_BG if is_downloaded else ORANGE_HL,
+            ))
+
             last_layout = {"cover": 0}
             resize_job = [None]
 
@@ -385,6 +698,13 @@ class DetailViewMixin:
                 star_state["size"] = max(20, round(22 * font_scale))
                 star_state["gap"] = max(3, round(4 * font_scale))
                 draw_inline_stars()
+                ratings_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                ratings_sub.configure(font=(DEFAULT_FONT, max(10, round(11 * font_scale))))
+                info_heading.configure(font=(DEFAULT_FONT, max(8, round(9 * font_scale)), "bold"))
+                for cap_lbl in meta_captions:
+                    cap_lbl.configure(font=(DEFAULT_FONT, max(8, round(8 * font_scale)), "bold"))
+                for val_lbl, _vc in meta_values:
+                    val_lbl.configure(font=(DEFAULT_FONT, max(11, round(12 * font_scale)), "bold"))
                 action_font_size = max(10, round(11 * font_scale))
                 fav_button.pack_configure(pady=(0, round(8 * scale)))
                 for btn, face_col, hover_col in action_buttons:
@@ -421,9 +741,77 @@ class DetailViewMixin:
                 "rating_caption": rating_caption,
                 "star_canvas": star_canvas,
                 "star_state": star_state,
+                "ratings_card": ratings_card,
+                "ratings_heading": ratings_heading,
+                "ratings_sub": ratings_sub,
+                "ratings_sub_color": ratings_sub_color,
+                "ratings_chart_widget": ratings_chart_widget,
+                "ratings_counts": rating_counts,
+                "info_card": info_card,
+                "info_texts": [
+                    (info_heading, ORANGE_HL),
+                    *((c_lbl, TEXT_GRAY) for c_lbl in meta_captions),
+                    *meta_values,
+                ],
+                "download_button": download_button,
+                "download_primary": not is_downloaded,
             }
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load programme", err)
+
+    def _render_ratings_bar_chart(self, parent_card, rating_counts):
+        """Render a compact themed horizontal Matplotlib bar chart of 5-to-1 star listener rating counts."""
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except Exception:
+            self.create_label(
+                parent_card, "Install matplotlib to view the star rating chart.", 9, TEXT_GRAY,
+            ).pack(anchor="w", padx=16, pady=(0, 10))
+            return None
+
+        stars = [5, 4, 3, 2, 1]
+        labels = [f"{s} ★" for s in stars]
+        counts = [rating_counts.get(s, 0) for s in stars]
+        max_count = max(counts) if counts else 0
+
+        fig = Figure(figsize=(4.0, 1.18), dpi=90, facecolor=SUBCARD_BG)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(SUBCARD_BG)
+
+        # Subtle background tracks + foreground orange bars showing counts per star level.
+        track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
+        x_cap = max(1.0, max_count * 1.18)
+        ax.barh(labels, [x_cap * 0.90] * 5, height=0.52, color=track_col, edgecolor="none", zorder=1)
+        bars = ax.barh(labels, counts, height=0.52, color=ORANGE_ACCENT, edgecolor="none", zorder=2)
+
+        ax.invert_yaxis()
+        ax.set_xlim(0, x_cap)
+        ax.set_xticks([])
+        ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=8.5)
+        for tick_lbl in ax.get_yticklabels():
+            tick_lbl.set_fontweight("bold")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        for bar, cnt in zip(bars, counts):
+            y_mid = bar.get_y() + bar.get_height() / 2.0
+            ax.text(
+                x_cap * 0.93, y_mid, str(cnt),
+                va="center", ha="left",
+                color=TEXT_WHITE if cnt > 0 else TEXT_GRAY,
+                fontsize=8.5, fontweight="bold" if cnt > 0 else "normal",
+            )
+
+        fig.subplots_adjust(left=0.14, right=0.88, top=0.95, bottom=0.05)
+
+        chart_canvas = FigureCanvasTkAgg(fig, master=parent_card)
+        chart_canvas.draw()
+        chart_widget = chart_canvas.get_tk_widget()
+        chart_widget.configure(bg=SUBCARD_BG, highlightthickness=0, bd=0)
+        chart_widget.pack(fill="x", padx=10, pady=(0, 10))
+        chart_widget.bind("<Destroy>", lambda _e, f=fig: f.clear())
+        return chart_widget
 
     def listen(self, podcast_id, *, open_detail=True):
         """Simulate playing a podcast, increment TimesListened, and update last-listened recency."""
@@ -516,13 +904,17 @@ class DetailViewMixin:
     def rate_programme(self, podcast_id, callback_func=None, *, on_unplayed=None):
         """Open a dark interactive 5-star picker dialog to rate or update a programme's score."""
         existing_dlg = getattr(self, "_active_rating_dialog", None)
-        if existing_dlg is not None and existing_dlg.winfo_exists():
+        if existing_dlg is not None:
             try:
-                existing_dlg.lift()
-                existing_dlg.focus_force()
+                if existing_dlg.winfo_exists():
+                    existing_dlg.deiconify()
+                    existing_dlg.lift()
+                    existing_dlg.focus_set()
+                    return
             except tk.TclError:
                 pass
-            return
+            self._active_rating_dialog = None
+        dialog = None
         try:
             with self.get_db_connection() as conn:
                 prior_record = conn.execute(
@@ -538,35 +930,30 @@ class DetailViewMixin:
             dialog_title = "Rate this programme" if prior_record[1] is None else "Update your rating"
 
             dialog = tk.Toplevel(self)
+            dialog.withdraw()
             self._active_rating_dialog = dialog
             dialog.title(dialog_title)
             dialog.configure(bg=DARK_BG)
             dialog.resizable(False, False)
-            dialog.transient(self)
-            dialog.grab_set()
+            try:
+                dialog.transient(self)
+            except tk.TclError:
+                pass
 
-            # Style the popup dialog's Windows titlebar to match the active theme.
-            if sys.platform == "win32":
+            def close_dialog(_event=None):
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
                 try:
-                    dialog.update_idletasks()
-                    dlg_hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
-
-                    def _to_colorref(hex_col):
-                        return int(hex_col[1:3], 16) | (int(hex_col[3:5], 16) << 8) | (int(hex_col[5:7], 16) << 16)
-
-                    for attr, value in (
-                        (20, int(TITLEBAR_DARK_MODE)),
-                        (19, int(TITLEBAR_DARK_MODE)),
-                        (35, _to_colorref(DARK_BG)),
-                        (36, _to_colorref(TITLEBAR_TEXT)),
-                        (34, _to_colorref(DARK_BG)),
-                    ):
-                        val = ctypes.c_int(value)
-                        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                            ctypes.c_void_p(dlg_hwnd), ctypes.c_int(attr), ctypes.byref(val), ctypes.sizeof(val),
-                        )
-                except Exception:
+                    dialog.grab_release()
+                except tk.TclError:
                     pass
+                try:
+                    if dialog.winfo_exists():
+                        dialog.destroy()
+                except tk.TclError:
+                    pass
+
+            dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
             body = tk.Frame(dialog, bg=DARK_BG, padx=28, pady=22)
             body.pack(fill="both", expand=True)
@@ -603,23 +990,63 @@ class DetailViewMixin:
 
             def confirm_rating():
                 chosen = selected["score"]
-                dialog.destroy()
+                close_dialog()
                 self.save_programme_rating(podcast_id, chosen, callback_func=callback_func)
 
             btn_row = tk.Frame(body, bg=DARK_BG)
             btn_row.pack()
             self.create_button(btn_row, "Save rating", confirm_rating, primary=True, compact=True).pack(side="left", padx=(0, 8))
-            self.create_button(btn_row, "Cancel", dialog.destroy, compact=True).pack(side="left")
+            self.create_button(btn_row, "Cancel", close_dialog, compact=True).pack(side="left")
 
-            dialog.update_idletasks()
-            dw, dh = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
-            px = self.winfo_rootx() + (self.winfo_width() - dw) // 2
-            py = self.winfo_rooty() + (self.winfo_height() - dh) // 2
-            dialog.geometry(f"+{max(0, px)}+{max(0, py)}")
+            apply_windows_titlebar_theme(dialog)
+            center_toplevel(dialog, self, min_w=260, min_h=180, set_size=True)
             dialog.bind("<Return>", lambda _e: confirm_rating())
-            dialog.bind("<Escape>", lambda _e: dialog.destroy())
+            dialog.bind("<Escape>", close_dialog)
+
+            dialog.deiconify()
+            dialog.lift()
+            dialog.focus_set()
+
+            # Acquire modal grab only after the WM has actually mapped the dialog; calling
+            # grab_set() immediately on Linux (X11/Wayland) or slower hardware raises
+            # TclError ("grab failed: window not viewable") and prevents the popup from appearing.
+            def _acquire_grab(attempts_left=20):
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                    if not dialog.winfo_viewable():
+                        if attempts_left > 0:
+                            dialog.after(25, _acquire_grab, attempts_left - 1)
+                        return
+                    dialog.grab_set()
+                    dialog.lift()
+                    dialog.focus_set()
+                except tk.TclError:
+                    if attempts_left > 0:
+                        try:
+                            if dialog.winfo_exists():
+                                dialog.after(25, _acquire_grab, attempts_left - 1)
+                        except tk.TclError:
+                            pass
+
+            dialog.after(10, _acquire_grab)
         except sqlite3.Error as err:
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
             self.show_db_error("Couldn't save your rating", err)
+        except tk.TclError:
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                if getattr(self, "_active_rating_dialog", None) is dialog:
+                    self._active_rating_dialog = None
 
     def remove_rating(self, podcast_id, evaporate=None):
         """Clear the active listener's rating for a podcast, evaporating its card before reloading."""
@@ -686,6 +1113,55 @@ class DetailViewMixin:
             self.show_detail(podcast_id)
         except sqlite3.Error as err:
             self.show_db_error("Couldn't update favourites", err)
+
+    def toggle_download(self, podcast_id):
+        """Toggle a simulated download for the active listener, updating DownloadCount and animating Downloads."""
+        if self._is_busy_transitioning() or self.current_user is None:
+            return
+        try:
+            with self.get_db_connection() as conn:
+                self._ensure_downloads_table(conn)
+                existing = conn.execute(
+                    "SELECT 1 FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                    (self.current_user, podcast_id),
+                ).fetchone()
+                was_added = existing is None
+                if was_added:
+                    conn.execute(
+                        "INSERT INTO user_downloads (ListenerID, PodcastID, DownloadedAt) VALUES (?, ?, ?)",
+                        (self.current_user, podcast_id, time.time()),
+                    )
+                    conn.execute(
+                        "UPDATE podcasts SET DownloadCount = COALESCE(DownloadCount, 0) + 1 WHERE PodcastID = ?",
+                        (podcast_id,),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM user_downloads WHERE ListenerID = ? AND PodcastID = ?",
+                        (self.current_user, podcast_id),
+                    )
+                    conn.execute(
+                        "UPDATE podcasts SET DownloadCount = MAX(0, COALESCE(DownloadCount, 0) - 1) WHERE PodcastID = ?",
+                        (podcast_id,),
+                    )
+            if not self._is_reduced_motion():
+                self._detail_hero_origin = None
+                anim_payload = {
+                    "mode": "downloads",
+                    "podcast_id": podcast_id,
+                    "return_tab": "Programme details",
+                    "return_fn": lambda pid=podcast_id, added=was_added: self.show_detail(pid, show_download_notice=added),
+                }
+                if was_added:
+                    anim_payload["target_rating"] = None
+                    self._pending_card_insert = anim_payload
+                else:
+                    self._pending_card_evaporate = anim_payload
+                self.transition_to(self.show_downloads, "Downloads")
+                return
+            self.show_detail(podcast_id, show_download_notice=was_added)
+        except sqlite3.Error as err:
+            self.show_db_error("Couldn't update downloads", err)
 
     def remove_from_history(self, podcast_id, evaporate=None):
         """Delete one programme from the listener's listening history, evaporating its card first."""
