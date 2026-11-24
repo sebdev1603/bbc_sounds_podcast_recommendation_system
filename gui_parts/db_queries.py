@@ -1,7 +1,10 @@
 """SQLite connection manager and read-only query helpers for the BBC Sounds GUI."""
 from contextlib import contextmanager
 from difflib import SequenceMatcher
+import hashlib
+import hmac
 import random
+import secrets
 import sqlite3
 from tkinter import messagebox
 
@@ -402,15 +405,80 @@ class DatabaseMixin:
             conn.execute("ALTER TABLE listeners ADD COLUMN Avatar TEXT")
 
     @staticmethod
-    def _ensure_listener_password_column(conn):
-        """Ensure every listener row has a Password column defaulting to '1'."""
+    def hash_password(password):
+        """Hash a plaintext password using scrypt with a unique random 16-byte salt.
+
+        Format returned: 'scrypt$<salt_hex>$<hash_hex>'
+        - Random salt ensures identical passwords (e.g. default '1') produce completely
+          different hashes for every listener, defeating rainbow-table lookups.
+        - scrypt (n=2**14, r=8, p=1) is intentionally slow and memory-hard so an attacker
+          with a copy of database.db cannot rapidly brute-force passwords on a GPU.
+        """
+        # Generate 16 cryptographically secure random bytes (128 bits) for this password's salt.
+        salt = secrets.token_bytes(16)
+        # Derive a 32-byte (256-bit) key from the UTF-8 password bytes and salt using scrypt.
+        digest = hashlib.scrypt(
+            str(password).encode("utf-8"),
+            salt=salt,
+            n=2**14,   # CPU/memory cost factor (16,384 iterations)
+            r=8,       # Block size factor (memory usage scales with r * n)
+            p=1,       # Parallelization factor
+            dklen=32,  # Output hash length in bytes
+        )
+        # Store the algorithm tag, hex-encoded salt, and hex-encoded hash together in one column.
+        return f"scrypt${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def check_password_hash(password, stored_value):
+        """Verify a candidate plaintext password against a stored salted scrypt hash.
+
+        Uses hmac.compare_digest for constant-time comparison so execution time never
+        leaks how many leading bytes of the hash matched (prevents timing attacks).
+        """
+        stored = str(stored_value or "")
+        # Safety fallback if a legacy row has not yet been migrated from plaintext.
+        if not stored.startswith("scrypt$"):
+            return hmac.compare_digest(str(password), stored)
+        try:
+            # Split 'scrypt$<salt_hex>$<hash_hex>' back into its original salt and expected digest.
+            _scheme, salt_hex, hash_hex = stored.split("$", 2)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            # Re-run scrypt with the exact same salt and cost parameters on the candidate password.
+            actual = hashlib.scrypt(
+                str(password).encode("utf-8"),
+                salt=salt,
+                n=2**14,
+                r=8,
+                p=1,
+                dklen=len(expected),
+            )
+            # Compare both byte strings in constant time; returns True only on an exact match.
+            return hmac.compare_digest(actual, expected)
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _ensure_listener_password_column(cls, conn):
+        """Ensure listeners.Password exists and migrate any plaintext rows to salted scrypt hashes."""
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
         if "password" not in cols:
-            conn.execute("ALTER TABLE listeners ADD COLUMN Password TEXT DEFAULT '1'")
-            conn.execute("UPDATE listeners SET Password = '1' WHERE Password IS NULL OR TRIM(Password) = ''")
+            conn.execute("ALTER TABLE listeners ADD COLUMN Password TEXT")
+        # Find any rows whose Password is missing or still stored in plaintext (no 'scrypt$' prefix).
+        unhashed = conn.execute(
+            "SELECT ListenerID, Password FROM listeners "
+            "WHERE Password IS NULL OR Password NOT LIKE 'scrypt$%'"
+        ).fetchall()
+        # Hash each legacy row once with its own unique salt; future runs skip this loop completely.
+        for lid, raw_pw in unhashed:
+            plain = str(raw_pw) if (raw_pw is not None and str(raw_pw) != "") else "1"
+            conn.execute(
+                "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+                (cls.hash_password(plain), lid),
+            )
 
     def verify_listener_password(self, listener_id, password_text):
-        """Return True if password_text matches the stored Password for listener_id."""
+        """Return True if password_text matches the salted scrypt hash stored for listener_id."""
         if listener_id is None:
             return False
         try:
@@ -422,21 +490,23 @@ class DatabaseMixin:
                 ).fetchone()
                 if row is None:
                     return False
-                stored = str(row[0] if row[0] is not None else "1")
-                return stored == str(password_text)
+                # Never compare plaintext directly; re-hash candidate with the row's stored salt.
+                return self.check_password_hash(password_text, row[0] if row[0] is not None else "")
         except sqlite3.Error:
             return False
 
     def update_listener_password(self, listener_id, new_password):
-        """Persist a new password for listener_id in database.db."""
+        """Hash new_password with a fresh random salt and persist it for listener_id."""
         if listener_id is None or not str(new_password):
             return False
         try:
             with self.get_db_connection() as conn:
                 self._ensure_listener_password_column(conn)
+                # Always generate a brand-new salt whenever a password is changed.
+                hashed_pw = self.hash_password(new_password)
                 cur = conn.execute(
                     "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
-                    (str(new_password), listener_id),
+                    (hashed_pw, listener_id),
                 )
                 return cur.rowcount > 0
         except sqlite3.Error as err:
@@ -444,7 +514,7 @@ class DatabaseMixin:
             return False
 
     def create_listener_account(self, password, age_group="19-25"):
-        """Create a new listener row with the next sequential ListenerID and return that ID."""
+        """Create a new listener row with the next sequential ListenerID and a salted password hash."""
         if not str(password):
             return None
         valid_ages = ("16-18", "19-25", "26-35", "36-50", "50+")
@@ -456,12 +526,14 @@ class DatabaseMixin:
                 self._ensure_listener_password_column(conn)
                 row = conn.execute("SELECT MAX(ListenerID) FROM listeners").fetchone()
                 next_id = int(row[0] if (row and row[0] is not None) else 1000) + 1
+                # Hash the chosen password with a unique random salt before storing it in SQLite.
+                hashed_pw = self.hash_password(password)
                 conn.execute(
                     "INSERT INTO listeners "
                     "(ListenerID, AgeGroup, PreferredCategory, ListeningHoursPerWeek, CompleteSurvey, "
                     "LengthPreference, FavoritePodcasts, FavoriteGenres, Name, Avatar, Password) "
                     "VALUES (?, ?, ?, 0, 0, 'Medium', '', '', NULL, 'default', ?)",
-                    (next_id, chosen_age, "", str(password)),
+                    (next_id, chosen_age, "", hashed_pw),
                 )
             return next_id
         except sqlite3.Error as err:

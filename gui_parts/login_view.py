@@ -151,8 +151,9 @@ class LoginViewMixin:
                 if not found_record:
                     status_label.config(text="We couldn't find that listener ID. Check it and try again.", fg="#ff9868")
                     return
-                stored_pw = str(found_record["Password"] if found_record["Password"] is not None else "1")
-                if password_input != stored_pw:
+                # Verify the entered password against the stored salted scrypt hash in constant time.
+                stored_pw = found_record["Password"] if found_record["Password"] is not None else ""
+                if not self.check_password_hash(password_input, stored_pw):
                     status_label.config(text="Incorrect password. Try again or reset your password.", fg="#ff9868")
                     pw_var.set("")
                     pw_entry.focus_set()
@@ -258,16 +259,18 @@ class LoginViewMixin:
                         if not exists:
                             r_err_lbl.configure(text="We couldn't find that listener ID.")
                             return
-                        old_pw = str(exists[1] if exists[1] is not None else "1")
-                        if new_pw == old_pw:
+                        # Verify the new password isn't the same as the currently stored salted hash.
+                        old_pw = exists[1] if exists[1] is not None else ""
+                        if self.check_password_hash(new_pw, old_pw):
                             r_err_lbl.configure(text="New password cannot be the same as your current password.")
                             reset_pw_var.set("")
                             reset_confirm_var.set("")
                             r_pw_ent.focus_set()
                             return
+                        # Generate a fresh salted scrypt hash for the new password before writing to SQLite.
                         conn.execute(
                             "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
-                            (new_pw, exists[0]),
+                            (self.hash_password(new_pw), exists[0]),
                         )
                     id_var.set(str(exists[0]))
                     pw_var.set("")
