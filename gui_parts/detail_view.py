@@ -36,7 +36,9 @@ from gui_parts.theme import (
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
 
-    def _draw_detail_skeleton_outlines(self, canvas, width, height, *, skip_hero_cover_title=False):
+    def _draw_detail_skeleton_outlines(
+        self, canvas, width, height, *, skip_hero_cover_title=False, skip_play_button=False,
+    ):
         """Draw subtle, pixel-aligned wireframe outlines matching the podcast details page layout."""
         col = blend_colour(DARK_BG, BORDER_LINE, 0.72)
         soft_col = blend_colour(DARK_BG, BORDER_LINE, 0.45)
@@ -99,7 +101,8 @@ class DetailViewMixin:
 
         # Controls row: rounded-square Play button, Listen now, vertical divider, and 2 action pills.
         cy = ry + 158 + round(28 * scale)
-        add_box(rx + 6, cy + 6, rx + play_sz - 6, cy + play_sz - 6, r=round(play_sz * 0.22))
+        if not skip_play_button:
+            add_box(rx + 6, cy + 6, rx + play_sz - 6, cy + play_sz - 6, r=round(play_sz * 0.22))
         lx = rx + play_sz + round(14 * scale)
         add_box(lx, cy + play_sz // 2 - 12, lx + listen_w, cy + play_sz // 2 + 12, r=5, stroke=soft_col)
         vx = lx + listen_w + btn_gap

@@ -2730,7 +2730,9 @@ class EffectsMixin:
                         if elapsed >= 0.75 and not skel_st["shown"]:
                             skel_st["shown"] = True
                             skel_st["items"] = self._draw_detail_skeleton_outlines(
-                                expander, target_w, target_h, skip_hero_cover_title=True,
+                                expander, target_w, target_h,
+                                skip_hero_cover_title=True,
+                                skip_play_button=(source_kind == "mini_bar"),
                             )
                             for hero_it in (cover_item, icon_item, cat_item, title_item):
                                 if hero_it is not None:
