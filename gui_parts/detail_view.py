@@ -400,13 +400,15 @@ class DetailViewMixin:
 
             download_button = self.create_button(
                 info_grid,
-                "☁  Remove download" if is_downloaded else "☁  Download",
+                "×  Remove download" if is_downloaded else "      Download",
                 lambda: self.toggle_download(podcast_id),
                 primary=not is_downloaded,
                 compact=True,
                 face=ACTION_BTN_BG if is_downloaded else ORANGE_ACCENT,
                 fg=ACTION_BTN_FG if is_downloaded else PRIMARY_BTN_FG,
             )
+            if not is_downloaded:
+                download_button._icon_kind = "cloud"
             download_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
             action_buttons.append((
                 download_button,

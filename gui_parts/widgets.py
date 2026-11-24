@@ -217,9 +217,10 @@ class WidgetsMixin:
         lift = max(0, min(3, round(2.2 * raw_eased)))
         y_shift = getattr(button, "_hover_y_shift", 0)
         border_colour = getattr(button, "_rounded_border", None)
+        icon_spec = getattr(button, "_rounded_icon", None)
         image = self.rounded_button_image(
             width, height, colour, inset=inset, y_shift=y_shift, lift=lift,
-            border_colour=border_colour,
+            border_colour=border_colour, icon_spec=icon_spec,
         )
         button._current_image = image
         config = {"image": image}
@@ -276,8 +277,12 @@ class WidgetsMixin:
         else:
             border_colour = None
         button._rounded_border = border_colour
+        icon_kind = getattr(button, "_icon_kind", None)
+        icon_spec = (icon_kind, button.cget("fg"), metrics.measure(text)) if icon_kind else None
+        button._rounded_icon = icon_spec
         button._normal_image = self.rounded_button_image(
-            width, height, face, inset=5, y_shift=y_shift, lift=0, border_colour=border_colour,
+            width, height, face, inset=5, y_shift=y_shift, lift=0,
+            border_colour=border_colour, icon_spec=icon_spec,
         )
         button.configure(image=button._normal_image)
 
@@ -365,9 +370,9 @@ class WidgetsMixin:
         ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
         return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 1)) + _chunk(b"IEND", b"")
 
-    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None):
+    def rounded_button_image(self, width, height, colour, inset=5, y_shift=0, lift=0, border_colour=None, icon_spec=None):
         """Rasterize and cache a smooth anti-aliased rounded-rectangle PhotoImage with optional hover pop-up lift."""
-        key = (width, height, colour, inset, y_shift, lift, border_colour)
+        key = (width, height, colour, inset, y_shift, lift, border_colour, icon_spec)
         if key not in self.button_images:
             # Reserve 6px transparent margin per side so elastic hover overshoot & shadow never shift layout,
             # plus 2*y_shift at the bottom so compound="center" text sits optically centered in the pill.
@@ -417,6 +422,29 @@ class WidgetsMixin:
                     outline=(*border_rgb, 255) if border_rgb is not None else None,
                     width=ss if border_rgb is not None else 0,
                 )
+                if icon_spec and icon_spec[0] == "cloud":
+                    ic_hex = str(icon_spec[1]).lstrip("#")
+                    ic_rgba = (
+                        (int(ic_hex[0:2], 16), int(ic_hex[2:4], 16), int(ic_hex[4:6], 16), 255)
+                        if len(ic_hex) == 6 else (255, 255, 255, 255)
+                    )
+                    txt_w = icon_spec[2]
+                    iw = max(14.0, pill_h * 0.54) * ss
+                    ih = iw * 0.64
+                    ix0 = max((left + 8) * ss, ((canvas_w - txt_w) / 2.0 - 2.0) * ss)
+                    iy0 = ((top + bottom) / 2.0) * ss - ih * 0.52
+                    # Classic iCloud-style fluffy cloud: flat rounded base + 3 smooth overlapping domes.
+                    draw.rounded_rectangle(
+                        (ix0 + iw * 0.04, iy0 + ih * 0.46, ix0 + iw * 0.96, iy0 + ih),
+                        radius=ih * 0.27, fill=ic_rgba,
+                    )
+                    for cx_f, cy_f, r_f in (
+                        (0.27, 0.62, 0.27),
+                        (0.50, 0.40, 0.36),
+                        (0.75, 0.64, 0.24),
+                    ):
+                        cx_p, cy_p, rp = ix0 + iw * cx_f, iy0 + ih * cy_f, iw * r_f
+                        draw.ellipse((cx_p - rp, cy_p - rp, cx_p + rp, cy_p + rp), fill=ic_rgba)
                 aa = hi.resize((canvas_w, canvas_h), resample)
                 buf = io.BytesIO()
                 aa.save(buf, format="PNG", compress_level=1)
