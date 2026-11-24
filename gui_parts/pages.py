@@ -1268,6 +1268,12 @@ class PagesMixin:
 
         pw_status_lbl = self.create_label(pw_section, "", 9, TEXT_GRAY, bg=CARD_BG)
         pw_status_lbl.pack(anchor="w", pady=(6, 0))
+        new_pw_ent.bind(
+            "<KeyRelease>",
+            lambda _e: (lambda res: pw_status_lbl.configure(text=translate(res[0]) if res[0] else "", fg=res[1]))(
+                self.password_strength_summary(new_pw_var.get())
+            ),
+        )
 
         def on_change_password(_event=None):
             cur_val = cur_pw_var.get()
@@ -1282,8 +1288,9 @@ class PagesMixin:
                 cur_pw_var.set("")
                 cur_pw_ent.focus_set()
                 return
-            if not new_val:
-                pw_status_lbl.configure(text=translate("Enter a new password."), fg="#ff9868")
+            ok_pw, pw_msg = self.validate_password_strength(new_val)
+            if not ok_pw:
+                pw_status_lbl.configure(text=translate(pw_msg), fg="#ff9868")
                 new_pw_ent.focus_set()
                 return
             if new_val == cur_val:

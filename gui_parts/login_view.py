@@ -217,15 +217,22 @@ class LoginViewMixin:
                         "SELECT ListenerID, CompleteSurvey, Password FROM listeners WHERE ListenerID = ?",
                         (format_user_id(username_input),),
                     ).fetchone()
+                # Use one generic error message whether the Listener ID is missing or the password
+                # is wrong so attackers cannot enumerate which Listener IDs exist in the database.
+                generic_auth_err = "Invalid listener ID or password. Try again or reset your password."
                 if not found_record:
-                    record_login_failure("We couldn't find that listener ID. Check it and try again.")
+                    # Run a dummy hash check so unknown-ID timing stays close to valid-ID timing.
+                    self.check_password_hash(password_input, "scrypt$" + "00" * 16 + "$" + "00" * 32)
+                    pw_var.set("")
+                    pw_entry.focus_set()
+                    record_login_failure(generic_auth_err)
                     return
                 # Verify the entered password against the stored salted scrypt hash in constant time.
                 stored_pw = found_record["Password"] if found_record["Password"] is not None else ""
                 if not self.check_password_hash(password_input, stored_pw):
                     pw_var.set("")
                     pw_entry.focus_set()
-                    record_login_failure("Incorrect password. Try again or reset your password.")
+                    record_login_failure(generic_auth_err)
                     return
                 # Successful sign-in resets all failed-attempt and lockout counters.
                 rate_state["failures"] = 0
@@ -301,6 +308,14 @@ class LoginViewMixin:
 
             r_id_ent = _make_field("LISTENER ID", reset_id_var, masked=False)
             r_pw_ent = _make_field("NEW PASSWORD", reset_pw_var, masked=True)
+            r_strength_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=320)
+            r_strength_lbl.pack(anchor="w", pady=(0, 6))
+            r_pw_ent.bind(
+                "<KeyRelease>",
+                lambda _e: (lambda res: r_strength_lbl.configure(text=res[0], fg=res[1]))(
+                    self.password_strength_summary(reset_pw_var.get())
+                ),
+            )
             r_cf_ent = _make_field("CONFIRM NEW PASSWORD", reset_confirm_var, masked=True)
             r_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=320)
             r_err_lbl.pack(anchor="w", pady=(0, 10))
@@ -313,8 +328,9 @@ class LoginViewMixin:
                     return
                 new_pw = reset_pw_var.get()
                 confirm_pw = reset_confirm_var.get()
-                if not new_pw:
-                    r_err_lbl.configure(text="Enter a new password.")
+                ok_pw, pw_msg = self.validate_password_strength(new_pw)
+                if not ok_pw:
+                    r_err_lbl.configure(text=pw_msg)
                     r_pw_ent.focus_set()
                     return
                 if new_pw != confirm_pw:
@@ -467,6 +483,14 @@ class LoginViewMixin:
                 return ent
 
             c_pw_ent = _make_pw_field("PASSWORD", new_pw_var)
+            c_strength_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=340)
+            c_strength_lbl.pack(anchor="w", pady=(0, 6))
+            c_pw_ent.bind(
+                "<KeyRelease>",
+                lambda _e: (lambda res: c_strength_lbl.configure(text=res[0], fg=res[1]))(
+                    self.password_strength_summary(new_pw_var.get())
+                ),
+            )
             c_cf_ent = _make_pw_field("CONFIRM PASSWORD", cfm_pw_var)
             c_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=340)
             c_err_lbl.pack(anchor="w", pady=(0, 10))
@@ -474,8 +498,9 @@ class LoginViewMixin:
             def submit_create(_event=None):
                 p1 = new_pw_var.get()
                 p2 = cfm_pw_var.get()
-                if not p1:
-                    c_err_lbl.configure(text="Enter a password for your new account.")
+                ok_pw, pw_msg = self.validate_password_strength(p1)
+                if not ok_pw:
+                    c_err_lbl.configure(text=pw_msg)
                     c_pw_ent.focus_set()
                     return
                 if p1 != p2:

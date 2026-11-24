@@ -405,6 +405,53 @@ class DatabaseMixin:
             conn.execute("ALTER TABLE listeners ADD COLUMN Avatar TEXT")
 
     @staticmethod
+    def validate_password_strength(password):
+        """Enforce password policy for new/changed/reset passwords (existing legacy logins remain valid).
+
+        Policy: 8-128 characters, including at least one uppercase letter, one lowercase letter,
+        and one digit. Capping length at 128 also prevents CPU DoS against scrypt hashing.
+        Returns (True, "") if valid, otherwise (False, reason_message).
+        """
+        pw = str(password or "")
+        if len(pw) < 8:
+            return False, "Password must be at least 8 characters long."
+        if len(pw) > 128:
+            return False, "Password must be 128 characters or fewer."
+        missing = []
+        if not any(ch.isupper() for ch in pw):
+            missing.append("an uppercase letter")
+        if not any(ch.islower() for ch in pw):
+            missing.append("a lowercase letter")
+        if not any(ch.isdigit() for ch in pw):
+            missing.append("a number")
+        if missing:
+            return False, "Password must include " + ", ".join(missing) + "."
+        return True, ""
+
+    @staticmethod
+    def password_strength_summary(password):
+        """Return a (label, hex_colour) live strength indicator for password input fields."""
+        pw = str(password or "")
+        if not pw:
+            return "", "#9a9fa8"
+        score = 0
+        if len(pw) >= 8:
+            score += 1
+        if len(pw) >= 12:
+            score += 1
+        if any(ch.isupper() for ch in pw) and any(ch.islower() for ch in pw):
+            score += 1
+        if any(ch.isdigit() for ch in pw):
+            score += 1
+        if any(not ch.isalnum() for ch in pw):
+            score += 1
+        if score <= 2 or len(pw) < 8:
+            return "Strength: Weak  ·  Use 8+ chars, upper, lower & a number", "#ff6b6b"
+        if score == 3:
+            return "Strength: Fair  ·  Meets policy (add length or a symbol to strengthen)", "#ffb347"
+        return "Strength: Strong", "#7ce38b"
+
+    @staticmethod
     def hash_password(password):
         """Hash a plaintext password using scrypt with a unique random 16-byte salt.
 
