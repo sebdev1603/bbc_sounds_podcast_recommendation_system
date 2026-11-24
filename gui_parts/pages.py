@@ -1382,11 +1382,15 @@ class PagesMixin:
         larger_btn = self.create_button(
             size_controls, "A+  Larger", lambda: on_adjust_text(0.10), primary=True, compact=True,
         )
-        larger_btn.pack(side="left", padx=(0, 8))
+        larger_btn.pack(side="left")
+
+        tk.Frame(access_card, bg=BORDER_LINE, height=1).pack(fill="x", padx=18)
+        reset_row = tk.Frame(access_card, bg=CARD_BG)
+        reset_row.pack(fill="x", padx=18, pady=14)
         reset_access_btn = self.create_button(
-            size_controls, "Reset accessibility settings", on_reset_accessibility, compact=True,
+            reset_row, "Reset accessibility settings", on_reset_accessibility, compact=True,
         )
-        reset_access_btn.pack(side="left")
+        reset_access_btn.pack(side="right")
         refresh_accessibility_controls()
 
         # Interactive Q&A accordion section answering common questions about the app.
