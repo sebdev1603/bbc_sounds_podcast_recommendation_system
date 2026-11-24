@@ -1742,9 +1742,9 @@ class EffectsMixin:
             )
             return
         if self._is_reduced_motion():
-            self.show_detail(podcast_id)
+            self.show_detail_with_skeleton(podcast_id)
             return
-        self.transition_to(lambda: self.show_detail(podcast_id), "Programme details", direction=1)
+        self.transition_to(lambda: self.show_detail_with_skeleton(podcast_id), "Programme details", direction=1)
 
     def expand_card_to_detail(
         self, shell, source_card, source_cover, podcast_id, title, category, title_widget=None,
@@ -2354,18 +2354,65 @@ class EffectsMixin:
                     expander.itemconfigure(cat_item, fill=ORANGE_HL)
                     expander.itemconfigure(title_item, fill=TEXT_WHITE)
 
-                    self.show_detail(podcast_id)
-                    if not expander.winfo_exists() or not shell.winfo_exists():
-                        cleanup()
-                        return
-                    # Apply responsive UI scaling synchronously now (while covered by expander) so an
-                    # after_idle rescale can never shift back_row/detail_column after the overlay drops.
-                    if self.current_page is not None and self.current_page.winfo_exists():
-                        self.apply_interface_scaling(force=True, target_widget=self.current_page)
-                    # Lift expander BEFORE update_idletasks so the newly built detail page never flashes on top.
-                    tk.Misc.lift(expander)
-                    self.update_idletasks()
-                    tk.Misc.lift(expander)
+                    # Only show the subtle wireframe outlines if loading takes > 0.75s (glare sweep after 1.0s).
+                    load_t0 = monotonic()
+                    done_flag = [False]
+                    if "matplotlib.backends.backend_tkagg" in sys.modules:
+                        done_flag[0] = True
+                    else:
+                        import threading as _th
+                        _th.Thread(target=self._preload_detail_backend, args=(done_flag,), daemon=True).start()
+
+                    skel_st = {"items": [], "shown": False, "cancel_glare": None}
+
+                    def _poll_handoff():
+                        if not expander.winfo_exists() or not shell.winfo_exists():
+                            if skel_st["cancel_glare"] is not None:
+                                skel_st["cancel_glare"]()
+                            cleanup()
+                            return
+                        if done_flag[0]:
+                            if skel_st["cancel_glare"] is not None:
+                                skel_st["cancel_glare"]()
+                            self.show_detail(podcast_id)
+                            if not expander.winfo_exists() or not shell.winfo_exists():
+                                cleanup()
+                                return
+                            if self.current_page is not None and self.current_page.winfo_exists():
+                                self.apply_interface_scaling(force=True, target_widget=self.current_page)
+                            for sk_it in skel_st["items"]:
+                                try:
+                                    expander.delete(sk_it[0])
+                                except tk.TclError:
+                                    pass
+                            tk.Misc.lift(expander)
+                            self.update_idletasks()
+                            tk.Misc.lift(expander)
+                            _build_bloom()
+                            return
+
+                        elapsed = monotonic() - load_t0
+                        if elapsed >= 0.75 and not skel_st["shown"]:
+                            skel_st["shown"] = True
+                            skel_st["items"] = self._draw_detail_skeleton_outlines(
+                                expander, target_w, target_h, skip_hero_cover_title=True,
+                            )
+                            for hero_it in (cover_item, icon_item, cat_item, title_item):
+                                if hero_it is not None:
+                                    try:
+                                        expander.tag_raise(hero_it)
+                                    except tk.TclError:
+                                        pass
+                            expander.update_idletasks()
+                            rem_glare_ms = max(0, round((1.0 - elapsed) * 1000.0))
+                            skel_st["cancel_glare"] = self._start_skeleton_glare(
+                                expander, skel_st["items"], target_w, target_h, delay_ms=rem_glare_ms,
+                            )
+                        self.after(25, _poll_handoff)
+
+                    _poll_handoff()
+
+                def _build_bloom():
 
                     holder = getattr(self, "_detail_cover_holder", None)
                     cover_art_w = getattr(self, "_detail_cover_art", None)

@@ -1,6 +1,8 @@
 """Podcast detail view, playback simulation, star-picker rating dialog, and library actions."""
 import math
 import sqlite3
+import sys
+import threading
 import time
 import tkinter as tk
 from tkinter import messagebox
@@ -27,11 +29,234 @@ from gui_parts.theme import (
     blend_colour,
     center_toplevel,
     ease_out_elastic,
+    rounded_rect_points,
 )
 
 
 class DetailViewMixin:
     """Mixin implementing the podcast detail screen and play/rate/favourite/history actions."""
+
+    def _draw_detail_skeleton_outlines(self, canvas, width, height, *, skip_hero_cover_title=False):
+        """Draw subtle, pixel-aligned wireframe outlines matching the podcast details page layout."""
+        col = blend_colour(DARK_BG, BORDER_LINE, 0.72)
+        soft_col = blend_colour(DARK_BG, BORDER_LINE, 0.45)
+        items = []  # (item_id, center_x, center_y, is_line, base_stroke)
+
+        def add_box(x0, y0, x1, y1, r=8, stroke=None, w_px=1.0):
+            c = stroke or col
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            if r > 1 and (x1 - x0) > 6 and (y1 - y0) > 6:
+                iid = canvas.create_polygon(
+                    *rounded_rect_points(x0, y0, x1, y1, r),
+                    smooth=True, fill="", outline=c, width=w_px,
+                )
+            else:
+                iid = canvas.create_rectangle(x0, y0, x1, y1, fill="", outline=c, width=w_px)
+            items.append((iid, cx, cy, False, c))
+
+        def add_line(x0, y0, x1, y1, stroke=None, w_px=1.0):
+            c = stroke or soft_col
+            iid = canvas.create_line(x0, y0, x1, y1, fill=c, width=w_px)
+            items.append((iid, (x0 + x1) / 2.0, (y0 + y1) / 2.0, True, c))
+
+        win_w = max(1024, self.winfo_width() if self.winfo_exists() else width)
+        win_h = max(700, self.winfo_height() if self.winfo_exists() else height)
+        scale = max(0.92, min(1.75, min(win_w / 1180.0, win_h / 760.0)))
+        cover_sz = round(max(248, min(420, 285 * scale)))
+        play_sz = round(max(74, min(124, 82 * scale)))
+
+        # Exact build_shell (padx=46, pady=28) + detail_column (padx=56) alignment.
+        pad_x, pad_y = 46, 28
+        col_x0 = pad_x + 56
+        col_x1 = max(col_x0 + 480, width - pad_x - 56)
+
+        # 1. Back button pill + NOW PLAYING badge.
+        add_box(pad_x + 5, pad_y + 7, pad_x + 138, pad_y + 40, r=10)
+        add_box(width - pad_x - 89, pad_y + 13, width - pad_x, pad_y + 32, r=4, stroke=soft_col)
+
+        # 2. Top rule.
+        y = pad_y + 61
+        add_line(col_x0, y, col_x1, y, stroke=soft_col, w_px=1.5)
+        y += round(32 * scale)
+
+        # 3. Hero section (cover art + right pane metadata & controls).
+        hero_gap = round(38 * scale)
+        listen_w = round(101 * scale)
+        btn_gap = round(22 * scale)
+        right_w = play_sz + round(14 * scale) + listen_w + btn_gap * 2 + 215
+        hero_total_w = cover_sz + hero_gap + right_w
+        hero_x0 = max(col_x0, round((width - hero_total_w) / 2.0))
+        if not skip_hero_cover_title:
+            add_box(hero_x0, y, hero_x0 + cover_sz, y + cover_sz, r=8)
+
+        rx = hero_x0 + cover_sz + hero_gap
+        ry = y + 4
+        if not skip_hero_cover_title:
+            add_box(rx, ry, rx + 76, ry + 18, r=4, stroke=soft_col)
+            add_box(rx, ry + 32, rx + min(right_w, 290), ry + 78, r=6)
+        add_box(rx, ry + 104, rx + 218, ry + 124, r=4, stroke=soft_col)
+        add_box(rx, ry + 138, rx + 148, ry + 158, r=4, stroke=soft_col)
+
+        # Controls row: rounded-square Play button, Listen now, vertical divider, and 2 action pills.
+        cy = ry + 158 + round(28 * scale)
+        add_box(rx + 6, cy + 6, rx + play_sz - 6, cy + play_sz - 6, r=round(play_sz * 0.22))
+        lx = rx + play_sz + round(14 * scale)
+        add_box(lx, cy + play_sz // 2 - 12, lx + listen_w, cy + play_sz // 2 + 12, r=5, stroke=soft_col)
+        vx = lx + listen_w + btn_gap
+        add_line(vx, cy + 7, vx, cy + play_sz - 7, stroke=soft_col, w_px=1.5)
+        ax = vx + btn_gap
+        add_box(ax + 5, cy - 4, ax + 196, cy + 37, r=10)
+        add_box(ax + 5, cy + 56, ax + 224, cy + 97, r=10)
+
+        # 4. Bottom rule.
+        y = max(y + cover_sz, cy + play_sz) + round(34 * scale)
+        add_line(col_x0, y, col_x1, y, stroke=soft_col, w_px=1.5)
+        y += 20
+
+        # 5. Side-by-side cards: Your Listening (left) + Listener Ratings bar chart (right).
+        cards_x0 = col_x0 + 28
+        cards_x1 = col_x1 - 28
+        cards_gap = 20
+        half_w = max(200, (cards_x1 - cards_x0 - cards_gap) // 2)
+        card_h = 184
+
+        # Left card: Your Listening
+        add_box(cards_x0, y, cards_x0 + half_w, y + card_h, r=12)
+        add_box(cards_x0 + 18, y + 14, cards_x0 + 124, y + 27, r=4, stroke=soft_col)
+        add_box(cards_x0 + 18, y + 38, cards_x0 + min(half_w - 28, 210), y + 56, r=5, stroke=soft_col)
+        add_box(cards_x0 + 18, y + 72, cards_x0 + 102, y + 88, r=4, stroke=soft_col)
+        for s_i in range(5):
+            sx = cards_x0 + 114 + s_i * 26
+            add_box(sx, y + 70, sx + 20, y + 90, r=5, stroke=soft_col)
+
+        # Right card: Listener Ratings + 5 horizontal bar outlines matching Matplotlib plot area
+        rc_x0 = cards_x0 + half_w + cards_gap
+        add_box(rc_x0, y, rc_x0 + half_w, y + card_h, r=12)
+        add_box(rc_x0 + 16, y + 14, rc_x0 + 132, y + 27, r=4, stroke=soft_col)
+        add_box(rc_x0 + 16, y + 34, rc_x0 + min(half_w - 28, 220), y + 48, r=4, stroke=soft_col)
+        ch_x0, ch_w = rc_x0 + 10, half_w - 20
+        bar_x0 = ch_x0 + round(ch_w * 0.14)
+        bar_x1 = ch_x0 + round(ch_w * 0.88)
+        for b_i in range(5):
+            by = y + 72 + b_i * 20
+            add_box(ch_x0 + 8, by, bar_x0 - 8, by + 11, r=3, stroke=soft_col)
+            add_box(bar_x0, by, bar_x1, by + 11, r=3, stroke=soft_col)
+
+        # 6. Full-width bottom Programme Details card (Region, Downloads, Award, Download pill).
+        y += card_h + 14
+        info_h = 108
+        add_box(cards_x0, y, cards_x1, y + info_h, r=12)
+        add_box(cards_x0 + 18, y + 14, cards_x0 + 148, y + 26, r=4, stroke=soft_col)
+        meta_zone_w = max(240, (cards_x1 - cards_x0) - 200)
+        col_step = meta_zone_w // 3
+        for c_i in range(3):
+            mx = cards_x0 + 18 + c_i * col_step
+            add_box(mx, y + 40, mx + 84, y + 52, r=3, stroke=soft_col)
+            add_box(mx, y + 60, mx + 126, y + 78, r=5)
+        add_box(cards_x1 - 161, y + 47, cards_x1 - 23, y + 88, r=10)
+        return items
+
+    def _start_skeleton_glare(self, canvas, skeleton_items, width, height, *, delay_ms=250):
+        """Run a subtle periodic diagonal glare sweep across wireframe outlines once loading exceeds 1s."""
+        glare_col = blend_colour(BORDER_LINE, TEXT_WHITE, 0.55)
+        span = max(1.0, float(width) + float(height) * 0.45)
+        norm_items = [
+            (iid, (cx + cy * 0.45) / span, is_line, base_c)
+            for iid, cx, cy, is_line, base_c in skeleton_items
+        ]
+        state = {"job": None, "sweeping": False, "sweep_t0": 0.0, "active": True}
+        sweep_dur = 0.65
+        rest_ms = 1150
+
+        def cancel_glare(_event=None):
+            state["active"] = False
+            if state["job"] is not None:
+                try:
+                    self.after_cancel(state["job"])
+                except tk.TclError:
+                    pass
+                state["job"] = None
+
+        def step_sweep():
+            state["job"] = None
+            if not state["active"] or not canvas.winfo_exists():
+                return
+            now = time.monotonic()
+            if not state["sweeping"]:
+                state["sweeping"] = True
+                state["sweep_t0"] = now
+            p = (now - state["sweep_t0"]) / sweep_dur
+            if p >= 1.0:
+                state["sweeping"] = False
+                for iid, _pos, is_line, base_c in norm_items:
+                    try:
+                        canvas.itemconfigure(iid, fill=base_c) if is_line else canvas.itemconfigure(iid, outline=base_c)
+                    except tk.TclError:
+                        return
+                state["job"] = self.after(rest_ms, step_sweep)
+                return
+
+            # Glare band travels diagonally from -0.18 to 1.18 with a soft cosine falloff.
+            wave_x = -0.18 + 1.36 * p
+            band_w = 0.22
+            for iid, pos, is_line, base_c in norm_items:
+                dist = abs(pos - wave_x)
+                glow = (0.5 * (1.0 + math.cos(math.pi * dist / band_w))) if dist < band_w else 0.0
+                c = blend_colour(base_c, glare_col, glow * 0.85) if glow > 0.01 else base_c
+                try:
+                    canvas.itemconfigure(iid, fill=c) if is_line else canvas.itemconfigure(iid, outline=c)
+                except tk.TclError:
+                    return
+            state["job"] = self.after(22, step_sweep)
+
+        canvas.bind("<Destroy>", cancel_glare, add="+")
+        state["job"] = self.after(delay_ms, step_sweep)
+        return cancel_glare
+
+    def _preload_detail_backend(self, done_flag):
+        """Warm up Matplotlib in a background thread so slow first-loads never freeze the skeleton timer."""
+        try:
+            import matplotlib.backends.backend_tkagg  # noqa: F401
+            import matplotlib.figure  # noqa: F401
+        except Exception:
+            pass
+        finally:
+            done_flag[0] = True
+
+    def show_detail_with_skeleton(self, podcast_id):
+        """Load the details page; show subtle wireframe outlines only if loading exceeds 0.75s (glare after 1s)."""
+        if "matplotlib.backends.backend_tkagg" in sys.modules:
+            self.show_detail(podcast_id)
+            return
+
+        done_flag = [False]
+        threading.Thread(target=self._preload_detail_backend, args=(done_flag,), daemon=True).start()
+        t0 = time.monotonic()
+        skel_state = {"shown": False, "cancel_glare": None}
+
+        def poll_ready():
+            if not self.winfo_exists():
+                return
+            if done_flag[0]:
+                if skel_state["cancel_glare"] is not None:
+                    skel_state["cancel_glare"]()
+                self.show_detail(podcast_id)
+                return
+            elapsed = time.monotonic() - t0
+            if elapsed >= 0.75 and not skel_state["shown"]:
+                skel_state["shown"] = True
+                page = self.build_shell("Programme details")
+                sw = max(900, self.winfo_width() - 20)
+                sh = max(640, self.winfo_height() - 100)
+                sc = tk.Canvas(page, bg=DARK_BG, bd=0, highlightthickness=0, width=sw, height=sh)
+                sc.pack(fill="both", expand=True)
+                items = self._draw_detail_skeleton_outlines(sc, sw, sh, skip_hero_cover_title=False)
+                sc.update_idletasks()
+                rem_glare_ms = max(0, round((1.0 - elapsed) * 1000.0))
+                skel_state["cancel_glare"] = self._start_skeleton_glare(sc, items, sw, sh, delay_ms=rem_glare_ms)
+            self.after(25, poll_ready)
+
+        self.after(10, poll_ready)
 
     def show_detail(self, podcast_id, *, show_simulated_notice=False, show_download_notice=False):
         """Render the responsive podcast view page with rounded art, animated play button, and actions."""
