@@ -1268,12 +1268,22 @@ class PagesMixin:
 
         pw_status_lbl = self.create_label(pw_section, "", 9, TEXT_GRAY, bg=CARD_BG)
         pw_status_lbl.pack(anchor="w", pady=(6, 0))
-        new_pw_ent.bind(
-            "<KeyRelease>",
-            lambda _e: (lambda res: pw_status_lbl.configure(text=translate(res[0]) if res[0] else "", fg=res[1]))(
-                self.password_strength_summary(new_pw_var.get())
-            ),
-        )
+
+        def _update_settings_pw_hint(_event=None):
+            p1, p2 = new_pw_var.get(), cfm_pw_var.get()
+            if p2 and p1 != p2:
+                pw_status_lbl.configure(text=translate("Passwords must match."), fg="#ff6b6b")
+                return
+            s_txt, s_col = self.password_strength_summary(p1)
+            if p2 and p1 == p2 and s_txt:
+                pw_status_lbl.configure(text=translate(f"{s_txt}  ·  Passwords match ✓"), fg=s_col)
+            elif p2 and p1 == p2:
+                pw_status_lbl.configure(text=translate("Passwords match ✓"), fg="#7ce38b")
+            else:
+                pw_status_lbl.configure(text=translate(s_txt) if s_txt else "", fg=s_col)
+
+        new_pw_ent.bind("<KeyRelease>", _update_settings_pw_hint)
+        cfm_pw_ent.bind("<KeyRelease>", _update_settings_pw_hint)
 
         def on_change_password(_event=None):
             cur_val = cur_pw_var.get()
@@ -1303,7 +1313,7 @@ class PagesMixin:
                 new_pw_ent.focus_set()
                 return
             if new_val != cfm_val:
-                pw_status_lbl.configure(text=translate("New passwords do not match."), fg="#ff9868")
+                pw_status_lbl.configure(text=translate("Passwords must match."), fg="#ff6b6b")
                 cfm_pw_ent.focus_set()
                 return
             if self.update_listener_password(self.current_user, new_val):

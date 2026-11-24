@@ -310,13 +310,23 @@ class LoginViewMixin:
             r_pw_ent = _make_field("NEW PASSWORD", reset_pw_var, masked=True)
             r_strength_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=320)
             r_strength_lbl.pack(anchor="w", pady=(0, 6))
-            r_pw_ent.bind(
-                "<KeyRelease>",
-                lambda _e: (lambda res: r_strength_lbl.configure(text=res[0], fg=res[1]))(
-                    self.password_strength_summary(reset_pw_var.get())
-                ),
-            )
             r_cf_ent = _make_field("CONFIRM NEW PASSWORD", reset_confirm_var, masked=True)
+            r_match_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=320)
+            r_match_lbl.pack(anchor="w", pady=(0, 6))
+
+            def _update_reset_hints(_event=None):
+                p1, p2 = reset_pw_var.get(), reset_confirm_var.get()
+                s_txt, s_col = self.password_strength_summary(p1)
+                r_strength_lbl.configure(text=s_txt, fg=s_col)
+                if not p2:
+                    r_match_lbl.configure(text="", fg=TEXT_GRAY)
+                elif p1 == p2:
+                    r_match_lbl.configure(text="Passwords match ✓", fg="#7ce38b")
+                else:
+                    r_match_lbl.configure(text="Passwords must match.", fg="#ff6b6b")
+
+            r_pw_ent.bind("<KeyRelease>", _update_reset_hints)
+            r_cf_ent.bind("<KeyRelease>", _update_reset_hints)
             r_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=320)
             r_err_lbl.pack(anchor="w", pady=(0, 10))
 
@@ -334,7 +344,7 @@ class LoginViewMixin:
                     r_pw_ent.focus_set()
                     return
                 if new_pw != confirm_pw:
-                    r_err_lbl.configure(text="Passwords do not match.")
+                    r_err_lbl.configure(text="Passwords must match.")
                     r_cf_ent.focus_set()
                     return
 
@@ -485,13 +495,23 @@ class LoginViewMixin:
             c_pw_ent = _make_pw_field("PASSWORD", new_pw_var)
             c_strength_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=340)
             c_strength_lbl.pack(anchor="w", pady=(0, 6))
-            c_pw_ent.bind(
-                "<KeyRelease>",
-                lambda _e: (lambda res: c_strength_lbl.configure(text=res[0], fg=res[1]))(
-                    self.password_strength_summary(new_pw_var.get())
-                ),
-            )
             c_cf_ent = _make_pw_field("CONFIRM PASSWORD", cfm_pw_var)
+            c_match_lbl = self.create_label(body, "", 8, TEXT_GRAY, bg=DARK_BG, wraplength=340)
+            c_match_lbl.pack(anchor="w", pady=(0, 6))
+
+            def _update_create_hints(_event=None):
+                p1, p2 = new_pw_var.get(), cfm_pw_var.get()
+                s_txt, s_col = self.password_strength_summary(p1)
+                c_strength_lbl.configure(text=s_txt, fg=s_col)
+                if not p2:
+                    c_match_lbl.configure(text="", fg=TEXT_GRAY)
+                elif p1 == p2:
+                    c_match_lbl.configure(text="Passwords match ✓", fg="#7ce38b")
+                else:
+                    c_match_lbl.configure(text="Passwords must match.", fg="#ff6b6b")
+
+            c_pw_ent.bind("<KeyRelease>", _update_create_hints)
+            c_cf_ent.bind("<KeyRelease>", _update_create_hints)
             c_err_lbl = self.create_label(body, "", 9, "#ff9868", bg=DARK_BG, wraplength=340)
             c_err_lbl.pack(anchor="w", pady=(0, 10))
 
@@ -504,7 +524,7 @@ class LoginViewMixin:
                     c_pw_ent.focus_set()
                     return
                 if p1 != p2:
-                    c_err_lbl.configure(text="Passwords do not match.")
+                    c_err_lbl.configure(text="Passwords must match.")
                     c_cf_ent.focus_set()
                     return
                 new_id = self.create_listener_account(p1, age_group=selected_age[0])
