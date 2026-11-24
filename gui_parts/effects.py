@@ -883,7 +883,11 @@ class EffectsMixin:
 
             outgoing_info = getattr(self, "_outgoing_page_info", None)
             self._outgoing_page_info = None
-            if outgoing_info is None:
+            if getattr(self, "_defer_old_page_destroy", False):
+                # Keep the live outgoing page visible while the destination builds off-screen so
+                # slower devices never flash a blank screen before the shrink transition starts.
+                self._deferred_old_page = (self.current_page, getattr(self, "_shell_canvas_window", None))
+            elif outgoing_info is None:
                 old_page = self.current_page
                 if old_page is not None and old_page.winfo_exists():
                     old_page.destroy()
@@ -1034,7 +1038,10 @@ class EffectsMixin:
         win_kwargs = {"window": content_pane, "anchor": "nw"}
         if canvas_w > 1:
             win_kwargs["width"] = canvas_w
-        if self._tab_transition_direction is not None and canvas_w > 1:
+        if getattr(self, "_defer_old_page_destroy", False):
+            # Build the destination page off-screen while the current detail page stays visible.
+            init_pos = (max(2000, canvas_w + 500), 0)
+        elif self._tab_transition_direction is not None and canvas_w > 1:
             # Start the incoming page off-screen so it never flashes at (0, 0) before sliding in.
             init_pos = (self._tab_transition_direction * canvas_w, 0)
         else:
@@ -1214,9 +1221,16 @@ class EffectsMixin:
                 self._tab_transition_distance = 1
 
         # On Linux/macOS, skip sliding the outgoing heavy widget tree (which triggers per-child X11 repaints)
-        # and go straight into a crisp, fast incoming slide.
+        # and keep the current page visible while the destination builds off-screen before sliding in.
         if sys.platform != "win32":
-            open_next_page()
+            self._outgoing_page_info = (self.current_page, window)
+            self._tab_transition_direction = direction
+            self._tab_transition_distance = tab_distance
+            try:
+                destination()
+            finally:
+                self._tab_transition_direction = None
+                self._tab_transition_distance = 1
             return
 
         self.slide_page(
@@ -1269,8 +1283,28 @@ class EffectsMixin:
                     pass
             self._finish_transition()
 
+        if outgoing_info is not None:
+            self._anim_old_page_info = outgoing_info
+
+        def _drop_outgoing():
+            info = getattr(self, "_anim_old_page_info", None)
+            self._anim_old_page_info = None
+            if info is not None:
+                o_page, o_win = info
+                if o_page is not None and o_page.winfo_exists():
+                    try:
+                        o_page.destroy()
+                    except tk.TclError:
+                        pass
+                if o_win is not None and canvas.winfo_exists():
+                    try:
+                        canvas.delete(o_win)
+                    except tk.TclError:
+                        pass
+
         def begin_slide():
             if not canvas.winfo_exists() or canvas_window != getattr(self, "_shell_canvas_window", None):
+                _drop_outgoing()
                 self._finish_transition()
                 return
             try:
@@ -1278,6 +1312,7 @@ class EffectsMixin:
                     self._prerender_initial_batch(2)
                 if abs(self._ui_scale_factor - 1.0) >= 0.025 and self.current_page is not None and self.current_page.winfo_exists():
                     self._scale_widget_tree(self.current_page, self._ui_scale_factor)
+                _drop_outgoing()
                 width = max(1, canvas.winfo_width())
                 canvas.itemconfigure(canvas_window, width=width)
                 # Reset vertical scroll and update scrollregion BEFORE frame 0 so the incoming page
@@ -3394,36 +3429,66 @@ class EffectsMixin:
                 )
                 cover_cache[step_sz] = (p_img, p_ico)
 
-        shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
-        tk.Misc.lift(shrinker)
+        # Build the destination page & initial card batch off-screen while the live detail page stays
+        # fully visible so slower devices never show a blank screen before the shrink animation starts.
+        self._deferred_old_page = None
+        self._defer_old_page_destroy = True
+        try:
+            destination()
+        finally:
+            self._defer_old_page_destroy = False
 
-        # Build the destination page underneath while fully covered by shrinker.
-        destination()
+        deferred_old = getattr(self, "_deferred_old_page", None)
+        self._deferred_old_page = None
+
+        def _drop_deferred_old(target_canvas=None):
+            if deferred_old is None:
+                return
+            o_page, o_win = deferred_old
+            if o_page is not None and o_page.winfo_exists():
+                try:
+                    o_page.destroy()
+                except tk.TclError:
+                    pass
+            if o_win is not None and target_canvas is not None and target_canvas.winfo_exists():
+                try:
+                    target_canvas.delete(o_win)
+                except tk.TclError:
+                    pass
+
         if not shell.winfo_exists() or not shrinker.winfo_exists():
+            _drop_deferred_old()
             self._finish_transition()
             return
 
-        # Pre-render the visible batch of cards underneath shrinker BEFORE animation starts so grid pages
-        # (For you, Favourites, History, Ratings, Search) are already populated rather than blank during shrink.
+        # Pre-render the visible batch of cards off-screen BEFORE swapping to shrinker so grid pages
+        # (For you, Favourites, History, Ratings, Search) are already populated with zero blank pause.
         self._prerender_initial_batch(6)
         saved_scroll = float(origin.get("scroll_y") or 0.0)
         new_target = getattr(self, "_page_transition_target", None)
         if restore_scroll and saved_scroll > 0.0 and new_target:
             self._prerender_initial_batch(6)
+
+        # Now that the destination is ready, place shrinker on top, move the new page into (0, 0),
+        # and remove the old detail page underneath it.
+        shrinker.place(x=start_x, y=start_y, width=start_w, height=start_h)
         tk.Misc.lift(shrinker)
         if new_target:
-            new_canvas, _new_win = new_target
+            new_canvas, new_win = new_target
+            _drop_deferred_old(new_canvas)
             if new_canvas.winfo_exists():
                 try:
+                    new_canvas.coords(new_win, 0, 0)
                     new_canvas.update_idletasks()
                     if self.current_page is not None and self.current_page.winfo_exists():
                         new_canvas.configure(
                             scrollregion=(0, 0, self.current_page.winfo_reqwidth(), self.current_page.winfo_reqheight())
                         )
-                    if restore_scroll and saved_scroll > 0.0:
-                        new_canvas.yview_moveto(saved_scroll)
+                    new_canvas.yview_moveto(saved_scroll if (restore_scroll and saved_scroll > 0.0) else 0.0)
                 except tk.TclError:
                     pass
+        else:
+            _drop_deferred_old()
 
         shell.update_idletasks()
         tk.Misc.lift(shrinker)
