@@ -391,8 +391,10 @@ class PagesMixin:
                     ico_txt_fg = "#ffffff"
                     border_base = BORDER_LINE
 
+                card_sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+                card_h_init = round(166 * max(1.0, card_sf))
                 card_canvas = tk.Canvas(
-                    category_row, bg=DARK_BG, height=166, bd=0,
+                    category_row, bg=DARK_BG, height=card_h_init, bd=0,
                     highlightthickness=0, cursor="hand2",
                 )
                 card_canvas.grid(
@@ -405,24 +407,24 @@ class PagesMixin:
                 ico_bg_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=ico_base_bg, outline="")
                 ico_txt_item = card_canvas.create_text(
                     0, 0, text=tile_icon, fill=ico_txt_fg,
-                    font=(DEFAULT_FONT, 14, "bold"), anchor="center",
+                    font=(DEFAULT_FONT, max(12, round(14 * card_sf)), "bold"), anchor="center",
                 )
                 title_item = card_canvas.create_text(
                     0, 0, text=translate(category_name.upper()), fill=card_title_fg,
-                    font=(DEFAULT_FONT, 11, "bold"), anchor="w",
+                    font=(DEFAULT_FONT, max(9, round(11 * card_sf)), "bold"), anchor="w",
                 )
                 desc_item = card_canvas.create_text(
                     0, 0, text=translate(tile_description), fill=card_desc_fg,
-                    font=(DEFAULT_FONT, 9), anchor="nw", justify="left", width=225,
+                    font=(DEFAULT_FONT, max(8, round(9 * card_sf))), anchor="nw", justify="left", width=225,
                 )
                 act_item = card_canvas.create_text(
                     0, 0, text=translate("BROWSE PROGRAMMES  →"), fill="#ffffff",
-                    font=(DEFAULT_FONT, 8, "bold"), anchor="sw",
+                    font=(DEFAULT_FONT, max(7, round(8 * card_sf)), "bold"), anchor="sw",
                 )
 
                 hi_top = blend_colour(top_col, "#ffffff", 0.14 if is_light_mode else 0.16)
                 hi_bot = blend_colour(bot_col, "#ffffff", 0.14 if is_light_mode else 0.16)
-                card_state = {"step": 0, "target": 0, "job": None, "cfg_job": None, "w": 0, "h": 0, "cache": {}}
+                card_state = {"step": 0, "target": 0, "job": None, "cfg_job": None, "w": 0, "h": 0, "cache": {}, "sf": card_sf}
 
                 def paint_gradient_card(
                     cvs=card_canvas,
@@ -446,6 +448,17 @@ class PagesMixin:
                 ):
                     if not cvs.winfo_exists():
                         return
+                    sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+                    boost = max(1.0, sf)
+                    if abs(sf - state["sf"]) >= 0.02:
+                        state["sf"] = sf
+                        cvs.itemconfigure(it, font=(DEFAULT_FONT, max(12, round(14 * sf)), "bold"))
+                        cvs.itemconfigure(ti, font=(DEFAULT_FONT, max(9, round(11 * sf)), "bold"))
+                        cvs.itemconfigure(di, font=(DEFAULT_FONT, max(8, round(9 * sf))))
+                        cvs.itemconfigure(acti, font=(DEFAULT_FONT, max(7, round(8 * sf)), "bold"))
+                        target_h = round(166 * boost)
+                        if cvs.winfo_reqheight() != target_h:
+                            cvs.configure(height=target_h)
                     w = cvs.winfo_width()
                     h = cvs.winfo_height()
                     if w <= 4 or h <= 4:
@@ -477,15 +490,24 @@ class PagesMixin:
                     cvs.itemconfigure(bi, image=photo)
 
                     m = 1 + inset
+                    pad_side = round(15 * boost)
+                    ico_w = round(38 * boost)
+                    ico_h = round(32 * boost)
+                    ico_top = round(18 * boost)
                     cvs.coords(ai, m + 12, m + 3, max(m + 14, w - m - 12), m + 6)
-                    cvs.coords(ib, m + 15, m + 18, m + 53, m + 50)
+                    cvs.coords(ib, m + pad_side, m + ico_top, m + pad_side + ico_w, m + ico_top + ico_h)
                     cvs.itemconfigure(ib, fill=cur_ico_bg)
-                    cvs.coords(it, m + 34, m + 34)
-                    cvs.coords(ti, m + 65, m + 34)
-                    cvs.coords(di, m + 15, m + 62)
-                    cvs.itemconfigure(di, width=max(120, w - 2 * m - 30))
-                    cvs.coords(acti, m + 15, h - m - 14)
+                    cvs.coords(it, m + pad_side + ico_w / 2.0, m + ico_top + ico_h / 2.0)
+                    title_x = m + pad_side + ico_w + round(12 * boost)
+                    cvs.coords(ti, title_x, m + ico_top + ico_h / 2.0)
+                    cvs.itemconfigure(ti, width=max(80, w - title_x - m - pad_side))
+                    desc_y = m + ico_top + ico_h + round(12 * boost)
+                    cvs.coords(di, m + pad_side, desc_y)
+                    cvs.itemconfigure(di, width=max(120, w - 2 * m - pad_side * 2))
+                    cvs.coords(acti, m + pad_side, h - m - round(14 * boost))
                     cvs.itemconfigure(acti, fill=cur_act_fg)
+
+                card_canvas._on_scale_change = lambda _sf, fn=paint_gradient_card: fn()
 
                 def cancel_card_hover(state=card_state):
                     for jkey in ("job", "cfg_job"):
@@ -1145,7 +1167,9 @@ class PagesMixin:
         name_row = tk.Frame(profile_details, bg=CARD_BG)
         name_row.pack(fill="x")
         name_var = tk.StringVar(value=saved_name)
-        name_box = self.create_card_frame(name_row, bg=INPUT_BG, width=260, height=38)
+        sf_box = max(1.0, getattr(self, "_ui_scale_factor", 1.0))
+        name_box = self.create_card_frame(name_row, bg=INPUT_BG, width=round(260 * sf_box), height=round(38 * sf_box))
+        name_box._base_box_size = (260, 38)
         name_box.pack(side="left", padx=(0, 10))
         name_box.pack_propagate(False)
         name_entry = tk.Entry(
@@ -1251,7 +1275,9 @@ class PagesMixin:
             col_box = tk.Frame(pw_fields_row, bg=CARD_BG)
             col_box.pack(side="left", padx=(0, 10))
             self.create_label(col_box, placeholder_txt, 8, TEXT_GRAY, bg=CARD_BG).pack(anchor="w", pady=(0, 3))
-            card_in = self.create_card_frame(col_box, bg=INPUT_BG, width=170, height=34)
+            sf_in = max(1.0, getattr(self, "_ui_scale_factor", 1.0))
+            card_in = self.create_card_frame(col_box, bg=INPUT_BG, width=round(170 * sf_in), height=round(34 * sf_in))
+            card_in._base_box_size = (170, 34)
             card_in.pack(anchor="w")
             card_in.pack_propagate(False)
             ent = tk.Entry(
@@ -1515,7 +1541,7 @@ class PagesMixin:
         qa_canvas = tk.Canvas(page, bg=DARK_BG, bd=0, highlightthickness=0, height=200)
         qa_canvas.pack(fill="x", pady=(5, 14))
 
-        scale = getattr(self, "_ui_scale_factor", 1.0) * getattr(self, "_text_scale", 1.0)
+        scale = max(0.80, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
         q_font = (DEFAULT_FONT, max(8, round(11 * scale)), "bold")
         a_font = (DEFAULT_FONT, max(8, round(10 * scale)), "normal")
 
@@ -1565,14 +1591,15 @@ class PagesMixin:
         bottom_curtain = qa_canvas.create_rectangle(0, 0, 0, 0, fill=CARD_BG, outline="")
         card_border = qa_canvas.create_polygon(0, 0, 0, 0, smooth=True, fill="", outline=BORDER_LINE)
 
-        qa_layout = {"width": 0, "height": 0}
+        qa_layout = {"width": 0, "height": 0, "scale": scale}
         qa_loop = {"job": None, "last_t": None}
         qa_duration = 0.220
 
         def measure_texts(canvas_w):
-            pad_x = 20
-            q_w = max(220, canvas_w - pad_x * 2 - 24)
-            a_w = max(220, canvas_w - pad_x * 2 - 28)
+            pad_x = round(20 * max(1.0, qa_layout["scale"]))
+            indent = max(20, round(22 * qa_layout["scale"]))
+            q_w = max(220, canvas_w - pad_x * 2 - indent)
+            a_w = max(220, canvas_w - pad_x * 2 - indent - 4)
             for st in qa_anim_items:
                 qa_canvas.itemconfigure(st["q_id"], width=q_w)
                 qa_canvas.itemconfigure(st["ans_id"], width=a_w)
@@ -1586,43 +1613,46 @@ class PagesMixin:
                 if was_hidden:
                     qa_canvas.itemconfigure(st["ans_id"], state="hidden")
 
-        def layout_qa(canvas_w=None):
+        def layout_qa(canvas_w=None, force_measure=False):
             if not qa_canvas.winfo_exists():
                 return
             w = canvas_w if canvas_w is not None else qa_layout["width"]
             if w <= 1:
                 w = max(400, qa_canvas.winfo_width())
-            if w != qa_layout["width"]:
+            if force_measure or w != qa_layout["width"]:
                 qa_layout["width"] = w
                 measure_texts(w)
 
-            pad_x = 20
+            s_boost = max(1.0, qa_layout["scale"])
+            pad_x = round(20 * s_boost)
+            pad_y = round(12 * s_boost)
+            indent = max(20, round(22 * qa_layout["scale"]))
             y = 8
             for st in qa_anim_items:
                 cur = st["progress"]
                 tgt = st["target"]
                 eased = 1.0 - (1.0 - cur) ** 3 if tgt > 0.5 else cur * cur * (3.0 - 2.0 * cur)
-                open_h = round((st["ans_h"] + 12) * eased) if cur > 0.0 else 0
+                open_h = round((st["ans_h"] + pad_y) * eased) if cur > 0.0 else 0
 
                 row_top = y
                 if st["divider"] is not None:
                     qa_canvas.coords(st["divider"], pad_x, row_top, w - pad_x, row_top)
 
-                q_y = row_top + 12
-                header_bottom = q_y + st["q_h"] + 12
+                q_y = row_top + pad_y
+                header_bottom = q_y + st["q_h"] + pad_y
                 row_bottom = header_bottom + open_h
                 st["hit_top"] = row_top
                 st["hit_bottom"] = header_bottom
 
                 qa_canvas.coords(st["row_bg"], 6, row_top, w - 6, row_bottom + 2)
                 qa_canvas.coords(st["arrow_id"], pad_x, q_y)
-                qa_canvas.coords(st["q_id"], pad_x + 20, q_y)
+                qa_canvas.coords(st["q_id"], pad_x + indent, q_y)
 
                 if open_h > 0:
                     if not st["ans_visible"]:
                         qa_canvas.itemconfigure(st["ans_id"], state="normal")
                         st["ans_visible"] = True
-                    qa_canvas.coords(st["ans_id"], pad_x + 20, q_y + st["q_h"] + 6)
+                    qa_canvas.coords(st["ans_id"], pad_x + indent, q_y + st["q_h"] + round(6 * s_boost))
                 elif st["ans_visible"]:
                     qa_canvas.itemconfigure(st["ans_id"], state="hidden")
                     st["ans_visible"] = False
@@ -1647,6 +1677,21 @@ class PagesMixin:
             if total_h != qa_layout["height"]:
                 qa_layout["height"] = total_h
                 qa_canvas.configure(height=total_h)
+
+        def rescale_qa(new_scale):
+            s = max(0.80, min(1.75, float(new_scale)))
+            if abs(s - qa_layout["scale"]) < 0.02:
+                return
+            qa_layout["scale"] = s
+            qf = (DEFAULT_FONT, max(8, round(11 * s)), "bold")
+            af = (DEFAULT_FONT, max(8, round(10 * s)), "normal")
+            for st in qa_anim_items:
+                qa_canvas.itemconfigure(st["arrow_id"], font=qf)
+                qa_canvas.itemconfigure(st["q_id"], font=qf)
+                qa_canvas.itemconfigure(st["ans_id"], font=af)
+            layout_qa(force_measure=True)
+
+        qa_canvas._on_scale_change = rescale_qa
 
         def cancel_all_qa_anims(_event=None):
             if qa_loop["job"] is not None:

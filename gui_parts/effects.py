@@ -395,6 +395,7 @@ class EffectsMixin:
         resize_search = getattr(self, "_resize_search_bar", None)
         if resize_search is not None:
             resize_search()
+        self._sync_scrollregion()
 
     def set_text_scale(self, new_scale, persist=True):
         """Set the accessibility text-size multiplier (0.80..1.40), persist per user, and rescale."""
@@ -776,6 +777,23 @@ class EffectsMixin:
                         widget.configure(wraplength=scaled_wrap)
             except (tk.TclError, ValueError, TypeError):
                 pass
+            base_box = getattr(widget, "_base_box_size", None)
+            if base_box is not None:
+                try:
+                    bw, bh = base_box
+                    box_s = max(1.0, scale_factor)
+                    new_box = (round(bw * box_s), round(bh * box_s))
+                    if getattr(widget, "_applied_box_size", None) != new_box:
+                        widget._applied_box_size = new_box
+                        widget.configure(width=new_box[0], height=new_box[1])
+                except (tk.TclError, ValueError, TypeError):
+                    pass
+            on_scale = getattr(widget, "_on_scale_change", None)
+            if on_scale is not None:
+                try:
+                    on_scale(scale_factor)
+                except (tk.TclError, ValueError, TypeError):
+                    pass
 
     def _sync_scrollregion(self):
         """Ensure the active shell scroll canvas reflects the current page's full height."""
@@ -978,8 +996,12 @@ class EffectsMixin:
                 )
                 available = bar_w - used_w
                 # Grow longer on wider windows (up to 460px) and shrink cleanly on smaller/Linux screens (down to 110px).
+                sf = getattr(self, "_ui_scale_factor", 1.0)
                 target_w = max(110, min(460, available))
-                target_h = max(34, min(44, round(38 * getattr(self, "_ui_scale_factor", 1.0))))
+                target_h = max(34, min(56, round(38 * sf)))
+                bar_h = max(84, round(84 * max(1.0, sf * 0.92)))
+                if topbar.cget("height") != bar_h:
+                    topbar.configure(height=bar_h)
                 if abs(target_w - last_search_size[0]) >= 2 or target_h != last_search_size[1]:
                     last_search_size[0] = target_w
                     last_search_size[1] = target_h
