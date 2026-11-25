@@ -1723,6 +1723,8 @@ class WidgetsMixin:
             "hovered": None,  # hovered card index
             "hovered_btn": None,  # (card_idx, btn_idx)
             "resize_job": None,
+            "anim_lock": False,
+            "pending_resize_w": None,
         }
         grid_canvas._photo_refs = []
         grid_canvas._canvas_card_rects = {}
@@ -2428,6 +2430,9 @@ class WidgetsMixin:
         def on_configure(event):
             if event.width <= 1 or abs(event.width - state["last_w"]) < 4:
                 return
+            if state.get("anim_lock"):
+                state["pending_resize_w"] = event.width
+                return
             state["last_w"] = event.width
             if state["resize_job"] is not None:
                 try:
@@ -2453,20 +2458,27 @@ class WidgetsMixin:
             else:
                 init_w = max(320, self.winfo_width() - 120)
         state["last_w"] = init_w
-        grid_canvas._on_scale_change = lambda _sf: draw_grid(
-            grid_canvas.winfo_width() if grid_canvas.winfo_width() > 1 else state["last_w"]
-        )
+        def _on_scale_change(_sf):
+            target_w = grid_canvas.winfo_width() if grid_canvas.winfo_width() > 1 else state["last_w"]
+            if state.get("anim_lock"):
+                state["pending_resize_w"] = target_w
+                return
+            draw_grid(target_w)
+        grid_canvas._on_scale_change = _on_scale_change
         draw_grid(init_w)
 
         if insert_anim and state["cards"] and str(state["cards"][0].get("pid")) == str(insert_anim.get("podcast_id")):
+            state["anim_lock"] = True
             self._run_grid_insert_animation(grid_canvas, state, insert_anim, star_font, f_scale)
         elif evaporate_anim and state["cards"]:
+            state["anim_lock"] = True
             evap_pid = evaporate_anim.get("podcast_id")
             evap_return_tab = evaporate_anim.get("return_tab")
             evap_return_fn = evaporate_anim.get("return_fn")
             evap_wait_job = [None]
 
             def cancel_evap_wait(_e=None):
+                state["anim_lock"] = False
                 if evap_wait_job[0] is not None:
                     try:
                         grid_canvas.after_cancel(evap_wait_job[0])
@@ -2477,6 +2489,7 @@ class WidgetsMixin:
             grid_canvas.bind("<Destroy>", cancel_evap_wait, add="+")
 
             def return_after_evap():
+                state["anim_lock"] = False
                 if not grid_canvas.winfo_exists():
                     return
                 def go_back():
@@ -2554,6 +2567,7 @@ class WidgetsMixin:
         star_pop_font = self._get_cached_font((DEFAULT_FONT, max(14, round(17 * f_scale)), "bold"))
 
         def cancel_insert(_event=None):
+            state["anim_lock"] = False
             if anim_job[0] is not None:
                 try:
                     grid_canvas.after_cancel(anim_job[0])
@@ -2566,6 +2580,7 @@ class WidgetsMixin:
         def begin_showcase():
             anim_job[0] = None
             if not grid_canvas.winfo_exists():
+                state["anim_lock"] = False
                 return
             # Wait for the incoming tab slide animation to finish before popping the new card in.
             if getattr(self, "_transition_active", False):
@@ -2580,6 +2595,7 @@ class WidgetsMixin:
 
             def finish_and_return():
                 anim_job[0] = None
+                state["anim_lock"] = False
                 self._transition_active = False
                 if not grid_canvas.winfo_exists():
                     return
