@@ -485,7 +485,8 @@ class DatabaseMixin:
         stored = str(stored_value or "")
         # Safety fallback if a legacy row has not yet been migrated from plaintext.
         if not stored.startswith("scrypt$"):
-            return hmac.compare_digest(str(password), stored)
+            legacy_plain = stored if stored != "" else "1"
+            return hmac.compare_digest(str(password), legacy_plain)
         try:
             # Split 'scrypt$<salt_hex>$<hash_hex>' back into its original salt and expected digest.
             _scheme, salt_hex, hash_hex = stored.split("$", 2)
@@ -507,22 +508,25 @@ class DatabaseMixin:
 
     @classmethod
     def _ensure_listener_password_column(cls, conn):
-        """Ensure listeners.Password exists and migrate any plaintext rows to salted scrypt hashes."""
+        """Ensure listeners.Password exists (legacy rows are lazily migrated to scrypt on sign-in)."""
         cols = {row[1].lower() for row in conn.execute("PRAGMA table_info(listeners)").fetchall()}
         if "password" not in cols:
             conn.execute("ALTER TABLE listeners ADD COLUMN Password TEXT")
-        # Find any rows whose Password is missing or still stored in plaintext (no 'scrypt$' prefix).
-        unhashed = conn.execute(
-            "SELECT ListenerID, Password FROM listeners "
-            "WHERE Password IS NULL OR Password NOT LIKE 'scrypt$%'"
-        ).fetchall()
-        # Hash each legacy row once with its own unique salt; future runs skip this loop completely.
-        for lid, raw_pw in unhashed:
-            plain = str(raw_pw) if (raw_pw is not None and str(raw_pw) != "") else "1"
-            conn.execute(
-                "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
-                (cls.hash_password(plain), lid),
-            )
+
+    @classmethod
+    def _verify_and_upgrade_password(cls, conn, listener_id, password_text, stored_value):
+        """Verify password_text against stored_value, lazily upgrading legacy plaintext/NULL rows to scrypt."""
+        stored = str(stored_value or "")
+        if stored.startswith("scrypt$"):
+            return cls.check_password_hash(password_text, stored)
+        # Legacy row (NULL, empty, or plaintext): upgrade only this listener on demand so login stays fast.
+        legacy_plain = stored if stored != "" else "1"
+        hashed = cls.hash_password(legacy_plain)
+        conn.execute(
+            "UPDATE listeners SET Password = ? WHERE ListenerID = ?",
+            (hashed, listener_id),
+        )
+        return hmac.compare_digest(str(password_text), legacy_plain)
 
     def verify_listener_password(self, listener_id, password_text):
         """Return True if password_text matches the salted scrypt hash stored for listener_id."""
@@ -537,8 +541,8 @@ class DatabaseMixin:
                 ).fetchone()
                 if row is None:
                     return False
-                # Never compare plaintext directly; re-hash candidate with the row's stored salt.
-                return self.check_password_hash(password_text, row[0] if row[0] is not None else "")
+                # Verify against the stored salted hash (or lazily upgrade a legacy row).
+                return self._verify_and_upgrade_password(conn, listener_id, password_text, row[0])
         except sqlite3.Error:
             return False
 

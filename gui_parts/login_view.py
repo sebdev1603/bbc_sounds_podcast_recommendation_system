@@ -217,23 +217,24 @@ class LoginViewMixin:
                         "SELECT ListenerID, CompleteSurvey, Password FROM listeners WHERE ListenerID = ?",
                         (format_user_id(username_input),),
                     ).fetchone()
-                # Use one generic error message whether the Listener ID is missing or the password
-                # is wrong so attackers cannot enumerate which Listener IDs exist in the database.
-                generic_auth_err = "Invalid listener ID or password. Try again or reset your password."
-                if not found_record:
-                    # Run a dummy hash check so unknown-ID timing stays close to valid-ID timing.
-                    self.check_password_hash(password_input, "scrypt$" + "00" * 16 + "$" + "00" * 32)
-                    pw_var.set("")
-                    pw_entry.focus_set()
-                    record_login_failure(generic_auth_err)
-                    return
-                # Verify the entered password against the stored salted scrypt hash in constant time.
-                stored_pw = found_record["Password"] if found_record["Password"] is not None else ""
-                if not self.check_password_hash(password_input, stored_pw):
-                    pw_var.set("")
-                    pw_entry.focus_set()
-                    record_login_failure(generic_auth_err)
-                    return
+                    # Use one generic error message whether the Listener ID is missing or the password
+                    # is wrong so attackers cannot enumerate which Listener IDs exist in the database.
+                    generic_auth_err = "Invalid listener ID or password. Try again or reset your password."
+                    if not found_record:
+                        # Run a dummy hash check so unknown-ID timing stays close to valid-ID timing.
+                        self.check_password_hash(password_input, "scrypt$" + "00" * 16 + "$" + "00" * 32)
+                        pw_var.set("")
+                        pw_entry.focus_set()
+                        record_login_failure(generic_auth_err)
+                        return
+                    # Verify against the stored salted scrypt hash (lazily upgrading legacy rows on demand).
+                    if not self._verify_and_upgrade_password(
+                        conn, found_record["ListenerID"], password_input, found_record["Password"]
+                    ):
+                        pw_var.set("")
+                        pw_entry.focus_set()
+                        record_login_failure(generic_auth_err)
+                        return
                 # Successful sign-in resets all failed-attempt and lockout counters.
                 rate_state["failures"] = 0
                 rate_state["lockout_count"] = 0
