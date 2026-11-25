@@ -1182,7 +1182,11 @@ class EffectsMixin:
         self._transition_active = True
         self.cancel_pending_render()
 
-        if current == "Programme details" and self._active_detail_podcast is not None:
+        has_pending_grid_anim = (
+            getattr(self, "_pending_card_insert", None) is not None
+            or getattr(self, "_pending_card_evaporate", None) is not None
+        )
+        if current == "Programme details" and self._active_detail_podcast is not None and not has_pending_grid_anim:
             pid_now, title_now, cat_now = self._active_detail_podcast
             origin = getattr(self, "_detail_hero_origin", None)
             if origin is not None and origin.get("podcast_id") != pid_now:
