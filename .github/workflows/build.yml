@@ -2,7 +2,8 @@ name: Build Windows & Linux Executables
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, dev ]
+    tags: [ 'v*' ]
   workflow_dispatch:  # Adds a manual "Run workflow" button on GitHub
 
 jobs:
@@ -15,6 +16,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Log commit being built
+        id: meta
+        shell: bash
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "Building ref: ${{ github.ref_name }} (${SHORT_SHA})"
+          git log -1 --oneline
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,5 +44,5 @@ jobs:
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bbc-sounds-${{ runner.os }}
+          name: bbc-sounds-${{ runner.os }}-${{ steps.meta.outputs.short_sha }}
           path: dist/
