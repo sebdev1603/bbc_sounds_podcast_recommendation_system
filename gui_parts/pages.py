@@ -13,6 +13,7 @@ from gui_parts.theme import (
     DARK_BG,
     DEFAULT_FONT,
     DURATION_RANGES,
+    GENRE_CIRCLE_COLOURS,
     GENRE_GRADIENTS,
     GENRE_LIST,
     GENRE_TILE_DETAILS,
@@ -38,6 +39,65 @@ from gui_parts.theme import (
 
 class PagesMixin:
     """Mixin implementing all top-level navigation pages and preference-survey controls."""
+
+    def _render_stat_cards_canvas(self, parent, metrics, *, centered=False, val_size=23, pady=(4, 12)):
+        """Render a horizontal row of KPI stat cards onto a single Canvas (1 HWND for smooth scrolling)."""
+        bg_col = parent.cget("bg")
+        cvs = tk.Canvas(parent, bg=bg_col, bd=0, highlightthickness=0, height=84)
+        cvs.pack(fill="x", pady=pady)
+        state = {"w": 0, "sf": 0.0}
+
+        def draw_stats(avail_w=None, force=False):
+            if not cvs.winfo_exists():
+                return
+            w = int(avail_w) if avail_w is not None else cvs.winfo_width()
+            if w <= 1:
+                shell_cvs = getattr(self, "_shell_canvas", None)
+                if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
+                    w = max(320, shell_cvs.winfo_width() - 92)
+                else:
+                    w = max(320, self.winfo_width() - 120)
+            sf = max(0.80, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+            if not force and abs(w - state["w"]) < 2 and abs(sf - state["sf"]) < 0.02:
+                return
+            state["w"] = w
+            state["sf"] = sf
+            boost = max(1.0, sf)
+            val_font = self._get_cached_font((DEFAULT_FONT, max(16, round(val_size * sf)), "bold"))
+            cap_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * sf))))
+            val_lh = val_font.metrics("linespace")
+            cap_lh = cap_font.metrics("linespace")
+            pad_y = round(13 * boost)
+            pad_x = round(16 * boost)
+            gap = round(12 * min(1.35, boost))
+            card_h = pad_y * 2 + val_lh + cap_lh + round(6 * boost)
+
+            cvs.delete("all")
+            cvs.configure(height=card_h)
+            n = max(1, len(metrics))
+            card_w = max(100, (w - gap * (n - 1)) / float(n))
+            for idx, (val_str, cap_str) in enumerate(metrics):
+                x0 = round(idx * (card_w + gap))
+                x1 = round(x0 + card_w)
+                cvs.create_polygon(
+                    rounded_rect_points(x0 + 1, 1, x1 - 1, card_h - 1, 12),
+                    smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
+                )
+                tx = (x0 + x1) / 2.0 if centered else (x0 + pad_x)
+                anc = "n" if centered else "nw"
+                cvs.create_text(
+                    tx, pad_y, text=translate(val_str), fill=ORANGE_ACCENT,
+                    font=val_font, anchor=anc,
+                )
+                cvs.create_text(
+                    tx, pad_y + val_lh + round(3 * boost), text=translate(cap_str), fill=TEXT_GRAY,
+                    font=cap_font, anchor=anc, width=max(80, round(card_w - pad_x * 2)),
+                )
+
+        cvs.bind("<Configure>", lambda e: draw_stats(e.width) if e.width > 1 else None)
+        cvs._on_scale_change = lambda _sf: draw_stats(cvs.winfo_width() if cvs.winfo_width() > 1 else state["w"], force=True)
+        draw_stats()
+        return cvs
 
     def show_home(self):
         """Render the Home dashboard with stats, report shortcut, recommendations, and recent history."""
@@ -78,19 +138,12 @@ class PagesMixin:
                         favourite_ids,
                     ).fetchone()[0]
 
-            stats_pane = tk.Frame(page, bg=DARK_BG)
-            stats_pane.pack(fill="x", pady=(4, 12))
             metric_list = [
                 (str(history_counts[0]), "programmes in your history"),
                 (str(favourite_count), "favourites saved"),
                 (str(history_counts[1]), "ratings given"),
             ]
-            for idx, (val_str, cap_str) in enumerate(metric_list):
-                stats_pane.grid_columnconfigure(idx, weight=1, uniform="stats")
-                card_box = self.create_card_frame(stats_pane)
-                card_box.grid(row=0, column=idx, sticky="ew", padx=(0 if idx == 0 else 6, 6))
-                self.create_label(card_box, val_str, 23, ORANGE_ACCENT, "bold").pack(anchor="w", padx=16, pady=(12, 0))
-                self.create_label(card_box, cap_str, 9, TEXT_GRAY).pack(anchor="w", padx=16, pady=(0, 12))
+            self._render_stat_cards_canvas(page, metric_list, centered=False, val_size=23, pady=(4, 12))
 
             report_strip = self.create_card_frame(page, bg=SUBCARD_BG)
             report_strip.pack(fill="x", pady=(0, 10))
@@ -360,6 +413,32 @@ class PagesMixin:
             card_desc_fg = "#f4f6f9" if is_light_mode else "#f0f0f0"
             card_act_hover_fg = "#fff1a8" if is_light_mode else GOLD_STAR
 
+            # Render all genre gradient tiles on ONE single Canvas (1 HWND instead of 12+ for smooth scrolling).
+            cat_canvas = tk.Canvas(category_row, bg=DARK_BG, bd=0, highlightthickness=0, height=180)
+            cat_canvas.pack(fill="x")
+
+            class _GenreCardProxy:
+                __slots__ = ("_cvs", "_x", "_y", "_w", "_h")
+
+                def __init__(self, cvs, x, y, w, h):
+                    self._cvs, self._x, self._y, self._w, self._h = cvs, x, y, w, h
+
+                def winfo_exists(self):
+                    return self._cvs.winfo_exists()
+
+                def winfo_rootx(self):
+                    return self._cvs.winfo_rootx() + self._x
+
+                def winfo_rooty(self):
+                    return self._cvs.winfo_rooty() + self._y
+
+                def winfo_width(self):
+                    return self._w
+
+                def winfo_height(self):
+                    return self._h
+
+            cat_entries = []
             for idx, category_name in enumerate(all_categories):
                 tile_colour, tile_icon, tile_description = GENRE_TILE_DETAILS.get(
                     category_name,
@@ -378,7 +457,6 @@ class PagesMixin:
                     ),
                 )
                 if is_light_mode:
-                    # Lift dark gradients into richer, brighter mid-tones that pop cleanly on a light page.
                     top_col = blend_colour(top_col, accent_col, 0.24)
                     bot_col = blend_colour(bot_col, top_col, 0.42)
                     ico_base_bg = "#ffffff"
@@ -390,207 +468,208 @@ class PagesMixin:
                     ico_hover_bg = accent_col
                     ico_txt_fg = "#ffffff"
                     border_base = BORDER_LINE
-
-                card_sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
-                card_h_init = round(166 * max(1.0, card_sf))
-                card_canvas = tk.Canvas(
-                    category_row, bg=DARK_BG, height=card_h_init, bd=0,
-                    highlightthickness=0, cursor="hand2",
-                )
-                card_canvas.grid(
-                    row=idx // columns_count, column=idx % columns_count,
-                    sticky="nsew", padx=5, pady=5,
-                )
-
-                bg_item = card_canvas.create_image(0, 0, anchor="nw")
-                accent_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=accent_col, outline="")
-                ico_bg_item = card_canvas.create_rectangle(0, 0, 0, 0, fill=ico_base_bg, outline="")
-                ico_txt_item = card_canvas.create_text(
-                    0, 0, text=tile_icon, fill=ico_txt_fg,
-                    font=(DEFAULT_FONT, max(12, round(14 * card_sf)), "bold"), anchor="center",
-                )
-                title_item = card_canvas.create_text(
-                    0, 0, text=translate(category_name.upper()), fill=card_title_fg,
-                    font=(DEFAULT_FONT, max(9, round(11 * card_sf)), "bold"), anchor="w",
-                )
-                desc_item = card_canvas.create_text(
-                    0, 0, text=translate(tile_description), fill=card_desc_fg,
-                    font=(DEFAULT_FONT, max(8, round(9 * card_sf))), anchor="nw", justify="left", width=225,
-                )
-                act_item = card_canvas.create_text(
-                    0, 0, text=translate("BROWSE PROGRAMMES  →"), fill="#ffffff",
-                    font=(DEFAULT_FONT, max(7, round(8 * card_sf)), "bold"), anchor="sw",
-                )
-
                 hi_top = blend_colour(top_col, "#ffffff", 0.14 if is_light_mode else 0.16)
                 hi_bot = blend_colour(bot_col, "#ffffff", 0.14 if is_light_mode else 0.16)
-                card_state = {"step": 0, "target": 0, "job": None, "cfg_job": None, "w": 0, "h": 0, "cache": {}, "sf": card_sf}
+                cat_entries.append({
+                    "name": category_name,
+                    "icon": tile_icon,
+                    "desc": tile_description,
+                    "t_base": top_col, "b_base": bot_col, "acc": accent_col,
+                    "t_hi": hi_top, "b_hi": hi_bot,
+                    "ib_base": ico_base_bg, "ib_hi": ico_hover_bg,
+                    "ico_fg": ico_txt_fg, "bd_base": border_base,
+                    "step": 0, "target": 0, "cache": {}, "rect": (0, 0, 0, 0),
+                    "items": None, "photo": None,
+                })
 
-                def paint_gradient_card(
-                    cvs=card_canvas,
-                    state=card_state,
-                    t_base=top_col,
-                    b_base=bot_col,
-                    t_hi=hi_top,
-                    b_hi=hi_bot,
-                    acc=accent_col,
-                    ib_base=ico_base_bg,
-                    ib_hi=ico_hover_bg,
-                    bd_base=border_base,
-                    act_hi=card_act_hover_fg,
-                    bi=bg_item,
-                    ai=accent_item,
-                    ib=ico_bg_item,
-                    it=ico_txt_item,
-                    ti=title_item,
-                    di=desc_item,
-                    acti=act_item,
-                ):
-                    if not cvs.winfo_exists():
-                        return
-                    sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
-                    boost = max(1.0, sf)
-                    if abs(sf - state["sf"]) >= 0.02:
-                        state["sf"] = sf
-                        cvs.itemconfigure(it, font=(DEFAULT_FONT, max(12, round(14 * sf)), "bold"))
-                        cvs.itemconfigure(ti, font=(DEFAULT_FONT, max(9, round(11 * sf)), "bold"))
-                        cvs.itemconfigure(di, font=(DEFAULT_FONT, max(8, round(9 * sf))))
-                        cvs.itemconfigure(acti, font=(DEFAULT_FONT, max(7, round(8 * sf)), "bold"))
-                        target_h = round(166 * boost)
-                        if cvs.winfo_reqheight() != target_h:
-                            cvs.configure(height=target_h)
-                    w = cvs.winfo_width()
-                    h = cvs.winfo_height()
-                    if w <= 4 or h <= 4:
-                        return
-                    if w != state["w"] or h != state["h"]:
-                        state["w"] = w
-                        state["h"] = h
-                        state["cache"].clear()
+            grid_st = {"w": 0, "sf": 0.0, "hovered": None, "anim_job": None, "cfg_job": None}
 
-                    step = state["step"]
-                    t = step / 10.0
-                    raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if state["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
-                    # Quantize colour blend to 4 shared levels while preserving full elastic pop-out overshoot for inset.
-                    level = max(0, min(3, round(max(0.0, min(1.0, raw_eased)) * 3.0)))
-                    eased = level / 3.0
-                    inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
-                    cur_top = blend_colour(t_base, t_hi, eased)
-                    cur_bot = blend_colour(b_base, b_hi, eased)
-                    cur_border = blend_colour(bd_base, acc, eased)
-                    cur_ico_bg = blend_colour(ib_base, ib_hi, eased)
-                    cur_act_fg = blend_colour("#ffffff", act_hi, eased)
+            def paint_single_cat(entry, boost):
+                x0, y0, cw, ch = entry["rect"]
+                if cw <= 4 or ch <= 4 or entry["items"] is None:
+                    return
+                bi, ai, ib, it, ti, di, acti = entry["items"]
+                step = entry["step"]
+                t = step / 10.0
+                raw_eased = ease_out_elastic(t, damping=3.0, frequency=1.65) if entry["target"] > 0 else 1.0 - (1.0 - t) ** 2.4
+                level = max(0, min(3, round(max(0.0, min(1.0, raw_eased)) * 3.0)))
+                eased = level / 3.0
+                inset = max(0, min(5, round(5.0 - 3.0 * raw_eased)))
+                cur_top = blend_colour(entry["t_base"], entry["t_hi"], eased)
+                cur_bot = blend_colour(entry["b_base"], entry["b_hi"], eased)
+                cur_border = blend_colour(entry["bd_base"], entry["acc"], eased)
+                cur_ico_bg = blend_colour(entry["ib_base"], entry["ib_hi"], eased)
+                cur_act_fg = blend_colour("#ffffff", card_act_hover_fg, eased)
 
-                    cache_key = (level, inset)
-                    photo = state["cache"].get(cache_key)
-                    if photo is None:
-                        photo = make_gradient_card_photo(w, h, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
-                        state["cache"][cache_key] = photo
-                    cvs._grad_img = photo
-                    cvs.itemconfigure(bi, image=photo)
+                ckey = (level, inset)
+                photo = entry["cache"].get(ckey)
+                if photo is None:
+                    photo = make_gradient_card_photo(cw, ch, cur_top, cur_bot, cur_border, DARK_BG, inset=inset)
+                    entry["cache"][ckey] = photo
+                entry["photo"] = photo
+                cat_canvas.itemconfigure(bi, image=photo)
+                cat_canvas.coords(bi, x0, y0)
 
-                    m = 1 + inset
-                    pad_side = round(15 * boost)
-                    ico_w = round(38 * boost)
-                    ico_h = round(32 * boost)
-                    ico_top = round(18 * boost)
-                    cvs.coords(ai, m + 12, m + 3, max(m + 14, w - m - 12), m + 6)
-                    cvs.coords(ib, m + pad_side, m + ico_top, m + pad_side + ico_w, m + ico_top + ico_h)
-                    cvs.itemconfigure(ib, fill=cur_ico_bg)
-                    cvs.coords(it, m + pad_side + ico_w / 2.0, m + ico_top + ico_h / 2.0)
-                    title_x = m + pad_side + ico_w + round(12 * boost)
-                    cvs.coords(ti, title_x, m + ico_top + ico_h / 2.0)
-                    cvs.itemconfigure(ti, width=max(80, w - title_x - m - pad_side))
-                    desc_y = m + ico_top + ico_h + round(12 * boost)
-                    cvs.coords(di, m + pad_side, desc_y)
-                    cvs.itemconfigure(di, width=max(120, w - 2 * m - pad_side * 2))
-                    cvs.coords(acti, m + pad_side, h - m - round(14 * boost))
-                    cvs.itemconfigure(acti, fill=cur_act_fg)
+                m = 1 + inset
+                pad_side = round(15 * boost)
+                ico_w = round(38 * boost)
+                ico_h = round(32 * boost)
+                ico_top = round(18 * boost)
+                cat_canvas.coords(ai, x0 + m + 12, y0 + m + 3, max(x0 + m + 14, x0 + cw - m - 12), y0 + m + 6)
+                cat_canvas.coords(ib, x0 + m + pad_side, y0 + m + ico_top, x0 + m + pad_side + ico_w, y0 + m + ico_top + ico_h)
+                cat_canvas.itemconfigure(ib, fill=cur_ico_bg)
+                cat_canvas.coords(it, x0 + m + pad_side + ico_w / 2.0, y0 + m + ico_top + ico_h / 2.0)
+                title_x = x0 + m + pad_side + ico_w + round(12 * boost)
+                cat_canvas.coords(ti, title_x, y0 + m + ico_top + ico_h / 2.0)
+                cat_canvas.itemconfigure(ti, width=max(80, x0 + cw - title_x - m - pad_side))
+                desc_y = y0 + m + ico_top + ico_h + round(12 * boost)
+                cat_canvas.coords(di, x0 + m + pad_side, desc_y)
+                cat_canvas.itemconfigure(di, width=max(120, cw - 2 * m - pad_side * 2))
+                cat_canvas.coords(acti, x0 + m + pad_side, y0 + ch - m - round(14 * boost))
+                cat_canvas.itemconfigure(acti, fill=cur_act_fg)
 
-                card_canvas._on_scale_change = lambda _sf, fn=paint_gradient_card: fn()
+            def layout_cat_grid(avail_w=None, force=False):
+                if not cat_canvas.winfo_exists():
+                    return
+                w = int(avail_w) if avail_w is not None else cat_canvas.winfo_width()
+                if w <= 1:
+                    shell_cvs = getattr(self, "_shell_canvas", None)
+                    if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
+                        w = max(320, shell_cvs.winfo_width() - 92)
+                    else:
+                        w = max(320, self.winfo_width() - 120)
+                sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+                if not force and abs(w - grid_st["w"]) < 4 and abs(sf - grid_st["sf"]) < 0.02:
+                    return
+                grid_st["w"] = w
+                grid_st["sf"] = sf
+                boost = max(1.0, sf)
+                cols = 3 if (sf >= 1.25 and w < 1250) else 4
+                gap = 10
+                card_w = max(180, (w - gap * (cols - 1)) // cols)
+                card_h = round(166 * boost)
+                rows_n = max(1, _math.ceil(len(cat_entries) / float(cols)))
+                total_h = rows_n * card_h + max(0, rows_n - 1) * gap + 4
 
-                def cancel_card_hover(state=card_state):
-                    for jkey in ("job", "cfg_job"):
-                        if state[jkey] is not None:
-                            try:
-                                self.after_cancel(state[jkey])
-                            except tk.TclError:
-                                pass
-                            state[jkey] = None
+                cat_canvas.delete("all")
+                cat_canvas.configure(height=total_h)
+                ico_f = (DEFAULT_FONT, max(12, round(14 * sf)), "bold")
+                tit_f = (DEFAULT_FONT, max(9, round(11 * sf)), "bold")
+                dsc_f = (DEFAULT_FONT, max(8, round(9 * sf)))
+                act_f = (DEFAULT_FONT, max(7, round(8 * sf)), "bold")
 
-                def schedule_card_paint(_event=None, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
-                    # First paint runs immediately; subsequent resizes debounce 45ms to avoid rasterizing on every pixel.
-                    if state["w"] == 0:
-                        paint_fn()
-                        return
-                    if state["cfg_job"] is not None:
+                for c_idx, entry in enumerate(cat_entries):
+                    r_i, c_i = divmod(c_idx, cols)
+                    x0 = c_i * (card_w + gap)
+                    y0 = r_i * (card_h + gap)
+                    entry["rect"] = (x0, y0, card_w, card_h)
+                    entry["cache"].clear()
+                    bi = cat_canvas.create_image(x0, y0, anchor="nw")
+                    ai = cat_canvas.create_rectangle(0, 0, 0, 0, fill=entry["acc"], outline="")
+                    ib = cat_canvas.create_rectangle(0, 0, 0, 0, fill=entry["ib_base"], outline="")
+                    it = cat_canvas.create_text(0, 0, text=entry["icon"], fill=entry["ico_fg"], font=ico_f, anchor="center")
+                    ti = cat_canvas.create_text(0, 0, text=translate(entry["name"].upper()), fill=card_title_fg, font=tit_f, anchor="w")
+                    di = cat_canvas.create_text(0, 0, text=translate(entry["desc"]), fill=card_desc_fg, font=dsc_f, anchor="nw", justify="left", width=225)
+                    acti = cat_canvas.create_text(0, 0, text=translate("BROWSE PROGRAMMES  →"), fill="#ffffff", font=act_f, anchor="sw")
+                    entry["items"] = (bi, ai, ib, it, ti, di, acti)
+                    paint_single_cat(entry, boost)
+
+            def cancel_cat_jobs(_event=None):
+                for k in ("anim_job", "cfg_job"):
+                    if grid_st[k] is not None:
                         try:
-                            self.after_cancel(state["cfg_job"])
+                            self.after_cancel(grid_st[k])
                         except tk.TclError:
                             pass
-                    state["cfg_job"] = self.after(45, lambda: (state.__setitem__("cfg_job", None), paint_fn()))
+                        grid_st[k] = None
 
-                def animate_card_hover(target, state=card_state, cvs=card_canvas, paint_fn=paint_gradient_card):
-                    if not cvs.winfo_exists():
-                        return
-                    state["target"] = target
-                    if self._is_reduced_motion():
-                        if state["job"] is not None:
-                            try:
-                                self.after_cancel(state["job"])
-                            except tk.TclError:
-                                pass
-                            state["job"] = None
-                        if state["step"] != target:
-                            state["step"] = target
-                            paint_fn()
-                        return
-                    if state["job"] is not None:
-                        return
+            def step_cat_hover():
+                grid_st["anim_job"] = None
+                if not cat_canvas.winfo_exists() or getattr(self, "_transition_active", False):
+                    return
+                if self._is_scrolling():
+                    grid_st["anim_job"] = self.after(40, step_cat_hover)
+                    return
+                boost = max(1.0, grid_st["sf"] or 1.0)
+                any_moving = False
+                for entry in cat_entries:
+                    cur, tgt = entry["step"], entry["target"]
+                    if cur != tgt:
+                        entry["step"] = cur + (1 if tgt > cur else -1)
+                        paint_single_cat(entry, boost)
+                        if entry["step"] != tgt:
+                            any_moving = True
+                if any_moving:
+                    grid_st["anim_job"] = self.after(self._anim_frame_interval(16), step_cat_hover)
 
-                    def step_card():
-                        state["job"] = None
-                        if not cvs.winfo_exists() or getattr(self, "_transition_active", False):
-                            return
-                        if state["target"] > 0 and self._is_scrolling():
-                            return
-                        cur = state["step"]
-                        tgt = state["target"]
-                        if cur == tgt:
-                            return
-                        cur += 1 if tgt > cur else -1
-                        state["step"] = cur
-                        paint_fn()
-                        if cur != tgt:
-                            state["job"] = self.after(self._anim_frame_interval(16), step_card)
+            def hit_cat_index(ex, ey):
+                for c_idx, entry in enumerate(cat_entries):
+                    x0, y0, cw, ch = entry["rect"]
+                    if x0 <= ex <= x0 + cw and y0 <= ey <= y0 + ch:
+                        return c_idx
+                return None
 
-                    step_card()
+            def set_cat_hover(new_idx):
+                if new_idx == grid_st["hovered"]:
+                    return
+                prev = grid_st["hovered"]
+                grid_st["hovered"] = new_idx
+                cat_canvas.configure(cursor="hand2" if new_idx is not None else "")
+                boost = max(1.0, grid_st["sf"] or 1.0)
+                if prev is not None:
+                    cat_entries[prev]["target"] = 0
+                if new_idx is not None:
+                    cat_entries[new_idx]["target"] = 10
+                if self._is_reduced_motion():
+                    for idx_u in (prev, new_idx):
+                        if idx_u is not None:
+                            cat_entries[idx_u]["step"] = cat_entries[idx_u]["target"]
+                            paint_single_cat(cat_entries[idx_u], boost)
+                    return
+                if grid_st["anim_job"] is None:
+                    step_cat_hover()
 
-                def open_genre(
-                    _event=None,
-                    card=card_canvas,
-                    name=category_name,
-                    icon=tile_icon,
-                    desc=tile_description,
-                    base_col=top_col,
-                    hi_col=hi_top,
-                    state=card_state,
-                    cancel_fn=cancel_card_hover,
-                ):
-                    cancel_fn()
-                    t = state["step"] / 10.0
-                    start_col = blend_colour(base_col, hi_col, 1.0 - (1.0 - t) ** 2)
-                    self.expand_genre_in_tab(
-                        card, name, icon, desc, start_col,
-                        lambda: (self.search_text.set(name), perform_search_action()),
-                        programmes_heading, page,
-                    )
+            def on_cat_motion(event):
+                if self._is_scrolling():
+                    return
+                set_cat_hover(hit_cat_index(event.x, event.y))
 
-                card_canvas.bind("<Configure>", schedule_card_paint)
-                card_canvas.bind("<Enter>", lambda _e, anim_fn=animate_card_hover: anim_fn(10))
-                card_canvas.bind("<Leave>", lambda _e, anim_fn=animate_card_hover: anim_fn(0))
-                card_canvas.bind("<Button-1>", open_genre)
-                card_canvas.bind("<Destroy>", lambda _e, cancel_fn=cancel_card_hover: cancel_fn())
+            def on_cat_click(event):
+                idx_c = hit_cat_index(event.x, event.y)
+                if idx_c is None:
+                    return
+                entry = cat_entries[idx_c]
+                cancel_cat_jobs()
+                t = entry["step"] / 10.0
+                start_col = blend_colour(entry["t_base"], entry["t_hi"], 1.0 - (1.0 - t) ** 2)
+                proxy = _GenreCardProxy(cat_canvas, *entry["rect"])
+                self.expand_genre_in_tab(
+                    proxy, entry["name"], entry["icon"], entry["desc"], start_col,
+                    lambda n=entry["name"]: (self.search_text.set(n), perform_search_action()),
+                    programmes_heading, page,
+                )
+
+            def on_cat_configure(event):
+                if event.width <= 1 or abs(event.width - grid_st["w"]) < 4:
+                    return
+                if grid_st["cfg_job"] is not None:
+                    try:
+                        self.after_cancel(grid_st["cfg_job"])
+                    except tk.TclError:
+                        pass
+                grid_st["cfg_job"] = self.after(
+                    45, lambda w=event.width: (grid_st.__setitem__("cfg_job", None), layout_cat_grid(w)),
+                )
+
+            cat_canvas._on_scale_change = lambda _sf: layout_cat_grid(
+                cat_canvas.winfo_width() if cat_canvas.winfo_width() > 1 else grid_st["w"], force=True,
+            )
+            cat_canvas.bind("<Configure>", on_cat_configure)
+            cat_canvas.bind("<Motion>", on_cat_motion)
+            cat_canvas.bind("<Leave>", lambda _e: set_cat_hover(None))
+            cat_canvas.bind("<Button-1>", on_cat_click)
+            cat_canvas.bind("<Destroy>", cancel_cat_jobs)
+            layout_cat_grid()
         except sqlite3.Error as err:
             self.show_db_error("Couldn't load categories", err)
 
@@ -1068,24 +1147,13 @@ class PagesMixin:
         total_plays = history_summary[1]
         mean_rating = rating_summary[1]
 
-        # Display 3 equal-width KPI cards: total plays, distinct programmes played, and mean rating.
-        stats_grid = tk.Frame(page, bg=DARK_BG)
-        stats_grid.pack(fill="x", pady=6)
+        # Display 3 equal-width KPI cards on one Canvas: total plays, distinct programmes played, and mean rating.
         stat_cards = [
             (str(total_plays), "total plays"),
             (str(history_summary[0]), "programmes played"),
             ("—" if mean_rating is None else f"{mean_rating:.1f} / 5", "average rating"),
         ]
-        for idx, (metric_val, metric_title) in enumerate(stat_cards):
-            stats_grid.grid_columnconfigure(idx, weight=1, uniform="report")
-            box_item = self.create_card_frame(stats_grid)
-            box_item.grid(row=0, column=idx, sticky="ew", padx=5)
-            self.create_label(box_item, metric_val, 21, ORANGE_ACCENT, "bold", anchor="center").pack(
-                fill="x", padx=16, pady=(13, 2)
-            )
-            self.create_label(box_item, metric_title, 9, TEXT_GRAY, anchor="center").pack(
-                fill="x", padx=16, pady=(0, 13)
-            )
+        self._render_stat_cards_canvas(page, stat_cards, centered=True, val_size=21, pady=6)
 
         self.render_section_title(page, "Your listening highlights")
         if top_programme:
@@ -1779,45 +1847,165 @@ class PagesMixin:
         self.create_label(page, "FAVOURITE GENRES", 9, TEXT_GRAY, "bold").pack(anchor="w", pady=(8, 7))
         counter_label = self.create_label(page, "0 / 5 selected", 9, ORANGE_HL)
         counter_label.pack(anchor="e", pady=(0, 4))
-        grid_frame = tk.Frame(page, bg=DARK_BG)
-        grid_frame.pack(fill="x")
+        # Render all 12 selectable genre tiles on ONE single Canvas (1 HWND instead of 48+ for smooth scrolling).
+        genre_canvas = tk.Canvas(page, bg=DARK_BG, bd=0, highlightthickness=0, height=220)
+        genre_canvas.pack(fill="x")
         self.genre_elements = {}
-        genre_tiles = []
-        for idx, g_name in enumerate(GENRE_LIST):
-            tile = self.create_card_frame(grid_frame, cursor="hand2")
-            art_cnv = self.create_genre_circle(tile, g_name, idx, 54, CARD_BG)
-            art_cnv.pack(pady=(9, 3))
-            check_lbl = self.create_label(tile, g_name, 9, TEXT_WHITE, "bold", anchor="center", bg=CARD_BG)
-            check_lbl.pack(fill="x", padx=3, pady=(0, 9))
-            for sub_widget in (tile, *tile.winfo_children()):
-                sub_widget.bind("<Button-1>", lambda _e, name_val=g_name: self.toggle_genre_selection(name_val, counter_label))
-            self._attach_genre_tile_hover(tile, g_name, check_lbl, art_cnv)
-            self.genre_elements[g_name] = (tile, check_lbl, art_cnv)
-            genre_tiles.append(tile)
+        pref_tiles = [
+            {
+                "name": g_name, "idx": idx, "step": 0, "target": 0,
+                "rect": (0, 0, 0, 0), "bg_id": None, "lbl_id": None,
+            }
+            for idx, g_name in enumerate(GENRE_LIST)
+        ]
+        pref_st = {"w": 0, "sf": 0.0, "hovered": None, "anim_job": None}
 
-        current_genre_columns = [0]
-
-        def reflow_genre_tiles(_event=None):
-            available_width = grid_frame.winfo_width()
-            if available_width <= 1:
-                available_width = max(1, self.winfo_width() - 110)
-            column_count = max(3, min(6, available_width // 245))
-            if column_count == current_genre_columns[0] and _event is not None:
+        def style_pref_tile(tile_d):
+            if not genre_canvas.winfo_exists() or tile_d["bg_id"] is None:
                 return
-            current_genre_columns[0] = column_count
-            for column_idx in range(6):
-                grid_frame.grid_columnconfigure(
-                    column_idx, weight=1 if column_idx < column_count else 0,
-                    uniform="genre-options" if column_idx < column_count else "",
-                )
-            for tile_idx, tile_widget in enumerate(genre_tiles):
-                tile_widget.grid(
-                    row=tile_idx // column_count, column=tile_idx % column_count,
-                    sticky="nsew", padx=5, pady=5,
-                )
+            x0, y0, cw, ch = tile_d["rect"]
+            cur = tile_d["step"]
+            tgt = tile_d["target"]
+            t = cur / 10.0
+            raw = ease_out_elastic(t, damping=3.0, frequency=1.65) if tgt > 0 else 1.0 - (1.0 - t) ** 2.4
+            col_t = max(0.0, min(1.0, raw))
+            inset = max(0, min(5, round(5.0 - 3.0 * raw)))
+            is_active = tile_d["name"] in self.active_genres
+            rest_bg = SELECTED_BG if is_active else CARD_BG
+            rest_bd = ORANGE_ACCENT if is_active else BORDER_LINE
+            hi_bg = blend_colour(rest_bg, ORANGE_ACCENT if is_active else "#ffffff", 0.08)
+            cur_bg = blend_colour(rest_bg, hi_bg, col_t)
+            cur_bd = blend_colour(rest_bd, ORANGE_HL if is_active else ORANGE_ACCENT, col_t)
+            genre_canvas.coords(
+                tile_d["bg_id"],
+                *rounded_rect_points(x0 + inset, y0 + inset, x0 + cw - inset, y0 + ch - inset, 12),
+            )
+            genre_canvas.itemconfigure(tile_d["bg_id"], fill=cur_bg, outline=cur_bd)
+            genre_canvas.itemconfigure(tile_d["lbl_id"], fill=ORANGE_HL if is_active else TEXT_WHITE)
 
-        grid_frame.bind("<Configure>", reflow_genre_tiles)
-        reflow_genre_tiles()
+        def draw_pref_grid(avail_w=None, force=False):
+            if not genre_canvas.winfo_exists():
+                return
+            w = int(avail_w) if avail_w is not None else genre_canvas.winfo_width()
+            if w <= 1:
+                shell_cvs = getattr(self, "_shell_canvas", None)
+                if shell_cvs is not None and shell_cvs.winfo_exists() and shell_cvs.winfo_width() > 100:
+                    w = max(320, shell_cvs.winfo_width() - 92)
+                else:
+                    w = max(320, self.winfo_width() - 120)
+            sf = max(0.85, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+            if not force and abs(w - pref_st["w"]) < 4 and abs(sf - pref_st["sf"]) < 0.02:
+                return
+            pref_st["w"] = w
+            pref_st["sf"] = sf
+            boost = max(1.0, sf)
+            target_tw = round(245 * (1.0 + (boost - 1.0) * 0.45))
+            cols = max(3, min(6, w // max(140, target_tw)))
+            gap = 10
+            tile_w = max(110, (w - gap * (cols - 1)) // cols)
+            circle_sz = round(54 * min(1.30, boost))
+            lbl_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * sf)), "bold"))
+            ico_font = self._get_cached_font((DEFAULT_FONT, max(12, round(14 * min(1.30, boost))), "bold"))
+            tile_h = round(14 * boost) + circle_sz + round(8 * boost) + lbl_font.metrics("linespace") + round(14 * boost)
+            rows_n = max(1, (len(pref_tiles) + cols - 1) // cols)
+            total_h = rows_n * tile_h + max(0, rows_n - 1) * gap + 4
+
+            genre_canvas.delete("all")
+            genre_canvas.configure(height=total_h)
+            for t_idx, td in enumerate(pref_tiles):
+                r_i, c_i = divmod(t_idx, cols)
+                x0 = c_i * (tile_w + gap)
+                y0 = r_i * (tile_h + gap)
+                td["rect"] = (x0, y0, tile_w, tile_h)
+                bg_id = genre_canvas.create_polygon(
+                    rounded_rect_points(x0 + 5, y0 + 5, x0 + tile_w - 5, y0 + tile_h - 5, 12),
+                    smooth=True, fill=CARD_BG, outline=BORDER_LINE, width=1,
+                )
+                cx = x0 + tile_w / 2.0
+                cy = y0 + round(14 * boost) + circle_sz / 2.0
+                r_c = circle_sz / 2.0
+                light_col, middle_col, outline_col = GENRE_CIRCLE_COLOURS[td["idx"] % len(GENRE_CIRCLE_COLOURS)]
+                for ins_f, fill_c in ((2, outline_col), (5, middle_col), (10, light_col), (16, middle_col)):
+                    ir = max(4.0, r_c - ins_f * (circle_sz / 54.0))
+                    genre_canvas.create_oval(cx - ir, cy - ir, cx + ir, cy + ir, fill=fill_c, outline="")
+                or_c = max(6.0, r_c - 2.0)
+                genre_canvas.create_oval(cx - or_c, cy - or_c, cx + or_c, cy + or_c, outline=outline_col, width=2)
+                genre_canvas.create_text(cx, cy, text=td["name"][:1].upper(), fill="#ffffff", font=ico_font)
+                lbl_id = genre_canvas.create_text(
+                    cx, y0 + round(14 * boost) + circle_sz + round(8 * boost),
+                    text=translate(td["name"]), fill=TEXT_WHITE, font=lbl_font, anchor="n",
+                    width=max(80, tile_w - 16),
+                )
+                td["bg_id"] = bg_id
+                td["lbl_id"] = lbl_id
+                style_pref_tile(td)
+
+        def cancel_pref_anim(_event=None):
+            if pref_st["anim_job"] is not None:
+                try:
+                    self.after_cancel(pref_st["anim_job"])
+                except tk.TclError:
+                    pass
+                pref_st["anim_job"] = None
+
+        def step_pref_hover():
+            pref_st["anim_job"] = None
+            if not genre_canvas.winfo_exists() or getattr(self, "_transition_active", False):
+                return
+            if self._is_scrolling():
+                pref_st["anim_job"] = self.after(40, step_pref_hover)
+                return
+            any_moving = False
+            for td in pref_tiles:
+                if td["step"] != td["target"]:
+                    td["step"] += 1 if td["target"] > td["step"] else -1
+                    style_pref_tile(td)
+                    if td["step"] != td["target"]:
+                        any_moving = True
+            if any_moving:
+                pref_st["anim_job"] = self.after(self._anim_frame_interval(16), step_pref_hover)
+
+        def hit_pref_idx(ex, ey):
+            for t_idx, td in enumerate(pref_tiles):
+                x0, y0, cw, ch = td["rect"]
+                if x0 <= ex <= x0 + cw and y0 <= ey <= y0 + ch:
+                    return t_idx
+            return None
+
+        def set_pref_hover(new_idx):
+            if new_idx == pref_st["hovered"]:
+                return
+            prev = pref_st["hovered"]
+            pref_st["hovered"] = new_idx
+            genre_canvas.configure(cursor="hand2" if new_idx is not None else "")
+            if prev is not None:
+                pref_tiles[prev]["target"] = 0
+            if new_idx is not None:
+                pref_tiles[new_idx]["target"] = 10
+            if self._is_reduced_motion():
+                for idx_u in (prev, new_idx):
+                    if idx_u is not None:
+                        pref_tiles[idx_u]["step"] = pref_tiles[idx_u]["target"]
+                        style_pref_tile(pref_tiles[idx_u])
+                return
+            if pref_st["anim_job"] is None:
+                step_pref_hover()
+
+        def on_pref_click(event):
+            idx_t = hit_pref_idx(event.x, event.y)
+            if idx_t is not None:
+                self.toggle_genre_selection(pref_tiles[idx_t]["name"], counter_label)
+
+        self._refresh_genre_canvas = lambda: [style_pref_tile(td) for td in pref_tiles]
+        genre_canvas._on_scale_change = lambda _sf: draw_pref_grid(
+            genre_canvas.winfo_width() if genre_canvas.winfo_width() > 1 else pref_st["w"], force=True,
+        )
+        genre_canvas.bind("<Configure>", lambda e: draw_pref_grid(e.width) if e.width > 1 else None)
+        genre_canvas.bind("<Motion>", lambda e: None if self._is_scrolling() else set_pref_hover(hit_pref_idx(e.x, e.y)))
+        genre_canvas.bind("<Leave>", lambda _e: set_pref_hover(None))
+        genre_canvas.bind("<Button-1>", on_pref_click)
+        genre_canvas.bind("<Destroy>", cancel_pref_anim)
+        draw_pref_grid()
 
         self.update_genre_tile_styles(counter_label)
         self.render_section_title(page, "Episode length", "Pick the average episode length you enjoy most.")
@@ -1946,6 +2134,12 @@ class PagesMixin:
         """Highlight selected genre tiles and update the selected count indicator."""
         if counter_lbl and counter_lbl.winfo_exists():
             counter_lbl.config(text=f"{len(self.active_genres)} / 5 selected")
+        refresh_fn = getattr(self, "_refresh_genre_canvas", None)
+        if callable(refresh_fn):
+            try:
+                refresh_fn()
+            except tk.TclError:
+                pass
         for name, (tile, lbl, circle) in getattr(self, "genre_elements", {}).items():
             is_active = name in self.active_genres
             background_color = SELECTED_BG if is_active else CARD_BG

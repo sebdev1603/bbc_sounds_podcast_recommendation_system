@@ -173,7 +173,7 @@ class WidgetsMixin:
         ):
             return
         button._hover_target = target_step
-        if self._is_reduced_motion():
+        if self._is_reduced_motion() or (target_step == 0 and self._is_scrolling()):
             self.cancel_button_hover(button)
             if getattr(button, "_hover_step", 0) != target_step:
                 button._hover_step = target_step
@@ -2325,16 +2325,23 @@ class WidgetsMixin:
             hover_loop["job"] = None
             if not grid_canvas.winfo_exists() or getattr(self, "_transition_active", False):
                 return
+            scrolling = self._is_scrolling()
             any_active = False
             for c in state["cards"]:
                 if c["step"] != c["target"]:
-                    c["step"] += 1 if c["target"] > c["step"] else -1
+                    if scrolling:
+                        c["step"] = c["target"]
+                    else:
+                        c["step"] += 1 if c["target"] > c["step"] else -1
                     paint_card_hover(c)
                     if c["step"] != c["target"]:
                         any_active = True
                 for b in c["buttons"]:
                     if b["step"] != b["target"]:
-                        b["step"] += 1 if b["target"] > b["step"] else -1
+                        if scrolling:
+                            b["step"] = b["target"]
+                        else:
+                            b["step"] += 1 if b["target"] > b["step"] else -1
                         paint_btn_hover(b)
                         if b["step"] != b["target"]:
                             any_active = True
