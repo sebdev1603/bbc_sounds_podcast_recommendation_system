@@ -173,7 +173,7 @@ class WidgetsMixin:
         ):
             return
         button._hover_target = target_step
-        if self._is_reduced_motion():
+        if self._is_reduced_motion() or (target_step == 0 and self._is_scrolling()):
             self.cancel_button_hover(button)
             if getattr(button, "_hover_step", 0) != target_step:
                 button._hover_step = target_step
@@ -255,10 +255,14 @@ class WidgetsMixin:
         button._hover_step = 0
         button._hover_target = 0
         metrics = self._get_cached_font(button.cget("font"))
-        pad_x, pad_y = button._rounded_padding
+        base_pad_x, base_pad_y = button._rounded_padding
+        pad_scale = max(0.90, min(1.50, getattr(self, "_ui_scale_factor", 1.0)))
+        pad_x = round(base_pad_x * pad_scale)
+        pad_y = round(base_pad_y * pad_scale)
         height = metrics.metrics("linespace") + pad_y
         text = button.cget("text")
-        width = max(height, metrics.measure(text) + (12 if len(text) == 1 else pad_x))
+        single_pad = round(12 * pad_scale)
+        width = max(height, metrics.measure(text) + (single_pad if len(text) == 1 else pad_x))
         # Optical vertical compensation for Linux/macOS FreeType font metrics (Windows GDI already centers vertically).
         if sys.platform == "win32":
             y_shift = 0
@@ -385,7 +389,7 @@ class WidgetsMixin:
             top = inset
             bottom = height + margin * 2 - inset
             pill_w, pill_h = right - left, bottom - top
-            radius = min(10, pill_h // 2, pill_w // 2)
+            radius = min(max(10, round(pill_h * 0.28)), pill_h // 2, pill_w // 2)
             c = str(colour).lstrip("#")
             rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
             border_rgb = None
@@ -1675,14 +1679,19 @@ class WidgetsMixin:
 
         rounded_pts = rounded_rect_points
 
-        scale = getattr(self, "_ui_scale_factor", 1.0)
-        text_scale = getattr(self, "_text_scale", 1.0)
-        f_scale = scale * text_scale
-        title_font = self._get_cached_font((DEFAULT_FONT, max(9, round(11 * f_scale)), "bold"))
-        meta_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * f_scale))))
-        star_font = self._get_cached_font((DEFAULT_FONT, max(11, round(13 * f_scale))))
-        btn_font = self._get_cached_font((DEFAULT_FONT, max(8, round(9 * f_scale)), "bold"))
-        end_font = self._get_cached_font((DEFAULT_FONT, max(12, round(15 * f_scale)), "bold"))
+        def _grid_fonts():
+            # _ui_scale_factor already combines responsive window scaling and _text_scale.
+            sf = max(0.75, min(1.75, getattr(self, "_ui_scale_factor", 1.0)))
+            return (
+                sf,
+                self._get_cached_font((DEFAULT_FONT, max(9, round(11 * sf)), "bold")),
+                self._get_cached_font((DEFAULT_FONT, max(8, round(9 * sf)))),
+                self._get_cached_font((DEFAULT_FONT, max(11, round(13 * sf)))),
+                self._get_cached_font((DEFAULT_FONT, max(8, round(9 * sf)), "bold")),
+                self._get_cached_font((DEFAULT_FONT, max(12, round(15 * sf)), "bold")),
+            )
+
+        f_scale, title_font, meta_font, star_font, btn_font, end_font = _grid_fonts()
 
         details_txt = translate("Details")
         remove_txt = translate("Remove")
@@ -1719,22 +1728,41 @@ class WidgetsMixin:
         grid_canvas._canvas_card_rects = {}
 
         def draw_grid(avail_w):
+            nonlocal f_scale, title_font, meta_font, star_font, btn_font, end_font
             if not grid_canvas.winfo_exists():
                 return
             if avail_w <= 1:
                 avail_w = max(320, self.winfo_width() - 110)
-            target_card_w = (
+            f_scale, title_font, meta_font, star_font, btn_font, end_font = _grid_fonts()
+            size_boost = max(1.0, f_scale)
+            base_card_w = (
                 min(355, max(280, round(280 + max(0, avail_w - 1100) * 0.025)))
                 if ratings_mode else
                 min(330, max(255, round(255 + max(0, avail_w - 1100) * 0.025)))
             )
+            # Widen cards proportionally when text is scaled up so titles and buttons have breathing room.
+            target_card_w = round(base_card_w * (1.0 + (size_boost - 1.0) * 0.60))
             cols = max(2, min(14 if ratings_mode else 16, avail_w // target_card_w))
-            gap = 10
-            card_w = max(180, (avail_w - gap * (cols - 1)) // cols)
-            cover_sz = max(140, card_w - 20)
+            gap = round(10 * min(1.35, size_boost))
+            card_w = max(190, (avail_w - gap * (cols - 1)) // cols)
+            pad_x = round(12 * min(1.35, size_boost))
+            cover_sz = max(140, card_w - pad_x * 2 + 4)
+
+            title_lh = title_font.metrics("linespace")
+            meta_lh = meta_font.metrics("linespace")
+            star_lh = star_font.metrics("linespace")
+            btn_pad_y = round(12 * size_boost)
+            btn_h = max(round(28 * max(0.95, f_scale)), btn_font.metrics("linespace") + btn_pad_y)
             has_rating_row = ratings_mode or (rating_index is not None)
-            text_area_h = round((166 if has_rating_row else 128) * max(0.95, min(1.35, f_scale)))
-            card_h = cover_sz + 18 + text_area_h
+            rating_block_h = (meta_lh + star_lh + round(14 * size_boost)) if has_rating_row else 0
+            text_area_h = (
+                title_lh * 2
+                + meta_lh * 2
+                + rating_block_h
+                + btn_h
+                + round(34 * size_boost)
+            )
+            card_h = cover_sz + round(18 * size_boost) + text_area_h
 
             visible_entries = card_entries[:cols] if single_row else card_entries
             total_items = len(visible_entries)
@@ -1781,9 +1809,9 @@ class WidgetsMixin:
                         tags=body_tags,
                     )
 
-                tx = x0 + 12
-                ty = cov_y + cover_sz + 11
-                max_tw = max(120, card_w - 24)
+                tx = x0 + pad_x
+                ty = cov_y + cover_sz + round(11 * size_boost)
+                max_tw = max(120, card_w - pad_x * 2)
                 # Keep title cleanly within 2 lines so card heights stay uniform.
                 disp_title = title if len(title) <= 44 else (title[:42].rstrip() + "…")
                 title_item = grid_canvas.create_text(
@@ -1791,32 +1819,36 @@ class WidgetsMixin:
                     anchor="nw", width=max_tw, tags=body_tags,
                 )
                 tb = grid_canvas.bbox(title_item)
-                next_y = (tb[3] if tb else ty + 20) + 4
-                grid_canvas.create_text(
+                next_y = (tb[3] if tb else ty + title_lh) + round(5 * size_boost)
+                meta_item = grid_canvas.create_text(
                     tx, next_y, text=meta_info, fill=TEXT_GRAY, font=meta_font,
                     anchor="nw", width=max_tw, tags=body_tags,
                 )
-                next_y += round(17 * max(0.95, f_scale))
-                grid_canvas.create_text(
+                mb = grid_canvas.bbox(meta_item)
+                next_y = (mb[3] if mb else next_y + meta_lh) + round(4 * size_boost)
+                avg_item = grid_canvas.create_text(
                     tx, next_y, text=avg_txt, fill=GOLD_STAR, font=meta_font,
                     anchor="nw", width=max_tw, tags=body_tags,
                 )
-                next_y += round(18 * max(0.95, f_scale))
+                ab = grid_canvas.bbox(avg_item)
+                next_y = (ab[3] if ab else next_y + meta_lh) + round(5 * size_boost)
 
                 star_items = []
                 if r_val is not None:
-                    grid_canvas.create_text(
+                    yr_item = grid_canvas.create_text(
                         tx, next_y, text=your_rating_txt, fill=TEXT_GRAY, font=meta_font,
                         anchor="nw", tags=body_tags,
                     )
-                    next_y += round(15 * max(0.95, f_scale))
+                    yb = grid_canvas.bbox(yr_item)
+                    next_y = (yb[3] if yb else next_y + meta_lh) + round(2 * size_boost)
                     try:
                         filled = max(0, min(5, int(round(float(r_val)))))
                     except (TypeError, ValueError):
                         filled = 0
+                    star_step = max(16, round(star_font.measure("★") * 1.18))
                     for s_i in range(5):
                         s_id = grid_canvas.create_text(
-                            tx + s_i * round(16 * max(0.95, f_scale)), next_y,
+                            tx + s_i * star_step, next_y,
                             text="★", fill=GOLD_STAR if s_i < filled else STAR_EMPTY,
                             font=star_font, anchor="nw", tags=body_tags,
                         )
@@ -1824,13 +1856,15 @@ class WidgetsMixin:
 
                 card_proxy = _CanvasRectProxy(grid_canvas, x0, y0, card_w, card_h)
                 cover_proxy = _CanvasRectProxy(grid_canvas, cov_x, cov_y, cover_sz, cover_sz)
-                title_proxy = _CanvasRectProxy(grid_canvas, tx, ty, max_tw, 24)
+                title_proxy = _CanvasRectProxy(grid_canvas, tx, ty, max_tw, max(24, title_lh))
                 grid_canvas._canvas_card_rects[str(pid)] = (card_proxy, cover_proxy, pid, title, category, cover_sz)
 
-                # Bottom pill buttons.
-                btn_h = round(28 * max(0.95, min(1.25, f_scale)))
-                by1 = y1 - 11
+                # Bottom pill buttons (measured from font metrics so text never clips or overlaps).
+                by1 = y1 - round(11 * size_boost)
                 by0 = by1 - btn_h
+                btn_gap = round(6 * size_boost)
+                btn_px = round(20 * size_boost)
+                btn_radius = min(max(8, round(btn_h * 0.28)), btn_h // 2)
                 buttons = []
 
                 def add_btn(bx0, bx1, label_s, primary, action):
@@ -1838,7 +1872,7 @@ class WidgetsMixin:
                     hov_c = ORANGE_HL if primary else sec_btn_hover
                     fg_c = PRIMARY_BTN_FG if primary else ACTION_BTN_FG
                     poly = grid_canvas.create_polygon(
-                        rounded_pts(bx0, by0, bx1, by1, 8),
+                        rounded_pts(bx0, by0, bx1, by1, btn_radius),
                         smooth=True, fill=base_c,
                         outline="" if primary else sec_btn_outline,
                         width=0 if primary else 1,
@@ -1860,21 +1894,39 @@ class WidgetsMixin:
                         "target": 0,
                     })
 
+                right_edge = x1 - pad_x
                 if ratings_mode:
-                    ch_w = max(84, btn_font.measure(change_txt) + 20)
-                    rm_w = max(62, btn_font.measure(remove_txt) + 18)
+                    ch_w = max(84, btn_font.measure(change_txt) + btn_px)
+                    rm_w = max(62, btn_font.measure(remove_txt) + btn_px)
+                    avail_btns = max(80, right_edge - tx - btn_gap)
+                    if ch_w + rm_w > avail_btns:
+                        ratio = avail_btns / float(ch_w + rm_w)
+                        ch_w = max(54, int(ch_w * ratio))
+                        rm_w = max(44, avail_btns - ch_w)
                     add_btn(
-                        tx, min(x1 - 12 - rm_w - 6, tx + ch_w), change_txt, False,
+                        tx, tx + ch_w, change_txt, False,
                         lambda tid=pid: self.rate_programme(tid, self.show_ratings),
                     )
                     add_btn(
-                        x1 - 12 - rm_w, x1 - 12, remove_txt, False,
+                        right_edge - rm_w, right_edge, remove_txt, False,
                         lambda tid=pid: self.remove_rating(
                             tid, evaporate=lambda done, t_pid=tid: evaporate_card(t_pid, done),
                         ),
                     )
                 else:
-                    det_w = max(60, btn_font.measure(details_txt) + 20)
+                    det_w = max(60, btn_font.measure(details_txt) + btn_px)
+                    rm_w = max(60, btn_font.measure(remove_txt) + btn_px) if show_remove else 0
+                    pw = max(36, round(38 * max(0.95, f_scale))) if show_play else 0
+                    # Clamp left-side buttons so they never collide with the right-aligned Play button.
+                    left_budget = right_edge - tx - (pw + btn_gap if show_play else 0)
+                    if show_remove:
+                        need_left = det_w + btn_gap + rm_w
+                        if need_left > left_budget and left_budget > 80:
+                            ratio = (left_budget - btn_gap) / float(det_w + rm_w)
+                            det_w = max(46, int(det_w * ratio))
+                            rm_w = max(44, left_budget - btn_gap - det_w)
+                    elif det_w > left_budget and left_budget > 46:
+                        det_w = left_budget
                     add_btn(
                         tx, tx + det_w, details_txt, False,
                         lambda tid=pid, t=title, c=category, cp=card_proxy, cvp=cover_proxy, tp=title_proxy: (
@@ -1882,8 +1934,7 @@ class WidgetsMixin:
                         ),
                     )
                     if show_remove:
-                        rm_w = max(60, btn_font.measure(remove_txt) + 18)
-                        rx0 = tx + det_w + 6
+                        rx0 = tx + det_w + btn_gap
                         add_btn(
                             rx0, rx0 + rm_w, remove_txt, False,
                             lambda tid=pid: self.remove_from_history(
@@ -1891,11 +1942,10 @@ class WidgetsMixin:
                             ),
                         )
                     if show_play:
-                        pw = max(36, round(38 * max(0.95, f_scale)))
-                        px0 = x1 - 12 - pw
+                        px0 = right_edge - pw
                         play_proxy = _CanvasRectProxy(grid_canvas, px0, by0, pw, btn_h)
                         add_btn(
-                            px0, x1 - 12, "▶", True,
+                            px0, right_edge, "▶", True,
                             lambda pp=play_proxy, tid=pid, t=title, c=category, cvp=cover_proxy: (
                                 self.play_podcast_to_mini_bar(pp, tid, t, c, cover_widget=cvp)
                             ),
@@ -2275,16 +2325,23 @@ class WidgetsMixin:
             hover_loop["job"] = None
             if not grid_canvas.winfo_exists() or getattr(self, "_transition_active", False):
                 return
+            scrolling = self._is_scrolling()
             any_active = False
             for c in state["cards"]:
                 if c["step"] != c["target"]:
-                    c["step"] += 1 if c["target"] > c["step"] else -1
+                    if scrolling:
+                        c["step"] = c["target"]
+                    else:
+                        c["step"] += 1 if c["target"] > c["step"] else -1
                     paint_card_hover(c)
                     if c["step"] != c["target"]:
                         any_active = True
                 for b in c["buttons"]:
                     if b["step"] != b["target"]:
-                        b["step"] += 1 if b["target"] > b["step"] else -1
+                        if scrolling:
+                            b["step"] = b["target"]
+                        else:
+                            b["step"] += 1 if b["target"] > b["step"] else -1
                         paint_btn_hover(b)
                         if b["step"] != b["target"]:
                             any_active = True
@@ -2396,6 +2453,9 @@ class WidgetsMixin:
             else:
                 init_w = max(320, self.winfo_width() - 120)
         state["last_w"] = init_w
+        grid_canvas._on_scale_change = lambda _sf: draw_grid(
+            grid_canvas.winfo_width() if grid_canvas.winfo_width() > 1 else state["last_w"]
+        )
         draw_grid(init_w)
 
         if insert_anim and state["cards"] and str(state["cards"][0].get("pid")) == str(insert_anim.get("podcast_id")):

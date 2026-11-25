@@ -395,6 +395,7 @@ class EffectsMixin:
         resize_search = getattr(self, "_resize_search_bar", None)
         if resize_search is not None:
             resize_search()
+        self._sync_scrollregion()
 
     def set_text_scale(self, new_scale, persist=True):
         """Set the accessibility text-size multiplier (0.80..1.40), persist per user, and rescale."""
@@ -776,6 +777,23 @@ class EffectsMixin:
                         widget.configure(wraplength=scaled_wrap)
             except (tk.TclError, ValueError, TypeError):
                 pass
+            base_box = getattr(widget, "_base_box_size", None)
+            if base_box is not None:
+                try:
+                    bw, bh = base_box
+                    box_s = max(1.0, scale_factor)
+                    new_box = (round(bw * box_s), round(bh * box_s))
+                    if getattr(widget, "_applied_box_size", None) != new_box:
+                        widget._applied_box_size = new_box
+                        widget.configure(width=new_box[0], height=new_box[1])
+                except (tk.TclError, ValueError, TypeError):
+                    pass
+            on_scale = getattr(widget, "_on_scale_change", None)
+            if on_scale is not None:
+                try:
+                    on_scale(scale_factor)
+                except (tk.TclError, ValueError, TypeError):
+                    pass
 
     def _sync_scrollregion(self):
         """Ensure the active shell scroll canvas reflects the current page's full height."""
@@ -978,8 +996,12 @@ class EffectsMixin:
                 )
                 available = bar_w - used_w
                 # Grow longer on wider windows (up to 460px) and shrink cleanly on smaller/Linux screens (down to 110px).
+                sf = getattr(self, "_ui_scale_factor", 1.0)
                 target_w = max(110, min(460, available))
-                target_h = max(34, min(44, round(38 * getattr(self, "_ui_scale_factor", 1.0))))
+                target_h = max(34, min(56, round(38 * sf)))
+                bar_h = max(84, round(84 * max(1.0, sf * 0.92)))
+                if topbar.cget("height") != bar_h:
+                    topbar.configure(height=bar_h)
                 if abs(target_w - last_search_size[0]) >= 2 or target_h != last_search_size[1]:
                     last_search_size[0] = target_w
                     last_search_size[1] = target_h
@@ -3962,15 +3984,15 @@ class EffectsMixin:
         return monotonic() < getattr(self, "_scroll_priority_until", 0.0)
 
     def bind_page_scroll(self, canvas, scrollbar):
-        """Coalesced 60Hz smooth scrolling with continuous velocity across wheel notches and touchpads."""
+        """Low-latency coalesced scrolling with adaptive catch-up so fast flicks never stutter or drag on."""
         import math as _math
-        fraction = 0.0
         pending_frame = None
         target = None
         float_pos = None
         last_tick = None
         pending_touchpad = 0.0
-        cached_max = [0]
+        last_paint_ms = 0.0
+        cached_bounds = {"page": None, "max": 0, "ts": 0.0}
 
         def cancel_animation():
             nonlocal pending_frame, target, float_pos, last_tick, pending_touchpad
@@ -3985,9 +4007,17 @@ class EffectsMixin:
             last_tick = None
             pending_touchpad = 0.0
 
-        def refresh_max_scroll():
+        def refresh_max_scroll(force=False):
+            now = monotonic()
+            page = getattr(self, "current_page", None)
+            if (
+                not force
+                and cached_bounds["page"] is page
+                and cached_bounds["max"] > 0
+                and (now - cached_bounds["ts"]) < 0.25
+            ):
+                return cached_bounds["max"]
             try:
-                page = getattr(self, "current_page", None)
                 extra_bottom = 96 if getattr(self, "_active_nav_tab", "") != "Programme details" else 0
                 region = canvas.cget("scrollregion")
                 bottom = int(float(region.split()[3])) if region else 0
@@ -3997,11 +4027,14 @@ class EffectsMixin:
                         self._sync_scrollregion()
                         region = canvas.cget("scrollregion")
                         bottom = int(float(region.split()[3])) if region else needed
-                cached_max[0] = max(0, bottom - canvas.winfo_height())
-                return cached_max[0]
+                mx = max(0, bottom - canvas.winfo_height())
+                cached_bounds["page"] = page
+                cached_bounds["max"] = mx
+                cached_bounds["ts"] = now
+                return mx
             except (tk.TclError, ValueError, IndexError):
                 pass
-            cached_max[0] = 0
+            cached_bounds["max"] = 0
             return 0
 
         def drag_scrollbar(*args):
@@ -4010,7 +4043,7 @@ class EffectsMixin:
             canvas.yview(*args)
 
         def step_scroll():
-            nonlocal pending_frame, target, float_pos, last_tick, pending_touchpad
+            nonlocal pending_frame, target, float_pos, last_tick, pending_touchpad, last_paint_ms
             pending_frame = None
             if not canvas.winfo_exists():
                 cancel_animation()
@@ -4020,38 +4053,43 @@ class EffectsMixin:
 
             # Flush coalesced high-frequency precision touchpad deltas once per frame.
             if pending_touchpad:
-                pixels = int(pending_touchpad)
+                pixels = int(round(pending_touchpad))
                 pending_touchpad -= pixels
                 if pixels:
                     canvas.yview_scroll(pixels, "units")
+                last_paint_ms = (monotonic() - frame_t0) * 1000.0
                 if abs(pending_touchpad) >= 1.0:
-                    spent_ms = (monotonic() - frame_t0) * 1000.0
-                    pending_frame = canvas.after(self._next_frame_delay(spent_ms, 16), step_scroll)
+                    pending_frame = canvas.after(max(4, min(16, round(16 - last_paint_ms))), step_scroll)
+                else:
+                    pending_touchpad = 0.0
                 return
 
             if target is None:
                 return
 
-            dt = 0.016 if last_tick is None else max(0.004, min(0.050, frame_t0 - last_tick))
+            dt = 0.016 if last_tick is None else max(0.004, min(0.120, frame_t0 - last_tick))
             last_tick = frame_t0
             cur_int = round(canvas.canvasy(0))
             if float_pos is None:
                 float_pos = float(cur_int)
 
-            # Continuous exponential smoothing keeps velocity fluid across rapid wheel notches.
-            factor = 1.0 - _math.exp(-dt / 0.052)
-            float_pos += (target - float_pos) * factor
-            if abs(target - float_pos) < 0.75:
+            # Snappy catch-up: if repaints are heavy (>=18ms), jump straight to target instead of dragging on.
+            if last_paint_ms >= 18.0:
                 float_pos = float(target)
+            else:
+                factor = 1.0 - _math.exp(-dt / 0.022)
+                float_pos += (target - float_pos) * factor
+                if abs(target - float_pos) <= 2.5:
+                    float_pos = float(target)
 
             next_int = round(float_pos)
             delta = next_int - cur_int
             if delta:
                 canvas.yview_scroll(delta, "units")
+            last_paint_ms = (monotonic() - frame_t0) * 1000.0
 
             if next_int != target:
-                spent_ms = (monotonic() - frame_t0) * 1000.0
-                pending_frame = canvas.after(self._next_frame_delay(spent_ms, 16), step_scroll)
+                pending_frame = canvas.after(max(4, min(16, round(16 - last_paint_ms))), step_scroll)
             else:
                 target = None
                 float_pos = None
@@ -4087,8 +4125,8 @@ class EffectsMixin:
             current = round(canvas.canvasy(0))
             base = target if (target is not None and (target - current) * step_px >= 0) else current
             new_target = max(0, min(maximum, base + round(step_px)))
-            # Cap lookahead distance so fast wheel spins stay snappy and never drift far ahead.
-            new_target = max(current - 260, min(current + 260, new_target))
+            # Keep lookahead tight so rapid flicks stop immediately when the user stops scrolling.
+            new_target = max(current - 140, min(current + 140, new_target))
             new_target = max(0, min(maximum, new_target))
             if new_target != current or target is not None:
                 target = new_target
@@ -4108,7 +4146,7 @@ class EffectsMixin:
             # Precision touchpad (sub-120 deltas): coalesce into the frame loop instead of 240Hz moves.
             if event.delta % 120:
                 return handle_scroll_step(-event.delta * 48.0 / 120.0, is_precision=True)
-            return handle_scroll_step(-event.delta * 56.0 / 120.0, is_precision=False)
+            return handle_scroll_step(-event.delta * 64.0 / 120.0, is_precision=False)
 
         def on_linux_button(event):
             # Linux X11/XWayland mouse wheel fires Button-4 (up) and Button-5 (down).

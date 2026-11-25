@@ -838,6 +838,10 @@ class DetailViewMixin:
                     btn._rounded_padding = (round(28 * scale), round(14 * scale))
                     btn.configure(font=(DEFAULT_FONT, action_font_size, "bold"))
                     self.style_rounded_button(btn, face_col, hover_col)
+                dw_live = getattr(self, "_detail_widgets", None) or {}
+                ch_live = dw_live.get("ratings_chart_widget")
+                if ch_live is not None and ch_live.winfo_exists() and callable(getattr(ch_live, "_rerender_chart", None)):
+                    ch_live._rerender_chart()
 
             def schedule_detail_scale(_event=None):
                 if resize_job[0] is not None:
@@ -934,6 +938,8 @@ class DetailViewMixin:
                         if old_chart is not None and old_chart.winfo_exists():
                             old_chart.destroy()
                         live_chart_ref[0] = self._render_ratings_bar_chart(ratings_card, new_counts)
+                        if isinstance(getattr(self, "_detail_widgets", None), dict):
+                            self._detail_widgets["ratings_chart_widget"] = live_chart_ref[0]
                 except sqlite3.Error:
                     pass
 
@@ -998,31 +1004,43 @@ class DetailViewMixin:
         max_digits = max(1, len(str(max_count)))
         track_col = blend_colour(SUBCARD_BG, TEXT_WHITE, 0.08)
 
-        chart_widget = tk.Label(parent_card, bg=SUBCARD_BG, bd=0, highlightthickness=0, anchor="center")
-        chart_widget.pack(fill="x", padx=14, pady=(2, 12))
+        chart_widget = tk.Canvas(
+            parent_card, bg=SUBCARD_BG, bd=0, highlightthickness=0, width=1, height=110,
+        )
+        chart_widget.pack(fill="both", expand=True, padx=14, pady=(2, 12))
+        chart_img_id = chart_widget.create_image(0, 0, anchor="center")
 
-        render_state = {"width": 0, "job": None}
+        render_state = {"key": None, "job": None}
 
-        def render_for_width(avail_w):
+        def render_for_size(avail_w, avail_h=None):
             render_state["job"] = None
             if not chart_widget.winfo_exists() or not parent_card.winfo_exists():
                 return
-            w_px = max(210, min(680, int(avail_w)))
-            if abs(w_px - render_state["width"]) < 6:
-                return
-            render_state["width"] = w_px
-            h_px = max(94, min(116, round(w_px * 0.26)))
+            w_px = max(180, min(1400, int(avail_w)))
+            win_h = max(600, self.winfo_height())
+            text_scale = max(0.80, min(1.40, getattr(self, "_text_scale", 1.0)))
+            target_h = round(min(w_px * 0.30, win_h * 0.24) * max(0.95, text_scale))
+            h_px = max(96, min(260, target_h))
+            if avail_h is not None and avail_h > h_px:
+                h_px = min(260, int(avail_h))
+            size_key = (w_px, h_px, round(text_scale, 2))
+            if render_state["key"] is not None:
+                prev_w, prev_h, prev_ts = render_state["key"]
+                if abs(w_px - prev_w) < 6 and abs(h_px - prev_h) < 4 and prev_ts == size_key[2]:
+                    return
+            render_state["key"] = size_key
             dpi = 96
 
             fig = Figure(figsize=(w_px / dpi, h_px / dpi), dpi=dpi, facecolor=SUBCARD_BG)
             ax = fig.add_subplot(111)
             ax.set_facecolor(SUBCARD_BG)
 
-            # Keep fixed pixel margins for the "5 ★" labels on the left and count numbers on the right
-            # so bars stretch cleanly across the full card width at any window size.
-            left_frac = max(0.08, min(0.19, 36.0 / w_px))
-            right_px = 20.0 + max_digits * 8.0
-            right_frac = max(0.82, min(0.95, 1.0 - right_px / w_px))
+            # Scale typography and margins smoothly with chart height and accessibility text scale.
+            lbl_pt = max(8.0, min(14.0, (h_px / 110.0) * 8.5 * max(0.95, text_scale)))
+            left_px = max(36.0, lbl_pt * 4.4)
+            left_frac = max(0.06, min(0.24, left_px / w_px))
+            right_px = max(22.0, 14.0 + max_digits * (lbl_pt * 0.95))
+            right_frac = max(0.76, min(0.96, 1.0 - right_px / w_px))
 
             x_cap = max(1.0, float(max_count))
             ax.barh(labels, [x_cap] * 5, height=0.50, color=track_col, edgecolor="none", zorder=1)
@@ -1032,7 +1050,7 @@ class DetailViewMixin:
             ax.set_xlim(0, x_cap)
             ax.set_ylim(4.65, -0.65)
             ax.set_xticks([])
-            ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=8.5)
+            ax.tick_params(axis="y", length=0, pad=6, colors=TEXT_WHITE, labelsize=lbl_pt)
             for tick_lbl in ax.get_yticklabels():
                 tick_lbl.set_fontweight("bold")
             for spine in ax.spines.values():
@@ -1047,7 +1065,7 @@ class DetailViewMixin:
                     textcoords="offset points",
                     va="center", ha="left",
                     color=TEXT_WHITE if cnt > 0 else TEXT_GRAY,
-                    fontsize=8.5, fontweight="bold" if cnt > 0 else "normal",
+                    fontsize=lbl_pt, fontweight="bold" if cnt > 0 else "normal",
                     annotation_clip=False,
                 )
 
@@ -1058,20 +1076,32 @@ class DetailViewMixin:
             fig.clear()
             photo = tk.PhotoImage(master=self, data=buf.getvalue(), format="png")
             chart_widget._chart_photo = photo
-            chart_widget.configure(image=photo)
+            if chart_widget.winfo_reqheight() != h_px:
+                chart_widget.configure(height=h_px)
+            cur_cw = max(w_px, chart_widget.winfo_width())
+            cur_ch = max(h_px, chart_widget.winfo_height())
+            chart_widget.coords(chart_img_id, cur_cw / 2.0, cur_ch / 2.0)
+            chart_widget.itemconfigure(chart_img_id, image=photo)
+            self._sync_scrollregion()
 
-        def on_card_resize(event):
+        def schedule_chart_render(avail_w):
             if not chart_widget.winfo_exists():
                 return
-            avail_w = event.width - 28
-            if avail_w < 160 or abs(avail_w - render_state["width"]) < 6:
+            if avail_w < 140:
                 return
             if render_state["job"] is not None:
                 try:
                     self.after_cancel(render_state["job"])
                 except tk.TclError:
                     pass
-            render_state["job"] = self.after(55, lambda w=avail_w: render_for_width(w))
+            render_state["job"] = self.after(45, lambda w=avail_w: render_for_size(w))
+
+        def on_chart_resize(event):
+            if not chart_widget.winfo_exists():
+                return
+            if event.width > 1 and event.height > 1:
+                chart_widget.coords(chart_img_id, event.width / 2.0, event.height / 2.0)
+            schedule_chart_render(event.width)
 
         def cancel_chart_job(_event=None):
             if render_state["job"] is not None:
@@ -1081,12 +1111,15 @@ class DetailViewMixin:
                     pass
                 render_state["job"] = None
 
-        parent_card.bind("<Configure>", on_card_resize, add="+")
+        chart_widget._rerender_chart = lambda: schedule_chart_render(
+            chart_widget.winfo_width() if chart_widget.winfo_width() > 140 else max(240, parent_card.winfo_width() - 28)
+        )
+        chart_widget.bind("<Configure>", on_chart_resize, add="+")
         chart_widget.bind("<Destroy>", cancel_chart_job, add="+")
 
         # Initial render using the estimated half-column width so the chart is immediately well-proportioned.
         est_w = max(240, round((max(900, self.winfo_width()) - 280) / 2.0) - 28)
-        render_for_width(est_w)
+        render_for_size(est_w)
         return chart_widget
 
     def listen(self, podcast_id, *, open_detail=True):
